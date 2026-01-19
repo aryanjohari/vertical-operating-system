@@ -52,3 +52,11 @@ export interface ManagerStatus {
     next_params?: Record<string, any>;
   };
 }
+
+export interface Project {
+  project_id: string;
+  user_id: string;
+  niche: string;
+  dna_path?: string;
+  created_at?: string;
+}

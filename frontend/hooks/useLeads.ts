@@ -1,15 +1,15 @@
 "use client";
 
 import useSWR from "swr";
-import { getLeads } from "@/lib/api";
+import { getEntities } from "@/lib/api";
 import type { Entity } from "@/lib/types";
 import { getAuthUser } from "@/lib/auth";
 
-async function fetchLeads(): Promise<Entity[]> {
+async function fetchLeads(projectId: string | null): Promise<Entity[]> {
   const user_id = getAuthUser() || "admin";
   
   try {
-    const leads = await getLeads(user_id);
+    const leads = await getEntities(user_id, "lead", projectId || undefined);
     return leads;
   } catch (error) {
     console.error("Error fetching leads:", error);
@@ -17,10 +17,10 @@ async function fetchLeads(): Promise<Entity[]> {
   }
 }
 
-export function useLeads() {
+export function useLeads(projectId: string | null) {
   const { data, error, isLoading, mutate } = useSWR<Entity[]>(
-    "leads",
-    fetchLeads,
+    projectId ? `leads-${projectId}` : "leads",
+    () => fetchLeads(projectId),
     {
       refreshInterval: 10000, // Poll every 10 seconds
       revalidateOnFocus: true,

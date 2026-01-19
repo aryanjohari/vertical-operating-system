@@ -25,3 +25,6 @@ watchdog>=4.0.0
 # UTILITIES
 pyyaml>=6.0.1
 tenacity>=8.2.3  # For retrying failed agents
+
+twilio>=9.0.0
+python-multipart>=0.0.9

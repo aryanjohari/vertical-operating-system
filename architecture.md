@@ -185,9 +185,12 @@ The system is built on a **3-tier architecture**:
       - `client_secrets`: Per-user WordPress credentials (user_id, wp_url, wp_user, wp_password)
         - Note: Passwords stored as plain text for MVP; should be encrypted in production
     - **Data Tables**:
-      - `entities`: Master table for all data entities (id, tenant_id, entity_type, name, primary_contact, metadata JSON, created_at)
+      - `entities`: Master table for all data entities (id, tenant_id, project_id, entity_type, name, primary_contact, metadata JSON, created_at)
+        - `project_id`: Links entities to projects (nullable for backward compatibility)
+        - Used for filtering leads and other entities by project
       - `logs`: Audit trail for system actions (id, tenant_id, action, details, timestamp)
     - **RLS Enforcement**: All queries filtered by `tenant_id` (user_id) for data isolation
+    - **Project Filtering**: Entities can be filtered by `project_id` for project-specific views
   - **ChromaDB** (`chroma_db/`): Vector embeddings for semantic search
     - Collection: `apex_context`
     - Used for context retrieval, strategy docs, email templates
@@ -197,10 +200,25 @@ The system is built on a **3-tier architecture**:
     - `create_user(email, password)`: Register new user
     - `verify_user(email, password)`: Validate user credentials
     - `register_project(user_id, project_id, niche)`: Link DNA profile to user
+      - Creates or updates project record in `projects` table
+      - Sets `dna_path` to `data/profiles/{project_id}/dna.generated.yaml`
     - `get_user_project(user_id)`: Retrieve user's active project/niche from database
+      - Returns most recently created project for user (ORDER BY created_at DESC LIMIT 1)
+      - Returns dict with `project_id`, `user_id`, `niche`, `dna_path`, `created_at`
+    - `get_projects(user_id)`: Retrieve all projects for a user
+      - Returns list of all projects ordered by creation date (newest first)
+      - Used for project selector dropdown in frontend
   - **Entity Management**:
-    - `save_entity(entity: Entity)`: Save structured records (leads, jobs, pages, keywords, locations)
-    - `get_entities(tenant_id, entity_type=None)`: Retrieve entities with RLS filtering (by `entity_type` optional)
+    - `save_entity(entity: Entity, project_id: Optional[str] = None)`: Save structured records (leads, jobs, pages, keywords, locations)
+      - Accepts optional `project_id` parameter
+      - If `project_id` not provided, attempts to extract from `entity.metadata.get("project_id")`
+      - Inserts or replaces entity with `project_id` column populated
+      - Returns `True` on success, `False` on error
+    - `get_entities(tenant_id, entity_type=None, project_id=None)`: Retrieve entities with RLS filtering
+      - Filters by `tenant_id` (RLS enforcement)
+      - Optional `entity_type` filter (e.g., "lead", "anchor_location")
+      - Optional `project_id` filter (returns entities matching project OR with NULL project_id for backward compatibility)
+      - Returns list of dicts with parsed JSON metadata
     - `update_entity(entity_id, new_metadata)`: Update metadata of existing entities (merges with existing metadata)
   - **Client Credentials** (Multi-Client Support):
     - `save_client_secrets(user_id, wp_url, wp_user, wp_password)`: Save or update WordPress credentials for a user (upsert)
@@ -361,6 +379,63 @@ The system is built on a **3-tier architecture**:
 - **Returns**: `action_required` status with next task to execute, or `complete` when all done
 - **Stats Tracking**: Monitors counts of anchors, keywords, drafts, enhanced pages, etc.
 
+#### Routers (`/backend/routers/`)
+
+**`voice.py`** - Twilio Voice Webhook Handler
+
+- **Purpose**: Handles incoming voice calls and call status callbacks from Twilio
+- **Dependencies**: 
+  - `twilio` library for TwiML generation
+  - `backend.core.config.ConfigLoader` for loading project configs
+  - `backend.core.memory.memory` for saving leads
+- **Endpoints**:
+  - `POST /api/voice/incoming`: Twilio webhook for incoming calls
+    - **Process**:
+      1. Extracts `project_id` from query params or form data (Twilio webhook)
+      2. Falls back to `DEFAULT_PROJECT_ID` env var if not provided
+      3. Loads project config using `ConfigLoader().load(project_id)`
+      4. Extracts `forwarding_number` from `config.operations.voice_agent.forwarding_number`
+      5. Falls back to `TARGET_PHONE` env var if not in config
+      6. Generates TwiML `<Dial>` response to forward call to `forwarding_number`
+      7. Uses `TWILIO_PHONE_NUMBER` env var as caller ID
+    - **Returns**: TwiML XML response (`application/xml`)
+    - **Error Handling**: Returns error TwiML with `<Say>` if project/config not found
+  - `POST /api/voice/status`: Twilio status callback for completed calls
+    - **Process**:
+      1. Extracts call information from Twilio form data:
+         - `CallSid`: Unique call identifier
+         - `From`: Caller phone number
+         - `To`: Called number
+         - `CallStatus`: Call status (e.g., "completed")
+         - `RecordingUrl`: URL to call recording (if recording enabled)
+         - `RecordingDuration`: Duration of recording in seconds
+      2. Extracts `project_id` from query params or form data
+      3. Only processes if `CallStatus == "completed"` and `RecordingUrl` exists
+      4. Queries `projects` table to get `user_id` from `project_id`
+      5. Creates `Entity` with:
+         - `entity_type="lead"`
+         - `name="Voice Call"`
+         - `primary_contact=from_number`
+         - `metadata` containing:
+           - `source: "voice_call"`
+           - `recording_url`: URL to Twilio recording
+           - `recording_duration`: Duration in seconds
+           - `call_sid`: Twilio call identifier
+           - `from_number`: Caller number
+           - `to_number`: Called number
+           - `call_status`: Call status
+           - `project_id`: Project identifier
+      6. Saves entity using `memory.save_entity(lead_entity, project_id=project_id)`
+    - **Returns**: Empty 200 response (Twilio expects this to avoid retries)
+    - **Error Handling**: Returns 200 even on errors to prevent Twilio retries
+- **Environment Variables**:
+  - `TWILIO_ACCOUNT_SID`: Twilio account SID (not used directly, but should be set)
+  - `TWILIO_AUTH_TOKEN`: Twilio auth token (not used directly, but should be set)
+  - `TWILIO_PHONE_NUMBER`: Twilio phone number for caller ID
+  - `TARGET_PHONE`: Fallback forwarding number if not in project config
+  - `DEFAULT_PROJECT_ID`: Default project if not provided in webhook
+  - `DEFAULT_USER_ID`: Default user ID if project lookup fails
+
 #### Scrapers (`/backend/scrapers/`)
 
 **`universal.py`** - Web Scraper
@@ -402,15 +477,41 @@ The system is built on a **3-tier architecture**:
 - **Purpose**: REST API entry point
 - **Initialization**: Calls `setup_logging()` from `backend.core.logger` at startup (before FastAPI app creation)
 - **Logging**: All endpoints use structured logging (`logger.info()`, `logger.error()`) instead of `print()`
-- **CORS Configuration**: Configured for Next.js frontend (`localhost:3000`)
+- **CORS Configuration**: Configured to allow `*` for MVP testing (allows all origins)
 - **Endpoints**:
   - `GET /`: Health check, returns loaded agents
+    - Returns: `{status: "online", system: "Apex Kernel", version: "1.0", loaded_agents: [...]}`
   - `POST /api/run`: Main execution endpoint
     - Accepts `AgentInput`
     - Returns `AgentOutput`
     - Handles errors and exceptions
-  - `POST /api/entities`: Entity management (save/retrieve)
+  - `GET /api/entities`: Entity retrieval endpoint
+    - Query params: `user_id` (required), `entity_type` (optional), `project_id` (optional)
+    - Returns: `{entities: [...]}` filtered by tenant_id and optionally by entity_type and project_id
   - `POST /api/leads`: Lead capture endpoint (used by utility tools)
+    - Payload: `{user_id: str, project_id: str, source: str, data: Dict[str, Any]}`
+    - Creates `Entity` with `entity_type="lead"` and saves with `project_id`
+    - Returns: `{success: bool, lead_id: str, message: str}`
+  - `GET /api/leads`: Get all leads for a user
+    - Query params: `user_id` (required)
+    - Returns: `{leads: [...]}` - all leads for user (legacy endpoint, use `/api/entities` with filters)
+  - `POST /api/projects`: Create new project and trigger onboarding
+    - Payload: `{user_id: str, name: str, niche: str}`
+    - Process:
+      1. Generates `project_id` by sanitizing `niche` (lowercase, replace non-alphanumeric with `_`)
+      2. Calls `memory.register_project()` to create project record
+      3. Triggers onboarding agent in background via `BackgroundTasks`
+      4. Onboarding agent runs with `niche=project_id` to generate DNA profile
+    - Returns: `{success: bool, project_id: str, message: str}`
+  - `GET /api/projects`: Get all projects for a user
+    - Query params: `user_id` (required)
+    - Returns: `{projects: [...]}` - all projects for user ordered by creation date
+  - `POST /api/auth/verify`: User authentication
+    - Payload: `{email: str, password: str}`
+    - Returns: `{success: bool, user_id: str | null}`
+    - Uses `memory.verify_user()` to check credentials
+- **Router Integration**:
+  - Includes voice router: `app.include_router(voice_router, prefix="/api/voice", tags=["voice"])`
 
 #### Scripts (`/scripts/`)
 
@@ -477,23 +578,88 @@ The system has **two frontends** for different use cases:
     - Real-time log streaming with polling (2.5s intervals)
     - Progress tracking
   - **Leads Management** (`/dashboard/leads`):
-    - View captured leads from interactive tools
+    - View captured leads from interactive tools and voice calls
+    - Filters leads by current selected project (`project_id`)
+    - Displays table with columns: Date, Name, Phone, Source, Recording
+    - Shows audio player for leads with `metadata.recording_url` (voice call recordings)
+    - Requires project selection (shows message if no project selected)
 - **Architecture Patterns**:
   - **App Router**: Next.js 14 file-based routing with `app/` directory
   - **Server Components**: Default React Server Components
   - **Client Components**: Marked with `"use client"` directive
-  - **Custom Hooks**: `useAuth`, `useEntities`, `useLeads`, `useManagerStatus`
+  - **Custom Hooks**: 
+    - `useAuth`: Authentication state management
+    - `useEntities`: Entity data fetching with SWR
+    - `useLeads`: Lead data fetching filtered by project
+    - `useManagerStatus`: Manager agent status polling
+    - `useProjects`: Project list management and creation
+    - `useProjectContext`: Current project selection (localStorage-backed)
   - **API Integration**: Centralized API client in `lib/api.ts`
+    - **Base Configuration**: Axios instance with base URL from `NEXT_PUBLIC_API_URL` env var (defaults to `http://localhost:8000`)
+    - **Functions**:
+      - `runAgent(task, user_id, params)`: Execute agent tasks via `POST /api/run`
+        - Returns: `AgentOutput` with status, data, message, timestamp
+      - `healthCheck()`: Check backend health via `GET /`
+        - Returns: `HealthStatus` with system info and loaded agents
+      - `verifyUser(email, password)`: Authenticate user via `POST /api/auth/verify`
+        - Returns: `{success: bool, user_id: string | null}`
+      - `getEntities(user_id, entity_type?, project_id?)`: Fetch entities via `GET /api/entities`
+        - Builds query params: `user_id` (required), `entity_type` (optional), `project_id` (optional)
+        - Returns: `Entity[]` array with parsed metadata
+      - `getLeads(user_id)`: Fetch leads via `GET /api/leads` (legacy endpoint)
+        - Returns: `Entity[]` array (use `getEntities` with filters instead)
+      - `createProject(user_id, name, niche)`: Create new project via `POST /api/projects`
+        - Payload: `{user_id, name, niche}`
+        - Returns: `ProjectResponse` with `{success: bool, project_id: string, message: string}`
+        - Throws error on failure
+      - `getProjects(user_id)`: Fetch all projects via `GET /api/projects`
+        - Query param: `user_id` (required)
+        - Returns: `Project[]` array ordered by creation date
+    - **Error Handling**: All functions catch errors and return empty arrays/null or throw
   - **Type Safety**: Full TypeScript with type definitions in `lib/types.ts`
-- **CORS Configuration**: Backend configured to allow `localhost:3000` (Next.js dev server)
+- **CORS Configuration**: Backend configured to allow `*` (all origins) for MVP testing
+- **Project Management**:
+  - **Sidebar Component** (`components/layout/Sidebar.tsx`):
+    - Project selector dropdown at top of sidebar
+    - Shows current project name or "Select a project..."
+    - Lists all user projects from `useProjects()` hook
+    - "+ New Project" button opens inline form
+    - New project form fields: Name (display name), Niche (project_id slug)
+    - On project creation: Calls `POST /api/projects`, switches context to new project
+    - Project context persisted in localStorage via `useProjectContext()` hook
+  - **Project Context** (`hooks/useProjectContext.ts`):
+    - Manages current selected `project_id` in localStorage
+    - Key: `"apex_current_project_id"`
+    - Provides `projectId` state and `setProjectId()` function
+    - Syncs with localStorage on mount and updates
+  - **Projects Hook** (`hooks/useProjects.ts`):
+    - Fetches projects via `GET /api/projects?user_id=...`
+    - Uses SWR for caching and auto-refresh (30s polling)
+    - Provides `createProject(name, niche)` function
+    - Automatically refreshes list after project creation
 
 ### Data (`/data/`)
 
 **`apex.db`** - SQLite Database
 
-- **4-Table Schema**: `users`, `projects`, `entities`, `logs`
+- **5-Table Schema**: `users`, `projects`, `entities`, `logs`, `client_secrets`
+- **Table Details**:
+  - **`users`**: User authentication
+    - Columns: `user_id` (PRIMARY KEY, email), `password` (plain text for MVP)
+  - **`projects`**: Links users to DNA profiles
+    - Columns: `project_id` (PRIMARY KEY), `user_id` (FOREIGN KEY → users.user_id), `niche` (display name), `dna_path` (file path), `created_at` (timestamp)
+    - Relationship: One user can have multiple projects
+  - **`entities`**: Master table for all data entities
+    - Columns: `id` (PRIMARY KEY, UUID), `tenant_id` (user_id for RLS), `project_id` (nullable, links to projects.project_id), `entity_type` (lead, anchor_location, etc.), `name`, `primary_contact`, `metadata` (JSON), `created_at` (timestamp)
+    - **Migration**: `project_id` column added with migration support (ALTER TABLE if not exists)
+    - **Backward Compatibility**: Existing entities have `project_id = NULL`
+  - **`logs`**: Audit trail
+    - Columns: `id` (PRIMARY KEY), `tenant_id`, `action`, `details`, `timestamp`
+  - **`client_secrets`**: WordPress credentials per user
+    - Columns: `user_id` (PRIMARY KEY, FOREIGN KEY → users.user_id), `wp_url`, `wp_user`, `wp_password`
 - **Structured storage**: All entity types (anchor_location, seo_keyword, page_draft, leads, etc.)
-- **RLS Enforced**: All queries filtered by tenant_id for data isolation
+- **RLS Enforced**: All queries filtered by `tenant_id` for data isolation
+- **Project Filtering**: Entities can be filtered by `project_id` for project-specific views
 - **Metadata JSON**: Flexible schema supports different entity types with custom fields
 
 **`chroma_db/`** - ChromaDB Vector Database
@@ -579,7 +745,52 @@ Manager Agent Check
                       └─→ Updates page_draft (status: "published"/"live")
 ```
 
-### 2. Onboarding Workflow (New Client Setup)
+### 2. Project Creation & Onboarding Workflow
+
+```
+User Clicks "+ New Project" in Sidebar
+    │
+    ▼
+┌─────────────────────────┐
+│  Frontend: Shows Form   │
+│  - Name (display name)   │
+│  - Niche (project_id)   │
+└────────┬────────────────┘
+         │ User submits
+         ▼
+┌─────────────────────────┐
+│  POST /api/projects     │
+│  {user_id, name, niche} │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Backend:               │
+│  1. Sanitize niche      │
+│     → project_id        │
+│  2. Register project    │
+│     in database         │
+│  3. Trigger onboarding  │
+│     (BackgroundTasks)    │
+└────────┬────────────────┘
+         │
+         ├─→ Returns immediately
+         │   {success, project_id}
+         │
+         └─→ Background: Onboarding Agent
+             │
+             ▼
+     ┌───────────────────────┐
+     │  Onboarding Agent      │
+     │  - Generates YAML      │
+     │  - Saves to            │
+     │    data/profiles/     │
+     │    {project_id}/      │
+     │    dna.generated.yaml │
+     └───────────────────────┘
+```
+
+### 3. Onboarding Workflow (New Client Setup)
 
 ```
 User Input (Website URL)
@@ -656,7 +867,7 @@ User Input (Website URL)
 └─────────────────────────┘
 ```
 
-### 3. Task Execution Workflow (Post-Onboarding)
+### 4. Task Execution Workflow (Post-Onboarding)
 
 ```
 Client Request
@@ -699,7 +910,71 @@ Client Request
 └─────────────────────┘
 ```
 
-### 4. Page Enhancement Workflow
+### 5. Voice Call Workflow (Twilio Integration)
+
+```
+Incoming Call to Twilio Number
+    │
+    ▼
+┌─────────────────────────┐
+│  Twilio Webhook         │
+│  POST /api/voice/       │
+│    incoming             │
+│  (with project_id)      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Voice Router:          │
+│  1. Extract project_id  │
+│  2. Load project config │
+│  3. Get forwarding_     │
+│     number from config  │
+│  4. Generate TwiML      │
+│     <Dial> response     │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Twilio: Dials          │
+│  forwarding_number      │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Call Completes         │
+│  (with recording)       │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Twilio Status Callback │
+│  POST /api/voice/status │
+│  (with RecordingUrl)    │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Voice Router:          │
+│  1. Extract call info   │
+│  2. Get user_id from    │
+│     project_id          │
+│  3. Create lead Entity  │
+│     with recording_url  │
+│  4. Save to database    │
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  Lead Entity Created    │
+│  - entity_type: "lead"  │
+│  - source: "voice_call"  │
+│  - metadata.recording_  │
+│    url: <Twilio URL>    │
+└─────────────────────────┘
+```
+
+### 6. Page Enhancement Workflow
 
 ```
 Page Draft Entity
@@ -719,7 +994,7 @@ Page Draft Entity
         └─→ Updates: metadata['status'] = "published"
 ```
 
-### 5. Memory Operations
+### 7. Memory Operations
 
 **Structured Data (SQLite)**:
 
@@ -868,7 +1143,16 @@ Agent receives config
 - ChromaDB queries: `where={"tenant_id": tenant_id}`
 - Ensures data isolation between clients
 
-### 5. Module System
+### 5. Project-Based Data Organization
+
+- **Project-Entity Relationship**: Entities linked to projects via `project_id` column
+- **Project-User Relationship**: Projects linked to users via `projects.user_id`
+- **Filtering**: Entities can be filtered by `project_id` for project-specific views
+- **Backward Compatibility**: Existing entities have `project_id = NULL` (included in queries with `OR project_id IS NULL`)
+- **Project Context**: Frontend manages current project selection via localStorage
+- **Multi-Project Support**: Users can have multiple projects, each with its own DNA profile
+
+### 6. Module System
 
 - Modules are capabilities (like an app store)
 - Defined in `registry.py`
@@ -878,14 +1162,14 @@ Agent receives config
   - Configuration requirements
 - Users select modules during onboarding
 
-### 6. Bypass vs Standard Rules
+### 7. Bypass vs Standard Rules
 
 - **Bypass**: Tasks like `onboarding`, `scrape_site`, `manager` don't need profiles
 - **Standard**: Tasks like `scout_anchors` require loaded profiles (uses `scout_rules` config)
 - Kernel handles routing logic
 - Smart fallback: If `niche` not provided in params, kernel auto-detects from user's active project in database
 
-### 7. Google Maps Scraping Architecture
+### 8. Google Maps Scraping Architecture
 
 - **Synchronous Scraper**: `maps_sync.py` runs in thread pool via `asyncio.to_thread()`
 - **Response Format**: Returns dictionary (not custom class) for compatibility
@@ -1003,6 +1287,31 @@ created_at: 2026-01-16T01:05:20
 
 **Relationships**: Links `user_id` → `project_id` → YAML profile file. Kernel uses this for automatic profile loading.
 
+### 9. Voice Call Lead Capture
+
+- **Twilio Integration**: Voice router handles incoming calls and status callbacks
+- **Call Flow**: Incoming call → TwiML Dial → Forward to `forwarding_number` from project config
+- **Recording Storage**: Call recordings saved as leads with `recording_url` in metadata
+- **Lead Entity Structure**:
+  ```json
+  {
+    "entity_type": "lead",
+    "name": "Voice Call",
+    "primary_contact": "+64212345678",
+    "metadata": {
+      "source": "voice_call",
+      "recording_url": "https://api.twilio.com/...",
+      "recording_duration": "120",
+      "call_sid": "CA...",
+      "from_number": "+64212345678",
+      "to_number": "+64212806655",
+      "call_status": "completed",
+      "project_id": "bail_v1"
+    }
+  }
+  ```
+- **Frontend Display**: Leads page shows audio player for leads with `recording_url`
+
 ### Current Production Statistics
 
 **Database Inventory** (as of latest inspection):
@@ -1012,6 +1321,7 @@ created_at: 2026-01-16T01:05:20
 - **Page Drafts**: 5 pages created
 - **Published Pages**: 5 pages with `status: "published"`
 - **Leads Captured**: 0 (system ready, awaiting first form submission)
+- **Projects**: Multiple projects per user supported
 
 ---
 
@@ -1346,6 +1656,15 @@ Based on actual database inspection and content analysis:
 ✅ Multi-client credential storage (database-backed WordPress credentials)  
 ✅ Automatic error handling and traceback logging in all agents  
 ✅ Helper script for client credential setup (`scripts/add_client.py`)
+✅ Project-based data organization (`project_id` column in entities table)
+✅ Project management API (`POST /api/projects`, `GET /api/projects`)
+✅ Automatic onboarding trigger on project creation
+✅ Voice router for Twilio integration (`/api/voice/incoming`, `/api/voice/status`)
+✅ Call recording lead capture (saves recordings as leads)
+✅ Project selector in frontend sidebar
+✅ Project context management (localStorage-backed)
+✅ Leads filtering by project_id
+✅ Audio player for voice call recordings in leads page
 
 ### Future Extensions (Based on Code)
 
@@ -1500,5 +1819,83 @@ Based on actual database inspection and content analysis:
 ---
 
 **Last Updated**: Based on current codebase state  
-**Version**: 1.3  
+**Version**: 1.4  
 **Maintainer**: Apex OS Development Team
+
+---
+
+## Version 1.4 Updates - Project Management & Voice Integration
+
+### Database Schema Enhancements
+
+- **`entities` table**: Added `project_id` column (nullable for backward compatibility)
+  - Migration: Automatic ALTER TABLE on initialization (handles existing databases)
+  - Purpose: Links entities (leads, pages, keywords) to specific projects
+  - Filtering: Entities can be filtered by `project_id` for project-specific views
+
+### API Endpoints
+
+- **`POST /api/projects`**: Create new project
+  - Payload: `{user_id, name, niche}`
+  - Process:
+    1. Sanitizes `niche` to generate `project_id` (lowercase, replace special chars with `_`)
+    2. Creates project record in `projects` table
+    3. Triggers onboarding agent in background via FastAPI `BackgroundTasks`
+    4. Returns immediately with `project_id`
+  - Returns: `{success: bool, project_id: string, message: string}`
+
+- **`GET /api/projects`**: List all projects for user
+  - Query params: `user_id` (required)
+  - Returns: `{projects: [...]}` ordered by creation date (newest first)
+
+- **`POST /api/leads`**: Updated to accept `project_id`
+  - Payload: `{user_id, project_id, source, data: {}}`
+  - Saves lead with `project_id` column populated
+
+- **`GET /api/entities`**: Updated to filter by `project_id`
+  - Query params: `user_id` (required), `entity_type` (optional), `project_id` (optional)
+  - Filtering: Returns entities matching project OR with NULL project_id (backward compatibility)
+
+### Voice Router (`backend/routers/voice.py`)
+
+- **Purpose**: Handles Twilio webhooks for voice calls
+- **Endpoints**:
+  - `POST /api/voice/incoming`: Incoming call webhook
+    - Extracts `project_id` from query/form data
+    - Loads project config to get `forwarding_number`
+    - Returns TwiML `<Dial>` response
+  - `POST /api/voice/status`: Call status callback
+    - Extracts call info and recording URL
+    - Creates lead entity with `recording_url` in metadata
+    - Saves to database with `project_id`
+
+### Frontend Enhancements
+
+- **Project Management**:
+  - `hooks/useProjects.ts`: Fetches and manages project list
+  - `hooks/useProjectContext.ts`: Manages current project selection (localStorage)
+  - `components/layout/Sidebar.tsx`: Project selector dropdown + new project form
+  - `app/dashboard/leads/page.tsx`: Filters leads by current project, shows audio player for recordings
+
+- **API Client** (`lib/api.ts`):
+  - `createProject(user_id, name, niche)`: Create new project
+  - `getProjects(user_id)`: Fetch all projects
+  - `getEntities()`: Updated to accept `project_id` parameter
+
+- **Types** (`lib/types.ts`):
+  - Added `Project` interface: `{project_id, user_id, niche, dna_path?, created_at?}`
+
+### Environment Variables
+
+- **Twilio** (used by voice router):
+  - `TWILIO_ACCOUNT_SID`: Twilio account SID
+  - `TWILIO_AUTH_TOKEN`: Twilio auth token
+  - `TWILIO_PHONE_NUMBER`: Twilio phone number for caller ID
+  - `TARGET_PHONE`: Fallback forwarding number (if not in project config)
+  - `DEFAULT_PROJECT_ID`: Default project for voice webhooks
+  - `DEFAULT_USER_ID`: Default user ID for voice call leads
+
+### CORS Configuration
+
+- Updated to allow `*` (all origins) for MVP testing phase
+- Previously restricted to `localhost:3000` for Next.js dev server

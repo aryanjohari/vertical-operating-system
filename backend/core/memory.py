@@ -62,6 +62,7 @@ class MemoryManager:
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
                 tenant_id TEXT NOT NULL, -- Links to users.user_id
+                project_id TEXT, -- Links to projects.project_id
                 entity_type TEXT NOT NULL, -- 'lead', 'job', 'competitor'
                 name TEXT NOT NULL,
                 primary_contact TEXT,
@@ -69,6 +70,12 @@ class MemoryManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Migration: Add project_id column if it doesn't exist (for existing databases)
+        try:
+            cursor.execute("ALTER TABLE entities ADD COLUMN project_id TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
         
         # 4. LOGS: Audit Trail
         cursor.execute('''
@@ -141,20 +148,34 @@ class MemoryManager:
         conn.close()
         return dict(row) if row else None
 
+    def get_projects(self, user_id: str) -> List[Dict]:
+        """Retrieves all projects for a user."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
     # ====================================================
     # SECTION B: STRUCTURED MEMORY (Leads, Jobs)
     # ====================================================
-    def save_entity(self, entity: Entity) -> bool:
+    def save_entity(self, entity: Entity, project_id: Optional[str] = None) -> bool:
         """Saves a lead/job to SQLite."""
         try:
             conn = sqlite3.connect(self.db_path)
             
+            # Get project_id from entity metadata if not provided
+            if project_id is None:
+                project_id = entity.metadata.get("project_id")
+            
             conn.execute('''
-                INSERT OR REPLACE INTO entities (id, tenant_id, entity_type, name, primary_contact, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO entities (id, tenant_id, project_id, entity_type, name, primary_contact, metadata, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 entity.id,
                 entity.tenant_id,
+                project_id,
                 entity.entity_type,
                 entity.name,
                 entity.primary_contact,
@@ -169,19 +190,27 @@ class MemoryManager:
             self.logger.error(f"SQL Error: {e}")
             return False
 
-    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None) -> List[Dict]:
+    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, project_id: Optional[str] = None) -> List[Dict]:
         """
         RLS ENFORCED: Only returns data for the specific tenant_id.
+        Optionally filters by project_id.
         """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row # Return dicts instead of tuples
         cursor = conn.cursor()
         
+        query = "SELECT * FROM entities WHERE tenant_id = ?"
+        params = [tenant_id]
+        
         if entity_type:
-            cursor.execute("SELECT * FROM entities WHERE tenant_id = ? AND entity_type = ?", (tenant_id, entity_type))
-        else:
-            cursor.execute("SELECT * FROM entities WHERE tenant_id = ?", (tenant_id,))
-            
+            query += " AND entity_type = ?"
+            params.append(entity_type)
+        
+        if project_id:
+            query += " AND (project_id = ? OR project_id IS NULL)"
+            params.append(project_id)
+        
+        cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()
         
