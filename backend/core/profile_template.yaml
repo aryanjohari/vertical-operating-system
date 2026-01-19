@@ -1,69 +1,53 @@
-# =========================================================
-# APEX SOVEREIGN OS - MASTER BUSINESS PROFILE v1.0
-# =========================================================
-# This file defines the Identity, Intelligence, and Operations
-# for a single business unit.
-# =========================================================
+# APEX SOVEREIGN OS - DNA PROFILE v2.0
+# ====================================
 
-# --- SECTION 1: IDENTITY (Who are we?) ---
 identity:
-  project_id: "template-id"  # e.g., 'apex-bail-v1'
-  business_name: "Business Name"
-  niche: "Primary Niche"
-  # Standard Contact Info
+  project_id: "REQUIRED_BY_SYSTEM"  # e.g., 'apex-bail-v1'
+  business_name: "REQUIRED"
+  niche: "REQUIRED"
   contact:
-    phone: "+64..."
-    email: "contact@domain.com"
-    website: "https://domain.com"
+    phone: ""
+    email: ""
+    website: ""
 
-# --- SECTION 2: INTELLIGENCE (The Scout / Lead Gen) ---
+# MODULE: APEX GROWTH (pSEO)
 scout_rules:
-  # MODE: 'keyword' (Find businesses) or 'entity' (Find buildings like Courts)
   hunt_mode: "keyword" 
-
-  # NEW: The Physical Anchors (e.g., Courts, Schools, Malls)
-  # If empty, we just search the whole city.
-  anchor_entities: []
-  
-  # TARGETING: Where do we look?
+  # CRITICAL: What physical places act as "Anchors"? (e.g., Courts, Prisons)
+  anchor_entities: [] 
   geo_scope:
     country: "NZ"
-    cities: ["Auckland", "Hamilton", "Wellington"]
-  
-  # FILTERING: The Bouncer
-  strict_mode: true
-  allow_keywords: []   # MUST contain one (e.g., 'Court', 'Police')
-  block_keywords: []   # MUST NOT contain (e.g., 'Ministry', 'News')
+    cities: ["Auckland"]
+  # Strict filtering to save money
+  allow_keywords: []
+  block_keywords: ["news", "job", "career"]
 
-# --- SECTION 3: PSYCHOLOGY (The Writer / pSEO) ---
 content_dna:
-  # The Brand Voice
-  voice_tone: "Authoritative, Empathetic, Urgent"
-  
-  # The Customer's Headspace
-  user_state: "Fear, Uncertainty, Urgent Need"
-  pain_point: "Risk of staying in custody due to no address."
-  solution_hook: "Approved bail accommodation sorted in 24 hours."
-
-  # pSEO Strategy
-  target_keywords: []  # e.g., 'Emergency Bail', 'Bail Address'
-  topic_cluster: "Legal Support"
-  
-  # Credentials for The Poster Agent (WordPress)
+  voice_tone: "Professional, Authoritative, Empathetic"
+  user_state: "Urgent Need"
+  pain_points: []
+  solution_hooks: []
+  # Credentials for Publisher
   cms_settings:
     platform: "wordpress"
-    url: "https://site.com"
-    username: "admin"
-    # Note: Passwords stored in .env, not here for security
+    url: ""
+    username: ""
 
-# --- SECTION 4: OPERATIONS (The Kernel / Twilio) ---
+# [NEW] MODULE: STRATEGIST (Intelligence)
+competitor_rules:
+  track_competitors: true
+  competitor_urls: [] # Top 3 rivals to watch
+  min_word_count: 600
+
+# [NEW] MODULE: CRITIC (Quality Control)
+quality_gates:
+  min_score: 80
+  forbidden_terms: ["guaranteed", "free money"]
+  required_sections: ["FAQ", "Pricing"]
+
+# MODULE: APEX CONNECT (Lead Gen)
 operations:
-  # Voice Handling
   voice_agent:
     active: true
-    greeting: "You have reached Specialist Support Services. Are you calling from a facility?"
-    forwarding_number: "+6421..."
-  
-  # Limits
-  max_leads_per_day: 50
-  auto_email_active: false # Safety: Review before sending
+    forwarding_number: ""
+    greeting: "Hello, how can we help?"

@@ -3,8 +3,8 @@ import asyncio
 from datetime import datetime
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
-from backend.scrapers.universal import scrape_website
-from backend.scrapers.maps_sync import run_scout_sync # <--- USE THE SYNC WRAPPER
+from backend.core.services.universal import scrape_website
+from backend.core.services.maps_sync import run_scout_sync # <--- USE THE SYNC WRAPPER
 from backend.core.memory import memory
 
 class ScoutAgent(BaseAgent):

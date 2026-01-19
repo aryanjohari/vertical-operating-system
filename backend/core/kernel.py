@@ -4,14 +4,14 @@ import importlib
 from typing import Dict
 from backend.core.models import AgentInput, AgentOutput
 from backend.core.registry import AgentRegistry
-from backend.core.memory import memory  # <--- NEW: Access to DB
+from backend.core.memory import memory
 
 class Kernel:
     def __init__(self):
         self.logger = logging.getLogger("ApexKernel")
         self.agents: Dict[str, any] = {}
         
-        # Dynamic Registration from Registry
+        # Dynamic Registration
         self.logger.info("⚡ Booting Apex Sovereign OS...")
         for key, (module_path, class_name) in AgentRegistry.DIRECTORY.items():
             self.register_agent(key, module_path, class_name)
@@ -22,6 +22,10 @@ class Kernel:
             agent_class = getattr(module, class_name)
             self.agents[key] = agent_class()
             self.logger.info(f"✅ Registered Agent: {key}")
+        except ModuleNotFoundError as e:
+            self.logger.error(f"❌ Module NOT FOUND for {key} at {module_path}: {e}")
+        except AttributeError as e:
+            self.logger.error(f"❌ Class {class_name} NOT FOUND in {module_path}: {e}")
         except Exception as e:
             self.logger.error(f"❌ Failed to load agent {key}: {e}")
 
@@ -31,70 +35,62 @@ class Kernel:
         # --- 1. BYPASS RULE: System Agents ---
         system_tasks = ["onboarding", "scrape_site", "manager"]
         if packet.task in system_tasks:
-            # Simple mapping
-            if packet.task == "manager": agent_key = "manager"
-            elif packet.task == "onboarding": agent_key = "onboarding"
-            else: agent_key = "scout"
-            
+            agent_key = "scout" if packet.task == "scrape_site" else packet.task
             if agent_key in self.agents:
                 return await self.agents[agent_key].run(packet)
 
-        # --- 2. SMART CONTEXT LOADING (The Fix) ---
-        # Try to get niche from params, OR fetch from DB using user_id
+        # --- 2. SMART CONTEXT LOADING ---
         niche = packet.params.get("niche")
         
         if not niche and packet.user_id:
-            # 🧠 SMART LOOKUP: Ask DB for this user's project
+            # Smart Lookup via Memory
             project = memory.get_user_project(packet.user_id)
             if project:
                 niche = project['project_id']
                 self.logger.info(f"🔍 Auto-detected Project: {niche}")
 
-        # Fallback if still missing
         if not niche:
-            niche = "personal"
+            # Fallback for dev/testing
+            niche = "personal" 
 
-        # Load the Profile
+        # Load Profile (DNA)
         from backend.core.config import ConfigLoader
         user_config = ConfigLoader().load(niche)
         
         if "error" in user_config:
-            return AgentOutput(status="error", message=f"Profile '{niche}' not found. Please run Onboarding.")
+            self.logger.warning(f"⚠️ Profile '{niche}' not found. Using defaults.")
 
         # --- 3. INTELLIGENT ROUTING ---
         agent_key = None
         
-        # Route: Scout (Lead Gen)
+        # Module: pSEO
         if "scout" in packet.task or "find" in packet.task: 
             agent_key = "scout"
-        
-        # Route: SEO Keyword Agent (Strategy) <--- NEW BLOCK
         elif "keyword" in packet.task:
             agent_key = "seo_keyword"
-
-        # Route: SEO Writer Agent
-        elif "write" in packet.task: # <--- CATCHES "write_pages"
+        elif "write" in packet.task: 
             agent_key = "seo_writer"
-
         elif "enhance_media" in packet.task:
             agent_key = "media"
-            
-        elif "enhance_utility" in packet.task:
-            agent_key = "utility"
-            
         elif "publish" in packet.task:
             agent_key = "publisher"
-
-        # Route: Manager (Boss)
         elif packet.task == "manager":
             agent_key = "manager"
-        
+            
+        # Module: Lead Gen
+        elif "enhance_utility" in packet.task:
+            agent_key = "utility"
+        elif "twilio" in packet.task or "sms" in packet.task:
+            agent_key = "twilio"
+
         # EXECUTION
         if agent_key and agent_key in self.agents:
             agent = self.agents[agent_key]
-            agent.config = user_config # Inject Config
+            # Inject Config (Context Injection)
+            agent.config = user_config 
             return await agent.run(packet)
             
-        return AgentOutput(status="error", message=f"Task {packet.task} not recognized.")
+        return AgentOutput(status="error", message=f"Task '{packet.task}' not recognized or agent missing.")
 
+# Singleton Kernel
 kernel = Kernel()
