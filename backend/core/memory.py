@@ -14,6 +14,10 @@ class MemoryManager:
         self.db_path = db_path
         self.vector_path = vector_path
         
+        # Ensure directories exist
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        os.makedirs(vector_path, exist_ok=True)
+        
         # 1. INITIALIZE SQLITE (The Structured Brain)
         self._init_sqlite()
         
@@ -29,20 +33,44 @@ class MemoryManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # The Master Table for all Entities (Leads, Jobs, etc.)
+        # --- SYSTEM TABLES (Strict Schema for Security) ---
+        
+        # 1. USERS: The Gatekeeper
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY, -- Email is simplest for now
+                password TEXT NOT NULL
+            )
+        ''')
+
+        # 2. PROJECTS: The Link between User and DNA
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                niche TEXT,
+                dna_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+
+        # --- DATA TABLES (Flexible Schema for AI) ---
+        
+        # 3. ENTITIES: The Master Table for Leads, Jobs, etc.
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                entity_type TEXT NOT NULL,
+                tenant_id TEXT NOT NULL, -- Links to users.user_id
+                entity_type TEXT NOT NULL, -- 'lead', 'job', 'competitor'
                 name TEXT NOT NULL,
                 primary_contact TEXT,
-                metadata JSON,
+                metadata JSON, -- The Flexible AI Brain
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # An Audit Log for RLS tracking
+        # 4. LOGS: Audit Trail
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS logs (
                 id TEXT PRIMARY KEY,
@@ -53,19 +81,75 @@ class MemoryManager:
             )
         ''')
         
+        # 5. CLIENT_SECRETS: Per-user WordPress credentials
+        # Note: Passwords stored as plain text for MVP. Should be encrypted in production.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS client_secrets (
+                user_id TEXT PRIMARY KEY,
+                wp_url TEXT NOT NULL,
+                wp_user TEXT NOT NULL,
+                wp_password TEXT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(user_id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
 
     # ====================================================
-    # SECTION A: STRUCTURED MEMORY (Leads, Jobs)
+    # SECTION A: AUTHENTICATION & PROJECTS (New)
+    # ====================================================
+    def create_user(self, email, password):
+        """Registers a new user."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("INSERT INTO users (user_id, password) VALUES (?, ?)", (email, password))
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False # User already exists
+        finally:
+            conn.close()
+
+    def verify_user(self, email, password):
+        """Checks credentials."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.execute("SELECT password FROM users WHERE user_id = ?", (email,))
+        row = cursor.fetchone()
+        conn.close()
+        return row and row[0] == password
+
+    def register_project(self, user_id, project_id, niche):
+        """Links a DNA Profile to a User."""
+        conn = sqlite3.connect(self.db_path)
+        # We assume standard path structure based on project_id
+        path = f"data/profiles/{project_id}/dna.generated.yaml"
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO projects (project_id, user_id, niche, dna_path) VALUES (?, ?, ?, ?)",
+            (project_id, user_id, niche, path)
+        )
+        conn.commit()
+        conn.close()
+
+    def get_user_project(self, user_id):
+        """Retrieves the active project for a user (Simple 1-project limit for now)."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    # ====================================================
+    # SECTION B: STRUCTURED MEMORY (Leads, Jobs)
     # ====================================================
     def save_entity(self, entity: Entity) -> bool:
         """Saves a lead/job to SQLite."""
         try:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
             
-            cursor.execute('''
+            conn.execute('''
                 INSERT OR REPLACE INTO entities (id, tenant_id, entity_type, name, primary_contact, metadata, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
@@ -109,16 +193,83 @@ class MemoryManager:
             results.append(item)
             
         return results
+    
+    def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
+        """Updates the metadata of an existing entity."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # 1. Fetch existing metadata
+            cursor.execute("SELECT metadata FROM entities WHERE id = ?", (entity_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                return False
+            
+            # 2. Merge new data with old data
+            current_meta = json.loads(row[0])
+            current_meta.update(new_metadata)
+            
+            # 3. Save back
+            cursor.execute(
+                "UPDATE entities SET metadata = ? WHERE id = ?", 
+                (json.dumps(current_meta), entity_id)
+            )
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Update Error: {e}")
+            return False
+    
+    def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
+        """Saves or updates WordPress credentials for a user."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO client_secrets (user_id, wp_url, wp_user, wp_password)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, wp_url, wp_user, wp_password))
+            
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Error saving client secrets: {e}")
+            return False
+    
+    def get_client_secrets(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Retrieves WordPress credentials for a user."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT wp_url, wp_user, wp_password FROM client_secrets WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    "wp_url": row["wp_url"],
+                    "wp_user": row["wp_user"],
+                    "wp_password": row["wp_password"]
+                }
+            return None
+        except Exception as e:
+            self.logger.error(f"Error retrieving client secrets: {e}")
+            return None
 
     # ====================================================
-    # SECTION B: SEMANTIC MEMORY (Context/DNA)
+    # SECTION C: SEMANTIC MEMORY (Context/DNA)
     # ====================================================
     def save_context(self, tenant_id: str, text: str, metadata: Dict = {}):
-        """
-        Embeds text into the Vector DB.
-        Use this for storing strategy docs, email templates, or competitor analysis.
-        """
-        # We enforce RLS in metadata
+        """Embeds text into the Vector DB."""
         metadata['tenant_id'] = tenant_id
         
         self.vector_collection.add(
@@ -128,16 +279,13 @@ class MemoryManager:
         )
 
     def query_context(self, tenant_id: str, query: str, n_results: int = 3):
-        """
-        Finds relevant context for the AI.
-        RLS ENFORCED: Filters by tenant_id automatically.
-        """
+        """Finds relevant context with RLS."""
         results = self.vector_collection.query(
             query_texts=[query],
             n_results=n_results,
-            where={"tenant_id": tenant_id} # <--- THE MAGIC RLS FILTER
+            where={"tenant_id": tenant_id}
         )
         return results['documents'][0] if results['documents'] else []
 
-# Initialize Singleton (So the whole app shares one connection)
+# Initialize Singleton
 memory = MemoryManager()

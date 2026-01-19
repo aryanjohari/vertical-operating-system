@@ -1,0 +1,69 @@
+# =========================================================
+# APEX SOVEREIGN OS - MASTER BUSINESS PROFILE v1.0
+# =========================================================
+# This file defines the Identity, Intelligence, and Operations
+# for a single business unit.
+# =========================================================
+
+# --- SECTION 1: IDENTITY (Who are we?) ---
+identity:
+  project_id: "template-id"  # e.g., 'apex-bail-v1'
+  business_name: "Business Name"
+  niche: "Primary Niche"
+  # Standard Contact Info
+  contact:
+    phone: "+64..."
+    email: "contact@domain.com"
+    website: "https://domain.com"
+
+# --- SECTION 2: INTELLIGENCE (The Scout / Lead Gen) ---
+scout_rules:
+  # MODE: 'keyword' (Find businesses) or 'entity' (Find buildings like Courts)
+  hunt_mode: "keyword" 
+
+  # NEW: The Physical Anchors (e.g., Courts, Schools, Malls)
+  # If empty, we just search the whole city.
+  anchor_entities: []
+  
+  # TARGETING: Where do we look?
+  geo_scope:
+    country: "NZ"
+    cities: ["Auckland", "Hamilton", "Wellington"]
+  
+  # FILTERING: The Bouncer
+  strict_mode: true
+  allow_keywords: []   # MUST contain one (e.g., 'Court', 'Police')
+  block_keywords: []   # MUST NOT contain (e.g., 'Ministry', 'News')
+
+# --- SECTION 3: PSYCHOLOGY (The Writer / pSEO) ---
+content_dna:
+  # The Brand Voice
+  voice_tone: "Authoritative, Empathetic, Urgent"
+  
+  # The Customer's Headspace
+  user_state: "Fear, Uncertainty, Urgent Need"
+  pain_point: "Risk of staying in custody due to no address."
+  solution_hook: "Approved bail accommodation sorted in 24 hours."
+
+  # pSEO Strategy
+  target_keywords: []  # e.g., 'Emergency Bail', 'Bail Address'
+  topic_cluster: "Legal Support"
+  
+  # Credentials for The Poster Agent (WordPress)
+  cms_settings:
+    platform: "wordpress"
+    url: "https://site.com"
+    username: "admin"
+    # Note: Passwords stored in .env, not here for security
+
+# --- SECTION 4: OPERATIONS (The Kernel / Twilio) ---
+operations:
+  # Voice Handling
+  voice_agent:
+    active: true
+    greeting: "You have reached Specialist Support Services. Are you calling from a facility?"
+    forwarding_number: "+6421..."
+  
+  # Limits
+  max_leads_per_day: 50
+  auto_email_active: false # Safety: Review before sending

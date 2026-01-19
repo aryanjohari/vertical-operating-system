@@ -1,29 +1,22 @@
 # backend/core/kernel.py
 import logging
 import importlib
-from typing import Dict, Optional
+from typing import Dict
 from backend.core.models import AgentInput, AgentOutput
-from backend.core.memory import memory
-from backend.core.config import ConfigLoader
-from backend.core.agent_base import BaseAgent
+from backend.core.registry import AgentRegistry
+from backend.core.memory import memory  # <--- NEW: Access to DB
 
 class Kernel:
     def __init__(self):
         self.logger = logging.getLogger("ApexKernel")
-        logging.basicConfig(level=logging.INFO)
+        self.agents: Dict[str, any] = {}
         
+        # Dynamic Registration from Registry
         self.logger.info("⚡ Booting Apex Sovereign OS...")
-        
-        # 1. Initialize Subsystems
-        self.memory = memory  # The Librarian (SQL + Vector)
-        self.config_loader = ConfigLoader() # The DNA Reader
-        self.agents: Dict[str, BaseAgent] = {} # The Roster
-        
-        # 2. Auto-Register Core Agents (We will build these next)
-        # self.register_agent("scout", "backend.agents.scout", "ScoutAgent")
-        
+        for key, (module_path, class_name) in AgentRegistry.DIRECTORY.items():
+            self.register_agent(key, module_path, class_name)
+
     def register_agent(self, key: str, module_path: str, class_name: str):
-        """Dynamically loads agent code so we don't need huge imports."""
         try:
             module = importlib.import_module(module_path)
             agent_class = getattr(module, class_name)
@@ -33,45 +26,75 @@ class Kernel:
             self.logger.error(f"❌ Failed to load agent {key}: {e}")
 
     async def dispatch(self, packet: AgentInput) -> AgentOutput:
-        """
-        The Main Event Loop.
-        1. Logs the request.
-        2. Loads the correct User Profile (RLS).
-        3. Routes to the correct Agent.
-        """
-        self.logger.info(f"Command: {packet.task} | User: {packet.user_id}")
+        self.logger.info(f"📡 Dispatching: {packet.task}")
+
+        # --- 1. BYPASS RULE: System Agents ---
+        system_tasks = ["onboarding", "scrape_site", "manager"]
+        if packet.task in system_tasks:
+            # Simple mapping
+            if packet.task == "manager": agent_key = "manager"
+            elif packet.task == "onboarding": agent_key = "onboarding"
+            else: agent_key = "scout"
+            
+            if agent_key in self.agents:
+                return await self.agents[agent_key].run(packet)
+
+        # --- 2. SMART CONTEXT LOADING (The Fix) ---
+        # Try to get niche from params, OR fetch from DB using user_id
+        niche = packet.params.get("niche")
         
-        # A. PERMISSION & CONTEXT CHECK
-        # We assume the 'params' has a 'niche' or we default to 'personal'
-        niche = packet.params.get("niche", "personal")
-        user_config = self.config_loader.load(niche)
+        if not niche and packet.user_id:
+            # 🧠 SMART LOOKUP: Ask DB for this user's project
+            project = memory.get_user_project(packet.user_id)
+            if project:
+                niche = project['project_id']
+                self.logger.info(f"🔍 Auto-detected Project: {niche}")
+
+        # Fallback if still missing
+        if not niche:
+            niche = "personal"
+
+        # Load the Profile
+        from backend.core.config import ConfigLoader
+        user_config = ConfigLoader().load(niche)
         
         if "error" in user_config:
-            return AgentOutput(
-                status="error", 
-                message=f"Profile '{niche}' not found. Run Strategist first."
-            )
+            return AgentOutput(status="error", message=f"Profile '{niche}' not found. Please run Onboarding.")
 
-        # B. ROUTING LOGIC (Simple Verb Matching)
+        # --- 3. INTELLIGENT ROUTING ---
         agent_key = None
-        if "scrape" in packet.task or "find" in packet.task:
+        
+        # Route: Scout (Lead Gen)
+        if "scout" in packet.task or "find" in packet.task: 
             agent_key = "scout"
-        elif "write" in packet.task or "blog" in packet.task:
-            agent_key = "writer"
-        elif "strategy" in packet.task:
-            agent_key = "strategist"
+        
+        # Route: SEO Keyword Agent (Strategy) <--- NEW BLOCK
+        elif "keyword" in packet.task:
+            agent_key = "seo_keyword"
 
-        # C. EXECUTION
+        # Route: SEO Writer Agent
+        elif "write" in packet.task: # <--- CATCHES "write_pages"
+            agent_key = "seo_writer"
+
+        elif "enhance_media" in packet.task:
+            agent_key = "media"
+            
+        elif "enhance_utility" in packet.task:
+            agent_key = "utility"
+            
+        elif "publish" in packet.task:
+            agent_key = "publisher"
+
+        # Route: Manager (Boss)
+        elif packet.task == "manager":
+            agent_key = "manager"
+        
+        # EXECUTION
         if agent_key and agent_key in self.agents:
             agent = self.agents[agent_key]
-            # Inject the fresh config into the agent before running
-            agent.config = user_config 
+            agent.config = user_config # Inject Config
             return await agent.run(packet)
-        else:
-            return AgentOutput(
-                status="error", 
-                message=f"No agent found for task: {packet.task}"
-            )
+            
+        return AgentOutput(status="error", message=f"Task {packet.task} not recognized.")
 
-# Create the Singleton
 kernel = Kernel()
