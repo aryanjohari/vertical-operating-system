@@ -106,45 +106,116 @@ class StrategistAgent(BaseAgent):
         except Exception as e:
             return AgentOutput(status="error", message=f"AI Strategy Failed: {e}")
 
-        # Map Topics to Anchors
-        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location")
+        # Map Topics to Anchors (scoped to project)
+        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
         if not anchors:
             return AgentOutput(status="error", message="No Anchors found. Run Scout first.")
 
         created_count = 0
-        for item in topics:
-            cluster_name = item.get('cluster', 'General')
-            topic_name = item.get('topic', 'Service')
+        
+        # Generate actual keywords for each anchor + topic combination
+        for anchor in anchors:
+            anchor_name = anchor['name']
+            address = anchor['metadata'].get('address', 'Auckland')
+            city = address.split(',')[-1].strip() if address else "Auckland"
             
-            # Filter out keywords containing negative keywords (e.g., "Carpet Court")
-            if any(neg_kw.lower() in topic_name.lower() for neg_kw in self.negative_keywords):
-                self.log(f"⚠️ Filtered out keyword containing negative keyword: {topic_name}")
-                continue  # Skip this keyword
-            
-            for anchor in anchors:
-                # "Bail Support near Mt Eden Prison"
-                kw_name = f"{topic_name} near {anchor['name']}"
-                city = anchor['metadata'].get('address', 'Auckland').split(',')[-1].strip()
+            # Filter topics for this anchor
+            filtered_topics = []
+            for item in topics:
+                cluster_name = item.get('cluster', 'General')
+                topic_name = item.get('topic', 'Service')
                 
-                kw_id = f"kw_{hash(kw_name)}"
-                entity = Entity(
-                    id=kw_id,
-                    tenant_id=user_id,
-                    project_id=project_id,
-                    entity_type="seo_keyword",
-                    name=kw_name,
-                    metadata={
-                        "target_anchor": anchor['name'],
-                        "city": city,
-                        "cluster": cluster_name, # Critical for Librarian
-                        "source_strategy": strategy_source,
-                        "status": "pending"
-                    },
-                    created_at=datetime.now()
+                # Filter out keywords containing negative keywords (e.g., "Carpet Court")
+                if any(neg_kw.lower() in topic_name.lower() for neg_kw in self.negative_keywords):
+                    self.log(f"⚠️ Filtered out topic containing negative keyword: {topic_name}")
+                    continue
+                
+                filtered_topics.append((cluster_name, topic_name))
+            
+            if not filtered_topics:
+                continue
+            
+            # Generate actual keywords using AI for this specific anchor
+            topics_str = ", ".join([t[1] for t in filtered_topics])
+            prompt = f"""
+            Role: SEO Strategist generating keywords for local SEO.
+            
+            Business Context:
+            - Services/Topics: {topics_str}
+            - Location: {anchor_name} in {city}
+            
+            Task: Generate 5 high-intent SEO keywords that combine the services/topics with the specific location "{anchor_name}" in {city}.
+            
+            Requirements:
+            - Each keyword must be a complete, ready-to-use search phrase
+            - Include the location naturally (e.g., "Bail Support near {anchor_name}", "Emergency Bail Services {city}")
+            - Focus on high-intent, conversion-focused phrases
+            - NO placeholders like [city name] or {{variables}}
+            - Each keyword should be specific to {anchor_name} in {city}
+            
+            Return ONLY a JSON array of strings (actual complete keywords).
+            Example format: ["Bail Support near {anchor_name}", "Emergency Bail Services {city}", "Fast Bail Bonds near {anchor_name}", ...]
+            """
+            
+            try:
+                self.log(f"🧠 Generating keywords for {anchor_name}...")
+                response = self.client.models.generate_content(
+                    model='gemini-2.5-flash-lite',
+                    contents=prompt
                 )
-                # Explicitly pass project_id for clarity and reliability
-                if memory.save_entity(entity, project_id=project_id):
-                    created_count += 1
+                
+                # Clean JSON response
+                clean_json = response.text.replace('```json', '').replace('```', '').strip()
+                if "[" not in clean_json:
+                    self.log(f"⚠️ Invalid response format for {anchor_name}, skipping...")
+                    continue
+                
+                keywords = json.loads(clean_json)
+                
+                if not isinstance(keywords, list):
+                    self.log(f"⚠️ Invalid response type for {anchor_name}, skipping...")
+                    continue
+                
+                # Save each keyword
+                for kw in keywords:
+                    if not kw or not isinstance(kw, str):
+                        continue
+                    
+                    kw_name = kw.strip()
+                    
+                    # Find matching cluster for this keyword (map back to original topic)
+                    # Use the first topic as default cluster, or try to match by topic name
+                    cluster_name = filtered_topics[0][0]  # Default to first cluster
+                    for cluster, topic in filtered_topics:
+                        if topic.lower() in kw_name.lower():
+                            cluster_name = cluster
+                            break
+                    
+                    kw_id = f"kw_{hash(kw_name + str(anchor['id']))}"
+                    entity = Entity(
+                        id=kw_id,
+                        tenant_id=user_id,
+                        project_id=project_id,
+                        entity_type="seo_keyword",
+                        name=kw_name,
+                        metadata={
+                            "target_anchor": anchor_name,
+                            "city": city,
+                            "cluster": cluster_name,  # Critical for Librarian
+                            "source_strategy": strategy_source,
+                            "status": "pending"
+                        },
+                        created_at=datetime.now()
+                    )
+                    # Explicitly pass project_id for clarity and reliability
+                    if memory.save_entity(entity, project_id=project_id):
+                        created_count += 1
+                
+                self.log(f"✅ Generated {len(keywords)} keywords for {anchor_name}")
+                
+            except Exception as e:
+                self.log(f"⚠️ Error generating keywords for {anchor_name}: {e}")
+                continue
         
         return AgentOutput(
             status="success", 

@@ -81,7 +81,8 @@ class BaseAgent(ABC):
         self.logger.info(f"Agent Started: {self.name}")
         
         # Save snapshot at start of execution
-        self.save_snapshot("start", input_data, None)
+        # TEMPORARILY DISABLED: Commented out until needed for debugging
+        # self.save_snapshot("start", input_data, None)
         
         try:
             # Call the abstract method that each agent implements
@@ -91,7 +92,8 @@ class BaseAgent(ABC):
             self.logger.info(f"Agent Finished: {self.name} - Status: {result.status}")
             
             # Save snapshot at end of successful execution
-            self.save_snapshot("end", input_data, result, None)
+            # TEMPORARILY DISABLED: Commented out until needed for debugging
+            # self.save_snapshot("end", input_data, result, None)
             
             return result
             
@@ -109,7 +111,8 @@ class BaseAgent(ABC):
             )
             
             # Save snapshot at end of failed execution
-            self.save_snapshot("end", input_data, error_result, error_trace)
+            # TEMPORARILY DISABLED: Commented out until needed for debugging
+            # self.save_snapshot("end", input_data, error_result, error_trace)
             
             return error_result
 

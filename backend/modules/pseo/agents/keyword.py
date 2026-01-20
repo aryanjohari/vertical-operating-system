@@ -40,42 +40,53 @@ class SeoKeywordAgent(BaseAgent):
 
         services = self.config.get('content_dna', {}).get('services', ["Bail Support", "Legal Aid"])
         
-        # 2. GENERATE TEMPLATES
-        prompt = f"""
-        I am a local SEO expert. Services: {', '.join(services)}.
-        Generate 5 high-intent "Keyword Templates" with python placeholders {{name}} and {{city}}.
-        Return ONLY a JSON array of strings.
-        """
-        
-        templates = []
-        try:
-            print("🧠 Generating Keyword Formulas...")
-            response = self.client.models.generate_content(
-                model=self.model_id,
-                contents=prompt
-            )
-            cleaned_text = response.text.strip().replace('```json', '').replace('```', '')
-            templates = json.loads(cleaned_text)
-            print(f"✅ Formulas Acquired: {templates}")
-        except Exception as e:
-            return AgentOutput(status="error", message=f"AI Template Gen Failed: {e}")
-
-        # 3. APPLY FORMULAS LOCALLY
+        # 2. GENERATE ACTUAL KEYWORDS FOR EACH ANCHOR
         generated_count = 0
-        print(f"🔄 Processing {len(anchors)} locations...") # DEBUG LOG
-
+        print(f"🔄 Processing {len(anchors)} locations...")
+        
         for anchor in anchors:
             try:
-                name = anchor['name']
+                anchor_name = anchor['name']
                 # Safe City Extraction
                 address = anchor['metadata'].get('address', 'Auckland')
                 city = address.split(',')[-1].strip() if address else "Auckland"
                 
-                for temp in templates:
-                    # Fill the blanks
-                    kw = temp.format(name=name, city=city)
+                # Generate actual keywords for this specific anchor
+                prompt = f"""
+                I am a local SEO expert. Services: {', '.join(services)}.
+                
+                Generate 5 high-intent SEO keywords for the location: "{anchor_name}" in {city}.
+                
+                Requirements:
+                - Keywords should be specific, searchable phrases (e.g., "Bail Support near {anchor_name}")
+                - Include location context naturally
+                - Focus on high-intent, conversion-focused phrases
+                - Each keyword should be a complete, ready-to-use search term
+                
+                Return ONLY a JSON array of strings (actual keywords, not templates).
+                Example format: ["Bail Support near {anchor_name}", "Emergency Bail Services {city}", ...]
+                """
+                
+                print(f"🧠 Generating keywords for: {anchor_name}...")
+                response = self.client.models.generate_content(
+                    model=self.model_id,
+                    contents=prompt
+                )
+                cleaned_text = response.text.strip().replace('```json', '').replace('```', '').strip()
+                keywords = json.loads(cleaned_text)
+                
+                if not isinstance(keywords, list):
+                    self.log(f"⚠️ Invalid response format for {anchor_name}, skipping...")
+                    continue
+                
+                print(f"✅ Generated {len(keywords)} keywords for {anchor_name}")
+                
+                # Save each keyword as an entity
+                for kw in keywords:
+                    if not kw or not isinstance(kw, str):
+                        continue
                     
-                    # SAFER ID GENERATION (Convert to string first)
+                    # Generate unique ID
                     safe_id = str(anchor['id'])
                     kw_id = f"kw_{hash(kw + safe_id)}"
                     
@@ -85,9 +96,9 @@ class SeoKeywordAgent(BaseAgent):
                         tenant_id=user_id,
                         project_id=project_id,
                         entity_type="seo_keyword",
-                        name=kw,
+                        name=kw.strip(),
                         metadata={
-                            "target_anchor": anchor['name'],
+                            "target_anchor": anchor_name,
                             "target_id": safe_id,
                             "city": city,
                             "status": "pending"
@@ -101,6 +112,7 @@ class SeoKeywordAgent(BaseAgent):
                         
             except Exception as e:
                 # 🛑 PRINT THE ERROR SO WE SEE IT
+                self.log(f"❌ FAILED on {anchor.get('name', 'Unknown')}: {e}")
                 print(f"❌ FAILED on {anchor.get('name', 'Unknown')}: {e}")
                 continue
 
