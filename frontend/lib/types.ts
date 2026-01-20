@@ -38,6 +38,22 @@ export interface ManagerStats {
   "Enhanced (Img)": number;
   "Interactive (JS)": number;
   Live: number;
+  // Pipeline stage counts
+  "1_unreviewed": number;
+  "2_validated": number;
+  "3_linked": number;
+  "4_imaged": number;
+  "5_ready": number;
+  "6_live": number;
+  kws_pending?: number;
+}
+
+export interface PipelineStage {
+  id: string;
+  name: string;
+  icon: string;
+  count: number;
+  status: "complete" | "active" | "attention" | "pending";
 }
 
 export interface ManagerStatus {
@@ -53,10 +69,37 @@ export interface ManagerStatus {
   };
 }
 
+export interface Draft extends Entity {
+  metadata: {
+    status?: string;
+    quality_score?: number;
+    critic_notes?: string;
+    featured_image?: string;
+    content?: string;
+    [key: string]: any;
+  };
+}
+
 export interface Project {
   project_id: string;
   user_id: string;
   niche: string;
   dna_path?: string;
   created_at?: string;
+}
+
+export interface BusinessIdentity {
+  business_name: string;
+  niche: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  website: string;
+  key_services?: string[];
+  project_id?: string;
+}
+
+export interface OnboardingContext {
+  identity: BusinessIdentity;
+  modules: string[];
 }

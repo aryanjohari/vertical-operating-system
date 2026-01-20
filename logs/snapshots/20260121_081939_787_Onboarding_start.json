@@ -1,0 +1,73 @@
+{
+  "timestamp": "2026-01-21T08:19:39.787975",
+  "agent_name": "Onboarding",
+  "step": "start",
+  "input_context": {
+    "task": "onboarding",
+    "user_id": "admin@admin.com",
+    "request_id": "7ad340a2-6261-4ef3-b129-fb1d6b798dab",
+    "params": {
+      "step": "interview_loop",
+      "history": [
+        {
+          "role": "assistant",
+          "content": "Great. I've set up the project for **Specialist Support Services (SSS)**.\n\nTo activate the **local_seo, lead_gen** modules, I need to extract some expert knowledge.\n\nFirst: I need to know your 'Anchor Locations' (e.g. Courts, Suppliers)."
+        },
+        {
+          "role": "user",
+          "content": "Courts, Prisons"
+        },
+        {
+          "role": "assistant",
+          "content": "Excellent. \"Courts, Prisons\" added as anchor entities for local SEO.\n\nNow, let's inject some of your unique expertise into the \"Brain\" of your Apex AI. This knowledge prevents generic AI responses and ensures your brand voice is consistent.\n\nPlease share:\n1.  **Key Differentiators:** What makes Specialist Support Services unique or stand out from others in bail/parole support? (e.g., specific guarantees, unique processes, etc.)\n2.  **Insider Tips:** What essential advice or insights would you offer someone navigating the bail/parole process?\n3.  **Common Objections:** What are the most frequent concerns or hesitations clients express when seeking your services?"
+        },
+        {
+          "role": "user",
+          "content": "1. out of area bail, private EM bail"
+        },
+        {
+          "role": "assistant",
+          "content": "Excellent! \"Out of area bail\" and \"private EM bail\" are great differentiators.\n\nTo fully empower your Apex AI with your unique expertise, please share:\n\n1.  **Insider Tips:** What essential advice or insights would you offer someone navigating the bail/parole process?\n2.  **Common Objections:** What are the most frequent concerns or hesitations clients express when seeking your services?"
+        },
+        {
+          "role": "user",
+          "content": "1. the crime location shouldnt be close to the bail, and the applicants pas hisroty"
+        },
+        {
+          "role": "assistant",
+          "content": "Excellent! \"The crime location shouldn't be close to the bail, and the applicant's past history\" are valuable insider tips.\n\nNow, to complete the \"Brain\" of your Apex AI, please share:\n\n1.  **Common Objections:** What are the most frequent concerns or hesitations clients express when seeking your services?"
+        },
+        {
+          "role": "user",
+          "content": "1. is it expensive, whats the process"
+        }
+      ],
+      "message": "1. is it expensive, whats the process",
+      "context": {
+        "modules": [
+          "local_seo",
+          "lead_gen"
+        ],
+        "identity": {
+          "business_name": "Specialist Support Services (SSS)",
+          "niche": "Bail & Parole Support",
+          "phone": "021 280 6655",
+          "email": "info@sss.net.nz",
+          "address": "3 Glenside Crescent, Auckland 1010",
+          "key_services": [
+            "EM Bail Accommodation",
+            "Parole Accommodation",
+            "Rehabilitation Programs",
+            "Bail Application Support",
+            "Escorted Program Attendance",
+            "Flexible Payment Options"
+          ],
+          "website": "https://specialistsupportservices.net.nz/",
+          "project_id": "bail_parole_support"
+        }
+      }
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

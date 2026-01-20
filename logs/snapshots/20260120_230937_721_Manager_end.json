@@ -1,0 +1,39 @@
+{
+  "timestamp": "2026-01-20T23:09:37.721773",
+  "agent_name": "Manager",
+  "step": "end",
+  "input_context": {
+    "task": "manager",
+    "user_id": "admin@admin.com",
+    "request_id": "8006a9cd-98ea-4623-93e2-4f40361a5b9a",
+    "params": {}
+  },
+  "output_result": {
+    "status": "action_required",
+    "data": {
+      "step": "8_publisher",
+      "action_label": "Publishing Content",
+      "next_task": "publish",
+      "next_params": {
+        "limit": 2,
+        "project_id": "bail_rehabilitation",
+        "user_id": "admin@admin.com"
+      },
+      "stats": {
+        "Locations": 8,
+        "Keywords": 100,
+        "Drafts": 6,
+        "1_unreviewed": 0,
+        "2_validated": 0,
+        "3_linked": 1,
+        "4_imaged": 0,
+        "5_ready": 5,
+        "6_live": 0,
+        "kws_pending": 93
+      }
+    },
+    "message": "Advancing to 8_publisher",
+    "timestamp": "2026-01-20 23:09:37.721491"
+  },
+  "error_traceback": null
+}

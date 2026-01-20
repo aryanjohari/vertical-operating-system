@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-21T07:44:37.025990",
+  "agent_name": "SEOWriter",
+  "step": "start",
+  "input_context": {
+    "task": "write_pages",
+    "user_id": "admin@admin.com",
+    "request_id": "f107cd60-accd-46e2-ad0c-3e0a10e0dc9f",
+    "params": {
+      "project_id": "bail_parole_rehabilitation",
+      "user_id": "admin@admin.com"
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

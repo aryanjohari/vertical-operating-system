@@ -1,53 +1,58 @@
-# APEX SOVEREIGN OS - DNA PROFILE v2.0
-# ====================================
+# backend/core/profile_template.yaml
+# =========================================================
+# APEX UNIVERSAL DNA v2.0 (Core + Plugins Architecture)
+# =========================================================
 
+# --- LAYER 1: THE CORE (Identity) ---
+# Used by every agent to know who they work for.
 identity:
-  project_id: "REQUIRED_BY_SYSTEM"  # e.g., 'apex-bail-v1'
+  project_id: "REQUIRED_BY_SYSTEM" # e.g., 'westflow-plumbing'
   business_name: "REQUIRED"
-  niche: "REQUIRED"
+  niche: "REQUIRED" # e.g., 'Emergency Plumbing', 'Criminal Law'
+  website: ""
   contact:
     phone: ""
     email: ""
-    website: ""
+    address: ""
 
-# MODULE: APEX GROWTH (pSEO)
-scout_rules:
-  hunt_mode: "keyword" 
-  # CRITICAL: What physical places act as "Anchors"? (e.g., Courts, Prisons)
-  anchor_entities: [] 
-  geo_scope:
-    country: "NZ"
-    cities: ["Auckland"]
-  # Strict filtering to save money
-  allow_keywords: []
-  block_keywords: ["news", "job", "career"]
+# --- LAYER 2: THE BRAIN (Experience & Expertise) ---
+# The "Wisdom" that prevents AI trash.
+brand_brain:
+  voice_tone: "Professional, Helpful, Authoritative" # default
+  # The "Knowledge Nuggets" extracted during interview
+  key_differentiators: [] # e.g., "60-min arrival guarantee"
+  insider_tips: []        # e.g., "Don't use Drano on PVC"
+  common_objections: []   # e.g., "Why is after-hours expensive?"
+  forbidden_topics: ["Cheap fixes", "DIY advice"]
 
-content_dna:
-  voice_tone: "Professional, Authoritative, Empathetic"
-  user_state: "Urgent Need"
-  pain_points: []
-  solution_hooks: []
-  # Credentials for Publisher
-  cms_settings:
-    platform: "wordpress"
-    url: ""
-    username: ""
+# --- LAYER 3: THE MODULES (Plugins) ---
+# Only enabled sections are active.
+modules:
+  
+  # Module A: Apex Growth (pSEO)
+  # ENABLE IF: Client wants to rank on Google Maps
+  local_seo:
+    enabled: false
+    scout_settings:
+      anchor_entities: [] # e.g., ["Courts", "Schools"]
+      geo_scope:
+        cities: ["Auckland"]
+    publisher_settings:
+      cms: "wordpress"
+      url: ""
+      username: ""
 
-# [NEW] MODULE: STRATEGIST (Intelligence)
-competitor_rules:
-  track_competitors: true
-  competitor_urls: [] # Top 3 rivals to watch
-  min_word_count: 600
+  # Module B: Apex Connect (Lead Gen)
+  # ENABLE IF: Client wants 24/7 Call/Lead handling
+  lead_gen:
+    enabled: false
+    voice_agent:
+      forwarding_number: ""
+      greeting: "Thanks for calling [Name]. How can we help?"
+    tools:
+      lead_magnets: [] # e.g., ["Cost Calculator", "Eligibility Quiz"]
 
-# [NEW] MODULE: CRITIC (Quality Control)
-quality_gates:
-  min_score: 80
-  forbidden_terms: ["guaranteed", "free money"]
-  required_sections: ["FAQ", "Pricing"]
-
-# MODULE: APEX CONNECT (Lead Gen)
-operations:
-  voice_agent:
-    active: true
-    forwarding_number: ""
-    greeting: "Hello, how can we help?"
+  # Module C: [FUTURE] Social Media
+  social_media:
+    enabled: false
+    platforms: ["linkedin", "twitter"]

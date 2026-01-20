@@ -2,76 +2,101 @@ import requests
 import base64
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
+from backend.core.config import ConfigLoader
 
 class PublisherAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Publisher")
-        # Default target is WordPress (can be changed per client in future)
-        self.target = "wordpress"
+        self.config_loader = ConfigLoader()
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
+        project = memory.get_user_project(user_id)
+        if not project:
+            return AgentOutput(status="error", message="No active project.")
         
-        # Get WordPress credentials from database
+        project_id = project['project_id']
+        
+        # 1. LOAD CONFIG & SECRETS
+        config = self.config_loader.load(project_id)
+        pub_settings = config.get('modules', {}).get('local_seo', {}).get('publisher_settings', {})
+        
+        # Validate Credentials
+        wp_url = pub_settings.get('url')
+        wp_user = pub_settings.get('username')
+        # In production, password should come from a secure vault (memory.get_client_secrets)
+        # For this architecture, we check the DB secrets first
         secrets = memory.get_client_secrets(user_id)
-        if not secrets:
-            return AgentOutput(status="error", message="No WordPress credentials found for this client.")
-        
-        # Get ready pages (have image + tool)
-        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft")
-        ready_pages = [p for p in pages if p['metadata'].get('has_tool') == True
-        and p['metadata'].get('status') not in ['published', 'live'] ]
+        wp_password = secrets.get('wp_password') if secrets else None
+
+        if not wp_url or not wp_user or not wp_password:
+             return AgentOutput(status="error", message="Missing WordPress credentials in Config/Secrets.")
+
+        # 2. FETCH READY PAGES (Pipeline Scoped)
+        # Input: Utility sets status to 'ready_to_publish'
+        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
+        ready_pages = [p for p in pages if p['metadata'].get('status') == 'ready_to_publish']
         
         if not ready_pages:
-             return AgentOutput(status="complete", message="No pages ready for publishing.")
+             return AgentOutput(status="complete", message="No pages ready to publish.")
 
-        print(f"🚀 Publishing {len(ready_pages)} pages to {self.target.upper()}...")
+        # 3. APPLY DRIP FEED LIMIT
+        # Manager controls the speed (e.g. 2 per run) to avoid Google penalties
+        limit = input_data.params.get("limit", 2)
+        batch = ready_pages[:limit]
+        
+        self.log(f"🚀 Publishing {len(batch)} pages to {wp_url}...")
         
         published_count = 0
-        for page in ready_pages:
-            success = False
-            
-            if self.target == "wordpress":
-                success = self.publish_to_wordpress(page, secrets['wp_url'], secrets['wp_user'], secrets['wp_password'])
-            elif self.target == "vercel":
-                success = self.publish_to_github(page)
+        for page in batch:
+            success = self.publish_to_wordpress(page, wp_url, wp_user, wp_password)
                 
             if success:
-    # Mark as live/published in database
+                # 4. UPDATE STATUS TO LIVE
                 new_meta = page['metadata'].copy()
-                new_meta['status'] = 'published'  # or 'live'
+                new_meta['status'] = 'published'
+                new_meta['published_at'] = str(input_data.created_at)
+                new_meta['live_url'] = f"{wp_url}/{new_meta.get('slug')}"
+                
                 memory.update_entity(page['id'], new_meta)
                 published_count += 1
-                
-        return AgentOutput(status="success", message=f"Published {published_count} pages.")
+            else:
+                self.log(f"❌ Failed to publish {page['name']}")
+
+        return AgentOutput(
+            status="success", 
+            message=f"Published {published_count} pages (Drip Limit: {limit}).",
+            data={"count": published_count}
+        )
 
     def publish_to_wordpress(self, page, wp_url: str, wp_user: str, wp_password: str):
-        """Publish a page to WordPress using provided credentials."""
-        # Base64 encode credentials for Basic Auth
+        """Publish a page to WordPress using proper Slug and Content."""
+        # Ensure URL ends with endpoint
+        endpoint = f"{wp_url.rstrip('/')}/wp-json/wp/v2/posts"
+        
         creds = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
         
+        # WordPress Payload
         post_data = {
             "title": page['name'],
             "content": page['metadata']['content'],
-            "status": "draft", # Publish as draft first to be safe
-            "categories": [1] # Default category
+            "slug": page['metadata'].get('slug'), # CRITICAL for SEO
+            "status": "publish", 
+            "categories": [1] # Default category, can be smarter later
         }
         
         try:
             res = requests.post(
-                wp_url, 
+                endpoint, 
                 json=post_data, 
-                headers={"Authorization": f"Basic {creds}"}
+                headers={"Authorization": f"Basic {creds}"},
+                timeout=10
             )
-            return res.status_code == 201
+            if res.status_code in [200, 201]:
+                return True
+            else:
+                print(f"WP Error {res.status_code}: {res.text}")
+                return False
         except Exception as e:
-            print(f"WP Error: {e}")
+            print(f"WP Connection Failed: {e}")
             return False
-
-    def publish_to_github(self, page):
-        # 1. Git Config (For Vercel)
-        # This commits a new .md file to your Next.js repo "content" folder
-        # Vercel detects the commit and rebuilds the site.
-        print("Committing to GitHub...")
-        # (Requires GitHub API Token logic here)
-        return True

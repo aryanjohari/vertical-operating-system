@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-01-21T08:28:29.793457",
+  "agent_name": "Publisher",
+  "step": "start",
+  "input_context": {
+    "task": "publish",
+    "user_id": "admin@admin.com",
+    "request_id": "19466d53-feae-45d8-8180-26741b5f2678",
+    "params": {
+      "limit": 2,
+      "project_id": "bail_parole_support",
+      "user_id": "admin@admin.com"
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

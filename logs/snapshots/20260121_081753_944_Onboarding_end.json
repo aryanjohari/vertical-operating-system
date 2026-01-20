@@ -1,0 +1,38 @@
+{
+  "timestamp": "2026-01-21T08:17:53.944705",
+  "agent_name": "Onboarding",
+  "step": "end",
+  "input_context": {
+    "task": "onboarding",
+    "user_id": "admin@admin.com",
+    "request_id": "5c31cf46-2e2c-47d1-a92d-e1833a779e89",
+    "params": {
+      "step": "analyze",
+      "url": "https://specialistsupportservices.net.nz/"
+    }
+  },
+  "output_result": {
+    "status": "success",
+    "data": {
+      "identity": {
+        "business_name": "Specialist Support Services (SSS)",
+        "niche": "Bail & Parole Support",
+        "phone": "021 280 6655",
+        "email": "info@sss.net.nz",
+        "address": "3 Glenside Crescent, Auckland 1010",
+        "key_services": [
+          "EM Bail Accommodation",
+          "Parole Accommodation",
+          "Rehabilitation Programs",
+          "Bail Application Support",
+          "Escorted Program Attendance",
+          "Flexible Payment Options"
+        ],
+        "website": "https://specialistsupportservices.net.nz/"
+      }
+    },
+    "message": "Analysis Complete",
+    "timestamp": "2026-01-21 08:17:53.944247"
+  },
+  "error_traceback": null
+}

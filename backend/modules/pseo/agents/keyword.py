@@ -10,15 +10,30 @@ from backend.core.models import Entity
 class SeoKeywordAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="SEOKeyword")
-        api_key = os.getenv("GOOGLE_API_KEY")
-        self.client = genai.Client(api_key=api_key)
+        self._api_key = os.getenv("GOOGLE_API_KEY")
+        self._client = None  # Lazy initialization
         self.model_id = 'gemini-2.5-flash'
+    
+    @property
+    def client(self):
+        """Lazy initialization of GenAI client to avoid async httpx errors."""
+        if self._client is None:
+            if not self._api_key:
+                raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
+            self._client = genai.Client(api_key=self._api_key)
+        return self._client
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
         
-        # 1. FETCH ANCHORS
-        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location")
+        # Get project context
+        project = memory.get_user_project(user_id)
+        if not project:
+            return AgentOutput(status="error", message="No active project found.")
+        project_id = project['project_id']
+        
+        # 1. FETCH ANCHORS (scoped to project)
+        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
         if not anchors:
             print("❌ No Anchors found in DB!")
             return AgentOutput(status="error", message="No locations found. Run Scout first.")
@@ -68,6 +83,7 @@ class SeoKeywordAgent(BaseAgent):
                     kw_entity = Entity(
                         id=kw_id,
                         tenant_id=user_id,
+                        project_id=project_id,
                         entity_type="seo_keyword",
                         name=kw,
                         metadata={
@@ -79,7 +95,8 @@ class SeoKeywordAgent(BaseAgent):
                         created_at=datetime.now()
                     )
                     
-                    if memory.save_entity(kw_entity):
+                    # Explicitly pass project_id for clarity and reliability
+                    if memory.save_entity(kw_entity, project_id=project_id):
                         generated_count += 1
                         
             except Exception as e:

@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-01-21T08:17:29.473772",
+  "agent_name": "Manager",
+  "step": "end",
+  "input_context": {
+    "task": "manager",
+    "user_id": "admin@admin.com",
+    "request_id": "70c2784b-df9f-4983-9132-048f38b69f3d",
+    "params": {}
+  },
+  "output_result": {
+    "status": "error",
+    "data": null,
+    "message": "No active project found.",
+    "timestamp": "2026-01-21 08:17:29.473225"
+  },
+  "error_traceback": null
+}

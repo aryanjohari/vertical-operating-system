@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-21T08:26:03.656936",
+  "agent_name": "Strategist",
+  "step": "start",
+  "input_context": {
+    "task": "strategist_run",
+    "user_id": "admin@admin.com",
+    "request_id": "1972554d-d95c-4358-847a-864a16d5bc94",
+    "params": {
+      "project_id": "bail_parole_support",
+      "user_id": "admin@admin.com"
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

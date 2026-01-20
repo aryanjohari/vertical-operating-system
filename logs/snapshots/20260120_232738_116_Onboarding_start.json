@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-20T23:27:38.116046",
+  "agent_name": "Onboarding",
+  "step": "start",
+  "input_context": {
+    "task": "onboarding",
+    "user_id": "admin@admin.com",
+    "request_id": "97d44c22-f000-4f3d-b7ec-874df205f9ab",
+    "params": {
+      "step": "analyze",
+      "url": "https://specialistsupportservices.net.nz/"
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

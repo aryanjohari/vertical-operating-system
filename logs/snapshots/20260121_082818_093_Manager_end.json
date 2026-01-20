@@ -1,0 +1,42 @@
+{
+  "timestamp": "2026-01-21T08:28:18.093838",
+  "agent_name": "Manager",
+  "step": "end",
+  "input_context": {
+    "task": "manager",
+    "user_id": "admin@admin.com",
+    "request_id": "b37732d7-e3e7-4f42-aee3-0757d1c5a86f",
+    "params": {}
+  },
+  "output_result": {
+    "status": "success",
+    "data": {
+      "step": "6_media",
+      "action_label": "Fetching Images",
+      "task_executed": "enhance_media",
+      "task_result": {
+        "status": "success",
+        "data": {
+          "count": 1
+        },
+        "message": "Enhanced 1 pages with visuals.",
+        "timestamp": "2026-01-21 08:28:18.091100"
+      },
+      "stats": {
+        "Locations": 10,
+        "Keywords": 100,
+        "Drafts": 1,
+        "1_unreviewed": 0,
+        "2_validated": 0,
+        "3_linked": 1,
+        "4_imaged": 0,
+        "5_ready": 0,
+        "6_live": 0,
+        "kws_pending": 99
+      }
+    },
+    "message": "Executed Fetching Images: Enhanced 1 pages with visuals.",
+    "timestamp": "2026-01-21 08:28:18.093581"
+  },
+  "error_traceback": null
+}

@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-01-20T23:36:06.582379",
+  "agent_name": "Onboarding",
+  "step": "start",
+  "input_context": {
+    "task": "onboarding",
+    "user_id": "admin@admin.com",
+    "request_id": "db469ef5-7257-43e9-96cd-0459c976267a",
+    "params": {
+      "step": "interview_start",
+      "identity": {
+        "business_name": "Specialist Support Services (SSS)",
+        "niche": "Bail Parole Rehabilitation",
+        "phone": "021 280 6655",
+        "email": "info@sss.net.nz",
+        "address": "3 Glenside Crescent, Auckland 1010",
+        "key_services": [
+          "EM Bail Accommodation",
+          "Parole Accommodation",
+          "12-week Rehabilitation Programme",
+          "Bail Application Support",
+          "Escorted Attendance for External Programmes",
+          "Clinical Support & Counseling"
+        ],
+        "website": "https://specialistsupportservices.net.nz/",
+        "project_id": "bail_parole_rehabilitation"
+      },
+      "modules": [
+        "local_seo",
+        "lead_gen"
+      ]
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

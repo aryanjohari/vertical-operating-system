@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-01-20T23:09:37.717245",
+  "agent_name": "Manager",
+  "step": "start",
+  "input_context": {
+    "task": "manager",
+    "user_id": "admin@admin.com",
+    "request_id": "8006a9cd-98ea-4623-93e2-4f40361a5b9a",
+    "params": {}
+  },
+  "output_result": null,
+  "error_traceback": null
+}

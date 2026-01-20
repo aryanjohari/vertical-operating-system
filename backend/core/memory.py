@@ -1,49 +1,96 @@
+# backend/core/memory.py
 import sqlite3
 import chromadb
 import uuid
 import json
 import logging
 import os
+import hashlib
+import secrets
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from google import genai  # <--- REQUIRED
 from backend.core.models import Entity
+
+# --- NEW: Google Embedding Wrapper (The Fix) ---
+class GoogleEmbeddingFunction:
+    def __init__(self):
+        # Uses your existing GOOGLE_API_KEY with validation
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
+        self.client = genai.Client(api_key=api_key)
+        # ChromaDB requires a 'name' attribute for embedding functions
+        self.name = "google_embedding_function"
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        if not input:
+            return []
+        # Uses Google's efficient model instead of local download
+        response = self.client.models.embed_content(
+            model="text-embedding-004",
+            contents=input
+        )
+        return [e.values for e in response.embeddings]
 
 class MemoryManager:
     def __init__(self, db_path="data/apex.db", vector_path="data/chroma_db"):
         self.logger = logging.getLogger("ApexMemory")
-        self.db_path = db_path
-        self.vector_path = vector_path
         
-        # Ensure directories exist
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        os.makedirs(vector_path, exist_ok=True)
+        # Convert to absolute paths to avoid path-related issues
+        self.db_path = os.path.abspath(db_path)
+        self.vector_path = os.path.abspath(vector_path)
         
-        # 1. INITIALIZE SQLITE (The Structured Brain)
+        # Ensure directories exist with proper permissions
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        os.makedirs(self.vector_path, exist_ok=True)
+        
         self._init_sqlite()
         
-        # 2. INITIALIZE VECTOR DB (The Semantic Brain)
-        # using the local persistent client so data survives restarts
-        self.chroma_client = chromadb.PersistentClient(path=vector_path)
-        self.vector_collection = self.chroma_client.get_or_create_collection(name="apex_context")
-        
-        self.logger.info("Memory Systems Online (SQL + Vector)")
+        # Initialize Vector DB with error handling
+        try:
+            self.chroma_client = chromadb.PersistentClient(path=self.vector_path)
+            
+            # Create embedding function instance
+            embedding_fn = GoogleEmbeddingFunction()
+            
+            # Try to get existing collection first (without embedding_function)
+            try:
+                self.vector_collection = self.chroma_client.get_collection(name="apex_context")
+                self.logger.info("Reusing existing ChromaDB collection")
+            except Exception:
+                # Collection doesn't exist, create it with embedding function
+                self.vector_collection = self.chroma_client.create_collection(
+                    name="apex_context",
+                    embedding_function=embedding_fn
+                )
+                self.logger.info("Created new ChromaDB collection")
+            
+            self.chroma_enabled = True
+            self.logger.info("🧠 Memory Systems Online (SQL + Google RAG)")
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize ChromaDB: {e}")
+            self.logger.warning("⚠️ Continuing without vector memory (RAG disabled)")
+            self.chroma_client = None
+            self.vector_collection = None
+            self.chroma_enabled = False
+            self.logger.info("🧠 Memory Systems Online (SQL only)")
 
     def _init_sqlite(self):
-        """Creates the tables if they don't exist."""
+        """Creates tables with Market-Ready schema."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # --- SYSTEM TABLES (Strict Schema for Security) ---
-        
-        # 1. USERS: The Gatekeeper
+        # 1. USERS (With Hashed Passwords)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY, -- Email is simplest for now
-                password TEXT NOT NULL
+                user_id TEXT PRIMARY KEY, 
+                password_hash TEXT NOT NULL,
+                salt TEXT NOT NULL
             )
         ''')
 
-        # 2. PROJECTS: The Link between User and DNA
+        # 2. PROJECTS
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS projects (
                 project_id TEXT PRIMARY KEY,
@@ -55,47 +102,30 @@ class MemoryManager:
             )
         ''')
 
-        # --- DATA TABLES (Flexible Schema for AI) ---
-        
-        # 3. ENTITIES: The Master Table for Leads, Jobs, etc.
+        # 3. ENTITIES
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL, -- Links to users.user_id
-                project_id TEXT, -- Links to projects.project_id
-                entity_type TEXT NOT NULL, -- 'lead', 'job', 'competitor'
+                tenant_id TEXT NOT NULL,
+                project_id TEXT,
+                entity_type TEXT NOT NULL,
                 name TEXT NOT NULL,
                 primary_contact TEXT,
-                metadata JSON, -- The Flexible AI Brain
+                metadata JSON,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
-        # Migration: Add project_id column if it doesn't exist (for existing databases)
-        try:
-            cursor.execute("ALTER TABLE entities ADD COLUMN project_id TEXT")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # 4. LOGS: Audit Trail
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS logs (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT,
-                action TEXT,
-                details TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # 5. CLIENT_SECRETS: Per-user WordPress credentials
-        # Note: Passwords stored as plain text for MVP. Should be encrypted in production.
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(tenant_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id)")
+
+        # 4. SECRETS
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS client_secrets (
                 user_id TEXT PRIMARY KEY,
-                wp_url TEXT NOT NULL,
-                wp_user TEXT NOT NULL,
-                wp_password TEXT NOT NULL,
+                wp_url TEXT,
+                wp_user TEXT,
+                wp_auth_hash TEXT,
                 FOREIGN KEY(user_id) REFERENCES users(user_id)
             )
         ''')
@@ -104,34 +134,50 @@ class MemoryManager:
         conn.close()
 
     # ====================================================
-    # SECTION A: AUTHENTICATION & PROJECTS (New)
+    # SECTION A: SECURITY & AUTH
     # ====================================================
+    def _hash_password(self, password: str, salt: Optional[str] = None) -> (str, str):
+        if not salt:
+            salt = secrets.token_hex(16)
+        pwd_hash = hashlib.pbkdf2_hmac(
+            'sha256', 
+            password.encode('utf-8'), 
+            salt.encode('utf-8'), 
+            100000
+        ).hex()
+        return pwd_hash, salt
+
     def create_user(self, email, password):
-        """Registers a new user."""
         conn = sqlite3.connect(self.db_path)
+        pwd_hash, salt = self._hash_password(password)
         try:
-            conn.execute("INSERT INTO users (user_id, password) VALUES (?, ?)", (email, password))
+            conn.execute("INSERT INTO users (user_id, password_hash, salt) VALUES (?, ?, ?)", 
+                         (email, pwd_hash, salt))
             conn.commit()
             return True
         except sqlite3.IntegrityError:
-            return False # User already exists
+            return False
         finally:
             conn.close()
 
     def verify_user(self, email, password):
-        """Checks credentials."""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute("SELECT password FROM users WHERE user_id = ?", (email,))
+        cursor = conn.execute("SELECT password_hash, salt FROM users WHERE user_id = ?", (email,))
         row = cursor.fetchone()
         conn.close()
-        return row and row[0] == password
-
-    def register_project(self, user_id, project_id, niche):
-        """Links a DNA Profile to a User."""
-        conn = sqlite3.connect(self.db_path)
-        # We assume standard path structure based on project_id
-        path = f"data/profiles/{project_id}/dna.generated.yaml"
         
+        if row:
+            stored_hash, salt = row
+            check_hash, _ = self._hash_password(password, salt)
+            return check_hash == stored_hash
+        return False
+
+    # ====================================================
+    # SECTION B: PROJECT MANAGEMENT
+    # ====================================================
+    def register_project(self, user_id, project_id, niche):
+        conn = sqlite3.connect(self.db_path)
+        path = f"data/profiles/{project_id}/dna.generated.yaml"
         conn.execute(
             "INSERT OR REPLACE INTO projects (project_id, user_id, niche, dna_path) VALUES (?, ?, ?, ?)",
             (project_id, user_id, niche, path)
@@ -140,7 +186,6 @@ class MemoryManager:
         conn.close()
 
     def get_user_project(self, user_id):
-        """Retrieves the active project for a user (Simple 1-project limit for now)."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
@@ -149,7 +194,7 @@ class MemoryManager:
         return dict(row) if row else None
 
     def get_projects(self, user_id: str) -> List[Dict]:
-        """Retrieves all projects for a user."""
+        """Get all projects for a specific user."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
@@ -158,19 +203,31 @@ class MemoryManager:
         return [dict(row) for row in rows]
 
     # ====================================================
-    # SECTION B: STRUCTURED MEMORY (Leads, Jobs)
+    # SECTION C: SCALABLE ENTITY STORAGE
     # ====================================================
     def save_entity(self, entity: Entity, project_id: Optional[str] = None) -> bool:
-        """Saves a lead/job to SQLite."""
+        """
+        Saves an entity to the database.
+        
+        Priority for project_id:
+        1. Explicit parameter (project_id argument)
+        2. Entity.project_id attribute (if set by agent)
+        3. Entity.metadata.get("project_id") (fallback for legacy data)
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             
-            # Get project_id from entity metadata if not provided
+            # Priority: parameter > entity attribute > metadata
             if project_id is None:
-                project_id = entity.metadata.get("project_id")
+                # Check if entity has project_id attribute (set by agents)
+                project_id = getattr(entity, 'project_id', None)
+                if project_id is None:
+                    # Fallback to metadata (for legacy data)
+                    project_id = entity.metadata.get("project_id")
             
             conn.execute('''
-                INSERT OR REPLACE INTO entities (id, tenant_id, project_id, entity_type, name, primary_contact, metadata, created_at)
+                INSERT OR REPLACE INTO entities 
+                (id, tenant_id, project_id, entity_type, name, primary_contact, metadata, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 entity.id,
@@ -179,10 +236,9 @@ class MemoryManager:
                 entity.entity_type,
                 entity.name,
                 entity.primary_contact,
-                json.dumps(entity.metadata), # Store dict as JSON string
+                json.dumps(entity.metadata),
                 entity.created_at
             ))
-            
             conn.commit()
             conn.close()
             return True
@@ -190,13 +246,10 @@ class MemoryManager:
             self.logger.error(f"SQL Error: {e}")
             return False
 
-    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, project_id: Optional[str] = None) -> List[Dict]:
-        """
-        RLS ENFORCED: Only returns data for the specific tenant_id.
-        Optionally filters by project_id.
-        """
+    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, 
+                     project_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row # Return dicts instead of tuples
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
         query = "SELECT * FROM entities WHERE tenant_id = ?"
@@ -209,20 +262,25 @@ class MemoryManager:
         if project_id:
             query += " AND (project_id = ? OR project_id IS NULL)"
             params.append(project_id)
+            
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         
         cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()
         
-        # Convert JSON strings back to dicts
         results = []
         for row in rows:
             item = dict(row)
-            item['metadata'] = json.loads(item['metadata'])
+            try:
+                item['metadata'] = json.loads(item['metadata'])
+            except:
+                item['metadata'] = {}
             results.append(item)
             
         return results
-    
+
     def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
         """Updates the metadata of an existing entity."""
         try:
@@ -238,7 +296,10 @@ class MemoryManager:
                 return False
             
             # 2. Merge new data with old data
-            current_meta = json.loads(row[0])
+            try:
+                current_meta = json.loads(row[0])
+            except:
+                current_meta = {}
             current_meta.update(new_metadata)
             
             # 3. Save back
@@ -253,15 +314,61 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Update Error: {e}")
             return False
-    
-    def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
-        """Saves or updates WordPress credentials for a user."""
+
+    def delete_entity(self, entity_id: str, tenant_id: str) -> bool:
+        """Deletes an entity with RLS check."""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Verify entity belongs to tenant (RLS)
+            cursor.execute("SELECT id FROM entities WHERE id = ? AND tenant_id = ?", (entity_id, tenant_id))
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                return False
+            
+            # Delete the entity
+            cursor.execute("DELETE FROM entities WHERE id = ? AND tenant_id = ?", (entity_id, tenant_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            self.logger.error(f"Delete Error: {e}")
+            return False
+            
+    def get_client_secrets(self, user_id: str) -> Optional[Dict[str, str]]:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT wp_url, wp_user, wp_auth_hash FROM client_secrets WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    "wp_url": row["wp_url"],
+                    "wp_user": row["wp_user"],
+                    # Note: In production you'd decrypt wp_auth_hash here
+                    "wp_password": row["wp_auth_hash"] 
+                }
+            return None
+        except Exception as e:
+            self.logger.error(f"Error retrieving client secrets: {e}")
+            return None
+
+    def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
+        """Save or update WordPress credentials for a user."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Use INSERT OR REPLACE to update if exists
             cursor.execute('''
-                INSERT OR REPLACE INTO client_secrets (user_id, wp_url, wp_user, wp_password)
+                INSERT OR REPLACE INTO client_secrets (user_id, wp_url, wp_user, wp_auth_hash)
                 VALUES (?, ?, ?, ?)
             ''', (user_id, wp_url, wp_user, wp_password))
             
@@ -271,50 +378,54 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Error saving client secrets: {e}")
             return False
-    
-    def get_client_secrets(self, user_id: str) -> Optional[Dict[str, str]]:
-        """Retrieves WordPress credentials for a user."""
+
+    # ====================================================
+    # SECTION D: SEMANTIC MEMORY (RAG)
+    # ====================================================
+    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None):
+        """Saves embeddings with Project Context."""
+        if not self.chroma_enabled or not self.vector_collection:
+            self.logger.debug("ChromaDB not available, skipping context save")
+            return
+            
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT wp_url, wp_user, wp_password FROM client_secrets WHERE user_id = ?", (user_id,))
-            row = cursor.fetchone()
-            conn.close()
-            
-            if row:
-                return {
-                    "wp_url": row["wp_url"],
-                    "wp_user": row["wp_user"],
-                    "wp_password": row["wp_password"]
-                }
-            return None
+            metadata['tenant_id'] = tenant_id
+            if project_id:
+                metadata['project_id'] = project_id
+                
+            self.vector_collection.add(
+                documents=[text],
+                metadatas=[metadata],
+                ids=[str(uuid.uuid4())]
+            )
         except Exception as e:
-            self.logger.error(f"Error retrieving client secrets: {e}")
-            return None
+            self.logger.warning(f"Failed to save context to ChromaDB: {e}")
 
-    # ====================================================
-    # SECTION C: SEMANTIC MEMORY (Context/DNA)
-    # ====================================================
-    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}):
-        """Embeds text into the Vector DB."""
-        metadata['tenant_id'] = tenant_id
-        
-        self.vector_collection.add(
-            documents=[text],
-            metadatas=[metadata],
-            ids=[str(uuid.uuid4())]
-        )
+    def query_context(self, tenant_id: str, query: str, n_results: int = 3, project_id: str = None):
+        """Retrieves embeddings filtered by Project."""
+        if not self.chroma_enabled or not self.vector_collection:
+            self.logger.debug("ChromaDB not available, returning empty results")
+            return []
+            
+        try:
+            where_clause = {"tenant_id": tenant_id}
+            if project_id:
+                where_clause = {
+                    "$and": [
+                        {"tenant_id": tenant_id},
+                        {"project_id": project_id}
+                    ]
+                }
+                
+            results = self.vector_collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                where=where_clause
+            )
+            return results['documents'][0] if results['documents'] else []
+        except Exception as e:
+            self.logger.warning(f"Failed to query context from ChromaDB: {e}")
+            return []
 
-    def query_context(self, tenant_id: str, query: str, n_results: int = 3):
-        """Finds relevant context with RLS."""
-        results = self.vector_collection.query(
-            query_texts=[query],
-            n_results=n_results,
-            where={"tenant_id": tenant_id}
-        )
-        return results['documents'][0] if results['documents'] else []
-
-# Initialize Singleton
+# Singleton
 memory = MemoryManager()

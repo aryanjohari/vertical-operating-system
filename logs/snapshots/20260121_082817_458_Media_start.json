@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-01-21T08:28:17.458532",
+  "agent_name": "Media",
+  "step": "start",
+  "input_context": {
+    "task": "enhance_media",
+    "user_id": "admin@admin.com",
+    "request_id": "411b4302-339a-4f62-b263-9fe8f8373043",
+    "params": {
+      "project_id": "bail_parole_support",
+      "user_id": "admin@admin.com"
+    }
+  },
+  "output_result": null,
+  "error_traceback": null
+}

@@ -1,3 +1,4 @@
+# backend/modules/pseo/agents/media.py
 import os
 import re
 import requests
@@ -11,16 +12,18 @@ class MediaAgent(BaseAgent):
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
+        project = memory.get_user_project(user_id)
+        if not project: return AgentOutput(status="error", message="No project.")
         
-        # 1. FETCH DRAFTS
-        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft")
-        # Filter: Drafts that need images
-        targets = [p for p in pages if p['metadata'].get('status') == 'draft' and 'image_url' not in p['metadata']]
+        # 1. FETCH TARGETS (Pipeline Scoped)
+        # Input: Librarian sets status to 'ready_for_media'
+        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project['project_id'])
+        targets = [p for p in pages if p['metadata'].get('status') == 'ready_for_media']
         
         if not targets:
             return AgentOutput(status="complete", message="No pages need images.")
             
-        batch = targets[:5]
+        batch = targets[:5] # Process in small batches
         self.logger.info(f"🖼️ Finding images for {len(batch)} pages...")
 
         success_count = 0
@@ -28,53 +31,42 @@ class MediaAgent(BaseAgent):
         for page in batch:
             try:
                 # 2. CONSTRUCT SMART QUERY
-                # Step A: Get the raw city (e.g., "Auckland 1010")
                 raw_city = page['metadata'].get('city', 'Auckland')
-                
-                # Step B: "The Zip Code Killer" - Remove all numbers
-                # "Auckland 1010" -> "Auckland"
+                # "The Zip Code Killer" - Remove numbers: "Auckland 1010" -> "Auckland"
                 clean_city = re.sub(r'\d+', '', raw_city).strip()
                 
-                # Step C: The "Universal Vibe" Query
-                # We use "City Architecture" because it works for Lawyers, Plumbers, and Cafes.
-                # It guarantees a professional result (no "zero results" errors).
+                # "Universal Vibe" Query: guarantees professional results
                 query = f"{clean_city} city architecture"
                 
-                self.logger.info(f"Searching Unsplash for: '{query}'")
-
                 # 3. SEARCH UNSPLASH
                 img_url = ""
                 credit = ""
-                
-                # Generic City Fallback Image (in case of API failure)
                 fallback_img = "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b"
                 
                 if not self.unsplash_key:
-                    self.logger.warning("No Unsplash Key found. Using fallback placeholder.")
                     img_url = fallback_img
                     credit = "Unsplash"
                 else:
-                    # Real API Call
-                    url = f"https://api.unsplash.com/search/photos?query={query}&per_page=1&orientation=landscape&client_id={self.unsplash_key}"
-                    res = requests.get(url)
-                    
-                    if res.status_code == 200:
-                        data = res.json()
-                        if data['results']:
-                            img_url = data['results'][0]['urls']['regular']
-                            credit = f"Photo by {data['results'][0]['user']['name']} on Unsplash"
-                            self.logger.info(f"✅ Found image for {page['name']}")
+                    try:
+                        url = f"https://api.unsplash.com/search/photos?query={query}&per_page=1&orientation=landscape&client_id={self.unsplash_key}"
+                        res = requests.get(url, timeout=5)
+                        
+                        if res.status_code == 200:
+                            data = res.json()
+                            if data['results']:
+                                img_url = data['results'][0]['urls']['regular']
+                                credit = f"Photo by {data['results'][0]['user']['name']} on Unsplash"
+                            else:
+                                img_url = fallback_img
+                                credit = "Unsplash"
                         else:
-                            self.logger.warning(f"⚠️ Zero results for '{query}'. Using fallback.")
                             img_url = fallback_img
                             credit = "Unsplash"
-                    else:
-                        self.logger.error(f"❌ Unsplash API Error: {res.status_code} - {res.text}")
+                    except:
                         img_url = fallback_img
                         credit = "Unsplash"
 
-                # 4. UPDATE PAGE ENTITY
-                # Create the HTML for the image
+                # 4. INJECT HTML
                 img_html = f'''
                 <div class="featured-image" style="margin-bottom: 2rem;">
                     <img src="{img_url}" alt="{clean_city} Cityscape" style="width:100%; height: auto; border-radius:8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
@@ -82,16 +74,20 @@ class MediaAgent(BaseAgent):
                 </div>
                 '''
                 
-                # Update Metadata
+                # 5. UPDATE ENTITY & ADVANCE PIPELINE
                 new_meta = page['metadata'].copy()
                 new_meta['image_url'] = img_url
-                new_meta['content'] = img_html + "\n" + new_meta['content'] # Prepend image
+                # Prepend image to content
+                new_meta['content'] = img_html + "\n" + new_meta['content']
+                
+                # CRITICAL: Advance status to next agent (Utility)
+                new_meta['status'] = 'ready_for_utility'
                 
                 if memory.update_entity(page['id'], new_meta):
                     success_count += 1
                 
             except Exception as e:
-                self.logger.error(f"❌ Media Agent Critical Fail on '{page['name']}': {e}", exc_info=True)
+                self.logger.error(f"❌ Media Agent Critical Fail on '{page['name']}': {e}")
                 continue
 
         return AgentOutput(
