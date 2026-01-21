@@ -2,7 +2,10 @@
 import time
 import random
 import re
+import logging
 from playwright.sync_api import sync_playwright
+
+logger = logging.getLogger("Apex.Scout")
 
 def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None):
     """
@@ -13,7 +16,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
         allow_kws = [k.lower() for k in (allow_kws or [])]
         block_kws = [k.lower() for k in (block_kws or [])]
         
-        print(f"🕵️ SCOUT SYNC: Initializing for {len(queries)} queries...")
+        logger.info(f"SCOUT SYNC: Initializing for {len(queries)} queries...")
         
         master_data = []
         seen_ids = set()
@@ -30,12 +33,14 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
             try:
                 for query in queries:
                     try:
-                        print(f"\n   🔎 Scouting: {query}...")
+                        logger.info(f"Scouting: {query}...")
                         url = f"https://www.google.co.nz/maps/search/{query.replace(' ', '+')}"
                         page.goto(url, timeout=60000)
                         
-                        try: page.locator('button[aria-label="Accept all"]').first.click(timeout=3000)
-                        except: pass
+                        try: 
+                            page.locator('button[aria-label="Accept all"]').first.click(timeout=3000)
+                        except Exception as e:
+                            logger.debug(f"Could not click accept button for {query}: {e}")
 
                         # --- LIST DETECTION ---
                         is_list = False
@@ -43,11 +48,12 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                             page.wait_for_selector("div[role='feed'], h1", timeout=5000)
                             if page.locator("div[role='feed']").count() > 0:
                                 is_list = True
-                        except: pass
+                        except Exception as e:
+                            logger.debug(f"Could not detect list for {query}: {e}")
 
                         if is_list:
                             # 1. INFINITE SCROLL
-                            print("      📜 Scrolling...")
+                            logger.debug(f"Scrolling for query: {query}")
                             last_count = 0
                             no_change_ticks = 0
                             
@@ -66,7 +72,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                                 if no_change_ticks >= 3 or current_count > 50:
                                     break
                             
-                            print(f"      📍 Found {last_count} targets.")
+                            logger.info(f"Found {last_count} targets for query: {query}")
 
                             # 2. DRILL DOWN LOOP
                             for i in range(last_count):
@@ -96,7 +102,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                                     if unique_id not in seen_ids:
                                         master_data.append(data)
                                         seen_ids.add(unique_id)
-                                        print(f"      ✅ Captured: {raw_name} | 📞 {data['phone']}")
+                                        logger.info(f"Captured: {raw_name} | Phone: {data['phone']}")
 
                                     # Back
                                     if page.locator('button[aria-label="Back"]').count() > 0:
@@ -106,6 +112,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                                     time.sleep(1)
 
                                 except Exception as e:
+                                    logger.warning(f"Error processing item {i} for query {query}: {e}")
                                     continue
                         
                         else:
@@ -118,7 +125,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                                 if block_kws and any(k in raw_name.lower() for k in block_kws): valid = False
                                 
                                 if valid:
-                                    print(f"      📍 Single Result: {raw_name}")
+                                    logger.info(f"Single Result: {raw_name}")
                                     # Wait for details to load
                                     time.sleep(2)
                                     data = extract_details(page, query, raw_name, page.url)
@@ -127,17 +134,18 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
                                     if unique_id not in seen_ids:
                                         master_data.append(data)
                                         seen_ids.add(unique_id)
-                                        print(f"      ✅ Captured: {raw_name} | 📞 {data.get('phone', 'N/A')}")
+                                        logger.info(f"Captured: {raw_name} | Phone: {data.get('phone', 'N/A')}")
 
                     except Exception as e:
-                        print(f"❌ Error on {query}: {e}")
+                        logger.error(f"Error processing query {query}: {e}", exc_info=True)
                         continue
                     
             except Exception as main_e:
+                logger.error(f"Critical error in scout sync: {main_e}", exc_info=True)
                 try:
                     browser.close()
-                except:
-                    pass
+                except Exception as close_e:
+                    logger.warning(f"Error closing browser: {close_e}")
                 return {
                     "success": False,
                     "agent_name": "scout_anchors",
@@ -147,8 +155,9 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
             finally:
                 try:
                     browser.close()
-                except:
-                    pass
+                    logger.debug("Browser closed successfully")
+                except Exception as close_e:
+                    logger.warning(f"Error closing browser in finally block: {close_e}")
 
         return {
             "success": True,
@@ -158,6 +167,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
         }
     except Exception as outer_e:
         # Catch any exception that happens before browser initialization
+        logger.error(f"Scraper initialization failed: {outer_e}", exc_info=True)
         return {
             "success": False,
             "agent_name": "scout_anchors",
@@ -175,6 +185,7 @@ def extract_details(page, source_query, name, source_url):
             data["phone"] = page.locator('button[data-item-id*="phone"]').first.get_attribute("aria-label").replace("Phone: ", "").strip()
         if page.locator('a[data-item-id="authority"]').count() > 0:
             data["website"] = page.locator('a[data-item-id="authority"]').first.get_attribute("href")
-    except: pass
+    except Exception as e:
+        logger.debug(f"Error extracting details for {name}: {e}")
     
     return data

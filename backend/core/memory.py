@@ -148,59 +148,128 @@ class MemoryManager:
         return pwd_hash, salt
 
     def create_user(self, email, password):
-        conn = sqlite3.connect(self.db_path)
-        pwd_hash, salt = self._hash_password(password)
+        self.logger.debug(f"Creating user {email}")
+        conn = None
         try:
+            pwd_hash, salt = self._hash_password(password)
+            conn = sqlite3.connect(self.db_path)
             conn.execute("INSERT INTO users (user_id, password_hash, salt) VALUES (?, ?, ?)", 
                          (email, pwd_hash, salt))
             conn.commit()
+            self.logger.info(f"Successfully created user {email}")
             return True
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as e:
+            self.logger.warning(f"User {email} already exists: {e}")
+            return False
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error creating user {email}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error creating user {email}: {e}")
             return False
         finally:
-            conn.close()
+            if conn:
+                conn.close()
 
     def verify_user(self, email, password):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.execute("SELECT password_hash, salt FROM users WHERE user_id = ?", (email,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            stored_hash, salt = row
-            check_hash, _ = self._hash_password(password, salt)
-            return check_hash == stored_hash
-        return False
+        self.logger.debug(f"Verifying user credentials for {email}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.execute("SELECT password_hash, salt FROM users WHERE user_id = ?", (email,))
+            row = cursor.fetchone()
+            
+            if row:
+                stored_hash, salt = row
+                check_hash, _ = self._hash_password(password, salt)
+                is_valid = check_hash == stored_hash
+                if is_valid:
+                    self.logger.debug(f"Credentials verified for user {email}")
+                else:
+                    self.logger.debug(f"Invalid credentials for user {email}")
+                return is_valid
+            self.logger.debug(f"User {email} not found")
+            return False
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error verifying user {email}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error verifying user {email}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
 
     # ====================================================
     # SECTION B: PROJECT MANAGEMENT
     # ====================================================
     def register_project(self, user_id, project_id, niche):
-        conn = sqlite3.connect(self.db_path)
-        path = f"data/profiles/{project_id}/dna.generated.yaml"
-        conn.execute(
-            "INSERT OR REPLACE INTO projects (project_id, user_id, niche, dna_path) VALUES (?, ?, ?, ?)",
-            (project_id, user_id, niche, path)
-        )
-        conn.commit()
-        conn.close()
+        self.logger.debug(f"Registering project {project_id} for user {user_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            path = f"data/profiles/{project_id}/dna.generated.yaml"
+            conn.execute(
+                "INSERT OR REPLACE INTO projects (project_id, user_id, niche, dna_path) VALUES (?, ?, ?, ?)",
+                (project_id, user_id, niche, path)
+            )
+            conn.commit()
+            self.logger.info(f"Successfully registered project {project_id} for user {user_id}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error registering project {project_id} for user {user_id}: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error registering project {project_id} for user {user_id}: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
 
     def get_user_project(self, user_id):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return dict(row) if row else None
+        self.logger.debug(f"Fetching user project for user {user_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            result = dict(row) if row else None
+            if result:
+                self.logger.debug(f"Found project {result.get('project_id')} for user {user_id}")
+            else:
+                self.logger.debug(f"No project found for user {user_id}")
+            return result
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error fetching user project for user {user_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching user project for user {user_id}: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
 
     def get_projects(self, user_id: str) -> List[Dict]:
         """Get all projects for a specific user."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [dict(row) for row in rows]
+        self.logger.debug(f"Fetching all projects for user {user_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
+            rows = cursor.fetchall()
+            results = [dict(row) for row in rows]
+            self.logger.debug(f"Found {len(results)} projects for user {user_id}")
+            return results
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error fetching projects for user {user_id}: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching projects for user {user_id}: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
 
     # ====================================================
     # SECTION C: SCALABLE ENTITY STORAGE
@@ -214,6 +283,8 @@ class MemoryManager:
         2. Entity.project_id attribute (if set by agent)
         3. Entity.metadata.get("project_id") (fallback for legacy data)
         """
+        self.logger.debug(f"Saving entity {entity.id} of type {entity.entity_type} for tenant {entity.tenant_id}")
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             
@@ -240,49 +311,70 @@ class MemoryManager:
                 entity.created_at
             ))
             conn.commit()
-            conn.close()
+            self.logger.info(f"Successfully saved entity {entity.id} of type {entity.entity_type}")
             return True
-        except Exception as e:
-            self.logger.error(f"SQL Error: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error saving entity {entity.id}: {e}")
             return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error saving entity {entity.id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
 
     def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, 
                      project_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        query = "SELECT * FROM entities WHERE tenant_id = ?"
-        params = [tenant_id]
-        
-        if entity_type:
-            query += " AND entity_type = ?"
-            params.append(entity_type)
-        
-        if project_id:
-            query += " AND (project_id = ? OR project_id IS NULL)"
-            params.append(project_id)
+        self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
             
-        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        conn.close()
-        
-        results = []
-        for row in rows:
-            item = dict(row)
-            try:
-                item['metadata'] = json.loads(item['metadata'])
-            except:
-                item['metadata'] = {}
-            results.append(item)
+            query = "SELECT * FROM entities WHERE tenant_id = ?"
+            params = [tenant_id]
             
-        return results
+            if entity_type:
+                query += " AND entity_type = ?"
+                params.append(entity_type)
+            
+            if project_id:
+                query += " AND (project_id = ? OR project_id IS NULL)"
+                params.append(project_id)
+                
+            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            results = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item['metadata'] = json.loads(item['metadata'])
+                except (json.JSONDecodeError, TypeError) as e:
+                    self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
+                    item['metadata'] = {}
+                results.append(item)
+            
+            self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
+            return results
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error fetching entities for tenant {tenant_id}: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching entities for tenant {tenant_id}: {e}")
+            return []
+        finally:
+            if conn:
+                conn.close()
 
     def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
         """Updates the metadata of an existing entity."""
+        self.logger.debug(f"Updating entity {entity_id}")
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -292,13 +384,14 @@ class MemoryManager:
             row = cursor.fetchone()
             
             if not row:
-                conn.close()
+                self.logger.warning(f"Entity {entity_id} not found for update")
                 return False
             
             # 2. Merge new data with old data
             try:
                 current_meta = json.loads(row[0])
-            except:
+            except (json.JSONDecodeError, TypeError) as e:
+                self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
                 current_meta = {}
             current_meta.update(new_metadata)
             
@@ -309,14 +402,22 @@ class MemoryManager:
             )
             
             conn.commit()
-            conn.close()
+            self.logger.info(f"Successfully updated entity {entity_id}")
             return True
-        except Exception as e:
-            self.logger.error(f"Update Error: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error updating entity {entity_id}: {e}")
             return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating entity {entity_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
 
     def delete_entity(self, entity_id: str, tenant_id: str) -> bool:
         """Deletes an entity with RLS check."""
+        self.logger.debug(f"Deleting entity {entity_id} for tenant {tenant_id}")
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -326,19 +427,27 @@ class MemoryManager:
             row = cursor.fetchone()
             
             if not row:
-                conn.close()
+                self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
                 return False
             
             # Delete the entity
             cursor.execute("DELETE FROM entities WHERE id = ? AND tenant_id = ?", (entity_id, tenant_id))
             conn.commit()
-            conn.close()
+            self.logger.info(f"Successfully deleted entity {entity_id} for tenant {tenant_id}")
             return True
-        except Exception as e:
-            self.logger.error(f"Delete Error: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error deleting entity {entity_id} for tenant {tenant_id}: {e}")
             return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error deleting entity {entity_id} for tenant {tenant_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
             
     def get_client_secrets(self, user_id: str) -> Optional[Dict[str, str]]:
+        self.logger.debug(f"Fetching client secrets for user {user_id}")
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
@@ -346,22 +455,31 @@ class MemoryManager:
             
             cursor.execute("SELECT wp_url, wp_user, wp_auth_hash FROM client_secrets WHERE user_id = ?", (user_id,))
             row = cursor.fetchone()
-            conn.close()
             
             if row:
+                self.logger.debug(f"Found client secrets for user {user_id}")
                 return {
                     "wp_url": row["wp_url"],
                     "wp_user": row["wp_user"],
                     # Note: In production you'd decrypt wp_auth_hash here
                     "wp_password": row["wp_auth_hash"] 
                 }
+            self.logger.debug(f"No client secrets found for user {user_id}")
+            return None
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error retrieving client secrets for user {user_id}: {e}")
             return None
         except Exception as e:
-            self.logger.error(f"Error retrieving client secrets: {e}")
+            self.logger.error(f"Unexpected error retrieving client secrets for user {user_id}: {e}")
             return None
+        finally:
+            if conn:
+                conn.close()
 
     def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
         """Save or update WordPress credentials for a user."""
+        self.logger.debug(f"Saving client secrets for user {user_id}")
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -373,11 +491,17 @@ class MemoryManager:
             ''', (user_id, wp_url, wp_user, wp_password))
             
             conn.commit()
-            conn.close()
+            self.logger.info(f"Successfully saved client secrets for user {user_id}")
             return True
-        except Exception as e:
-            self.logger.error(f"Error saving client secrets: {e}")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error saving client secrets for user {user_id}: {e}")
             return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error saving client secrets for user {user_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
 
     # ====================================================
     # SECTION D: SEMANTIC MEMORY (RAG)

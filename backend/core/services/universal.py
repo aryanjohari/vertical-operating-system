@@ -1,7 +1,10 @@
 # backend/core/services/universal.py
 import asyncio
+import logging
 from urllib.parse import urljoin, urlparse
 from playwright.async_api import async_playwright
+
+logger = logging.getLogger("Apex.UniversalScraper")
 
 class UniversalScraper:
     """
@@ -19,12 +22,14 @@ class UniversalScraper:
         """
         self.max_pages = max_pages
         self.max_depth = max_depth
+        self.logger = logging.getLogger("Apex.UniversalScraper")
     
     async def scrape(self, url: str):
         """
         Deep scraping: Crawls multiple pages from the website.
         Returns combined content from all crawled pages.
         """
+        self.logger.info(f"Starting deep scrape for URL: {url}")
         # Parse base URL
         parsed = urlparse(url)
         base_domain = f"{parsed.scheme}://{parsed.netloc}"
@@ -81,8 +86,9 @@ class UniversalScraper:
                         # Navigate with timeout
                         try:
                             await page.goto(current_url, wait_until="networkidle", timeout=30000)
-                        except Exception:
+                        except Exception as nav_e:
                             # Fallback if networkidle times out
+                            self.logger.debug(f"networkidle timeout for {current_url}, retrying with basic navigation: {nav_e}")
                             await page.goto(current_url, timeout=30000)
                         
                         # Extract title (use homepage title)
@@ -125,7 +131,7 @@ class UniversalScraper:
                         
                     except Exception as e:
                         # Log but continue crawling other pages
-                        self.log(f"Error scraping {current_url}: {e}")
+                        self.logger.warning(f"Error scraping {current_url}: {e}", exc_info=True)
                         continue
                 
                 await browser.close()
@@ -133,8 +139,10 @@ class UniversalScraper:
                 # Combine all content
                 data["content"] = "\n".join(all_content)
                 data["pages_scraped"] = len(visited)
+                self.logger.info(f"Completed scraping {data['pages_scraped']} pages from {url}")
                 
         except Exception as e:
+            self.logger.error(f"Critical error during scraping of {url}: {e}", exc_info=True)
             data["error"] = str(e)
         
         # Truncate to save tokens, strip whitespace
@@ -145,8 +153,8 @@ class UniversalScraper:
         return data
     
     def log(self, message: str):
-        """Simple logging - can be replaced with proper logger if needed."""
-        print(f"[UniversalScraper] {message}")
+        """Logging method using proper logger."""
+        self.logger.info(message)
 
 # Standalone function for backward compatibility (optional)
 async def scrape_website(url: str):

@@ -234,25 +234,37 @@ async def update_entity_endpoint(
         
         # Update name and primary_contact directly via SQL if provided
         if request.name is not None or request.primary_contact is not None:
-            conn = sqlite3.connect(memory.db_path)
-            cursor = conn.cursor()
-            if request.name is not None and request.primary_contact is not None:
-                cursor.execute(
-                    "UPDATE entities SET name = ?, primary_contact = ? WHERE id = ? AND tenant_id = ?",
-                    (request.name, request.primary_contact, entity_id, user_id)
-                )
-            elif request.name is not None:
-                cursor.execute(
-                    "UPDATE entities SET name = ? WHERE id = ? AND tenant_id = ?",
-                    (request.name, entity_id, user_id)
-                )
-            elif request.primary_contact is not None:
-                cursor.execute(
-                    "UPDATE entities SET primary_contact = ? WHERE id = ? AND tenant_id = ?",
-                    (request.primary_contact, entity_id, user_id)
-                )
-            conn.commit()
-            conn.close()
+            conn = None
+            try:
+                logger.debug(f"Updating entity {entity_id} name/contact via direct SQL for user {user_id}")
+                conn = sqlite3.connect(memory.db_path)
+                cursor = conn.cursor()
+                if request.name is not None and request.primary_contact is not None:
+                    cursor.execute(
+                        "UPDATE entities SET name = ?, primary_contact = ? WHERE id = ? AND tenant_id = ?",
+                        (request.name, request.primary_contact, entity_id, user_id)
+                    )
+                elif request.name is not None:
+                    cursor.execute(
+                        "UPDATE entities SET name = ? WHERE id = ? AND tenant_id = ?",
+                        (request.name, entity_id, user_id)
+                    )
+                elif request.primary_contact is not None:
+                    cursor.execute(
+                        "UPDATE entities SET primary_contact = ? WHERE id = ? AND tenant_id = ?",
+                        (request.primary_contact, entity_id, user_id)
+                    )
+                conn.commit()
+                logger.debug(f"Successfully updated entity {entity_id} name/contact via direct SQL")
+            except sqlite3.Error as e:
+                logger.error(f"Database error updating entity {entity_id} name/contact: {e}")
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+            except Exception as e:
+                logger.error(f"Unexpected error updating entity {entity_id} name/contact: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+            finally:
+                if conn:
+                    conn.close()
         
         # Update metadata if provided
         if request.metadata:

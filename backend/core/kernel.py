@@ -39,8 +39,11 @@ class Kernel:
         Priority 1: Exact Match (e.g. task='manager' -> agent='manager')
         Priority 2: Prefix Match (e.g. task='scout_anchors' -> agent='scout')
         """
+        self.logger.debug(f"Resolving agent for task: {task}")
+        
         # 1. Exact Match
         if task in self.agents:
+            self.logger.debug(f"Exact match found: {task}")
             return task
         
         # 2. Prefix/Fuzzy Match (Dynamic)
@@ -49,8 +52,10 @@ class Kernel:
         # Let's rely on the Registry keys being the prefix or substring.
         for agent_key in self.agents:
             if agent_key in task:
+                self.logger.debug(f"Prefix match found: {agent_key} for task {task}")
                 return agent_key
-                
+        
+        self.logger.debug(f"No agent match found for task: {task}")
         return None
 
     async def dispatch(self, packet: AgentInput) -> AgentOutput:
@@ -95,17 +100,40 @@ class Kernel:
         
         if not niche and packet.user_id:
             # Auto-lookup active project
-            project = memory.get_user_project(packet.user_id)
-            if project:
-                niche = project['project_id']
-                self.logger.info(f"🔍 Context Loaded: {niche}")
+            try:
+                project = memory.get_user_project(packet.user_id)
+                if project:
+                    niche = project['project_id']
+                    self.logger.info(f"🔍 Context Loaded: {niche}")
+                else:
+                    self.logger.warning(f"No project found for user {packet.user_id}, will use default")
+            except Exception as e:
+                self.logger.error(f"Failed to load user project for {packet.user_id}: {e}")
+                # Continue with fallback
 
         if not niche:
             niche = "default" # Fallback
+            self.logger.warning(f"No niche/project_id specified, using fallback: {niche}")
 
         # Load DNA Profile
         from backend.core.config import ConfigLoader
-        user_config = ConfigLoader().load(niche)
+        try:
+            user_config = ConfigLoader().load(niche)
+            
+            # Check for config errors
+            if isinstance(user_config, dict) and "error" in user_config:
+                error_msg = user_config.get("error", "Unknown config error")
+                self.logger.error(f"Config loading failed for {niche}: {error_msg}")
+                return AgentOutput(
+                    status="error",
+                    message=f"Configuration error for project '{niche}': {error_msg}"
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to load config for {niche}: {e}", exc_info=True)
+            return AgentOutput(
+                status="error",
+                message=f"Failed to load configuration for project '{niche}': {str(e)}"
+            )
         
         # Inject Context into Agent
         agent = self.agents[agent_key]
