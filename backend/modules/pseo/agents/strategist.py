@@ -8,28 +8,36 @@ from backend.core.memory import memory
 from backend.core.models import Entity
 from backend.core.services.universal import UniversalScraper
 from backend.core.services.llm_gateway import llm_gateway
-from backend.core.config import ConfigLoader
 
 class StrategistAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Strategist")
         self.scraper = UniversalScraper()
-        self.config_loader = ConfigLoader()
         # Negative keywords to filter out irrelevant businesses (e.g., "Carpet Court")
         self.negative_keywords = ['carpet', 'flooring', 'store', 'shop']
         # Model selection for strategy tasks (lightweight model for brainstorming)
         self.model = "gemini-2.5-flash-lite"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project:
-            return AgentOutput(status="error", message="No active project found.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        project_id = project['project_id']
+        if not self.config:
+            self.logger.error("Missing injected config")
+            return AgentOutput(status="error", message="Configuration not loaded.")
         
-        # 1. LOAD CONFIG (DNA)
-        config = self.config_loader.load(project_id)
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
+        
+        # 1. USE INJECTED CONFIG (DNA loaded by kernel)
+        config = self.config
         
         # 2. DETERMINE STRATEGY SOURCE
         # Priority: Input Params > DNA Config > Fallback (Brainstorm)

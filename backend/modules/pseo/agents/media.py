@@ -2,6 +2,8 @@
 import os
 import re
 import requests
+import html
+from urllib.parse import urlparse
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 
@@ -11,13 +13,22 @@ class MediaAgent(BaseAgent):
         self.unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project: return AgentOutput(status="error", message="No project.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
+        
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
         
         # 1. FETCH TARGETS (Pipeline Scoped)
         # Input: Librarian sets status to 'ready_for_media'
-        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project['project_id'])
+        pages = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         targets = [p for p in pages if p['metadata'].get('status') == 'ready_for_media']
         
         if not targets:
@@ -66,11 +77,26 @@ class MediaAgent(BaseAgent):
                         img_url = fallback_img
                         credit = "Unsplash"
 
-                # 4. INJECT HTML
+                # 3.5 VALIDATE URL (security: prevent XSS)
+                def validate_url(url: str) -> bool:
+                    try:
+                        result = urlparse(url)
+                        return result.scheme in ['http', 'https'] and result.netloc
+                    except:
+                        return False
+                
+                if not validate_url(img_url):
+                    img_url = fallback_img
+                
+                # 4. INJECT HTML (with sanitization)
+                clean_city_escaped = html.escape(clean_city)
+                img_url_escaped = html.escape(img_url)
+                credit_escaped = html.escape(credit)
+                
                 img_html = f'''
                 <div class="featured-image" style="margin-bottom: 2rem;">
-                    <img src="{img_url}" alt="{clean_city} Cityscape" style="width:100%; height: auto; border-radius:8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                    <small style="color: #666; font-size: 0.8rem;">{credit}</small>
+                    <img src="{img_url_escaped}" alt="{clean_city_escaped} Cityscape" style="width:100%; height: auto; border-radius:8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <small style="color: #666; font-size: 0.8rem;">{credit_escaped}</small>
                 </div>
                 '''
                 

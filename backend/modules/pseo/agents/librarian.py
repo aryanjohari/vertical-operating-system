@@ -1,5 +1,7 @@
 # backend/modules/pseo/agents/librarian.py
 import random
+import re
+import html
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 
@@ -8,11 +10,18 @@ class LibrarianAgent(BaseAgent):
         super().__init__(name="Librarian")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project: return AgentOutput(status="error", message="No project.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        project_id = project['project_id']
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
         
         # 1. FETCH CANDIDATES
         # Pipeline: Writer -> Critic (Sets 'validated') -> Librarian -> Media
@@ -64,8 +73,17 @@ class LibrarianAgent(BaseAgent):
                 self._promote(page)
                 continue
 
-            # 3. GENERATE HTML (With SEO Slugs)
-            links_list = "".join([f'<li><a href="/{p["metadata"]["slug"]}">{p["name"]}</a></li>' for p in picks])
+            # 3. GENERATE HTML (With SEO Slugs and sanitization)
+            def sanitize_slug(slug: str) -> str:
+                """Remove any non-alphanumeric except hyphens/underscores"""
+                if not slug:
+                    return ""
+                return re.sub(r'[^a-z0-9_-]', '', slug.lower())
+            
+            links_list = "".join([
+                f'<li><a href="/{sanitize_slug(p["metadata"].get("slug", ""))}">{html.escape(p["name"])}</a></li>' 
+                for p in picks
+            ])
             
             link_box = f"""
             <div class="apex-related-links" style="margin: 2rem 0; padding: 1.5rem; background: #f8f9fa; border-left: 4px solid #2563eb; border-radius: 4px;">

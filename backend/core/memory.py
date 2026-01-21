@@ -13,26 +13,42 @@ from google import genai  # <--- REQUIRED
 from backend.core.models import Entity
 from backend.core.security import security_core
 
-# --- NEW: Google Embedding Wrapper (The Fix) ---
+# --- Google Embedding Wrapper using LLM Gateway ---
 class GoogleEmbeddingFunction:
+    """
+    ChromaDB-compatible embedding function using Google Gemini API via LLMGateway.
+    Ensures consistent embedding generation across the system.
+    """
     def __init__(self):
-        # Uses your existing GOOGLE_API_KEY with validation
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
-        self.client = genai.Client(api_key=api_key)
+        # Import here to avoid circular dependency
+        from backend.core.services.llm_gateway import llm_gateway
+        self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
+        self.model = "text-embedding-004"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
+        """
+        Generate embeddings for input texts using Google Gemini API.
+        
+        Args:
+            input: List of text strings to embed
+            
+        Returns:
+            List of embedding vectors (list of floats)
+        """
         if not input:
             return []
-        # Uses Google's efficient model instead of local download
-        response = self.client.models.embed_content(
-            model="text-embedding-004",
-            contents=input
-        )
-        return [e.values for e in response.embeddings]
+        
+        try:
+            # Use LLM Gateway for consistent embedding generation
+            return self.llm_gateway.generate_embeddings(
+                texts=input,
+                model=self.model
+            )
+        except Exception as e:
+            logging.getLogger("ApexMemory").error(f"Failed to generate embeddings: {e}", exc_info=True)
+            raise
 
 class MemoryManager:
     def __init__(self, db_path="data/apex.db", vector_path="data/chroma_db"):
@@ -52,20 +68,26 @@ class MemoryManager:
         try:
             self.chroma_client = chromadb.PersistentClient(path=self.vector_path)
             
-            # Create embedding function instance
+            # Create embedding function instance (uses Google Gemini API)
             embedding_fn = GoogleEmbeddingFunction()
             
-            # Try to get existing collection first (without embedding_function)
+            # Try to get existing collection first (ChromaDB persists the embedding function)
             try:
-                self.vector_collection = self.chroma_client.get_collection(name="apex_context")
-                self.logger.info("Reusing existing ChromaDB collection")
-            except Exception:
-                # Collection doesn't exist, create it with embedding function
+                # Get existing collection - ChromaDB will use the stored embedding function
+                # If collection exists, it will use its stored embedding function
+                # We pass embedding_fn to ensure new operations use Google embeddings
+                self.vector_collection = self.chroma_client.get_collection(
+                    name="apex_context",
+                    embedding_function=embedding_fn
+                )
+                self.logger.info("Loaded existing ChromaDB collection (using Google embeddings)")
+            except Exception as e:
+                # Collection doesn't exist, create it with Google embedding function
                 self.vector_collection = self.chroma_client.create_collection(
                     name="apex_context",
                     embedding_function=embedding_fn
                 )
-                self.logger.info("Created new ChromaDB collection")
+                self.logger.info("Created new ChromaDB collection with Google embeddings")
             
             self.chroma_enabled = True
             self.logger.info("🧠 Memory Systems Online (SQL + Google RAG)")

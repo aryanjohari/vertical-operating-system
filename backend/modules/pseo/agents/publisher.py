@@ -2,23 +2,31 @@ import requests
 import base64
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
-from backend.core.config import ConfigLoader
 
 class PublisherAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Publisher")
-        self.config_loader = ConfigLoader()
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project:
-            return AgentOutput(status="error", message="No active project.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        project_id = project['project_id']
+        if not self.config:
+            self.logger.error("Missing injected config")
+            return AgentOutput(status="error", message="Configuration not loaded.")
         
-        # 1. LOAD CONFIG & SECRETS
-        config = self.config_loader.load(project_id)
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
+        
+        # 1. USE INJECTED CONFIG & SECRETS (loaded by kernel)
+        config = self.config
         pub_settings = config.get('modules', {}).get('local_seo', {}).get('publisher_settings', {})
         
         # Validate Credentials
@@ -26,11 +34,17 @@ class PublisherAgent(BaseAgent):
         wp_user = pub_settings.get('username')
         # In production, password should come from a secure vault (memory.get_client_secrets)
         # For this architecture, we check the DB secrets first
-        secrets = memory.get_client_secrets(user_id)
-        wp_password = secrets.get('wp_password') if secrets else None
+        try:
+            secrets = memory.get_client_secrets(user_id)
+            wp_password = secrets.get('wp_password') if secrets else None
+            if not wp_password:
+                return AgentOutput(status="error", message="WordPress password not found in secrets.")
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve/decrypt WordPress password: {e}", exc_info=True)
+            return AgentOutput(status="error", message="Credential retrieval failed.")
 
-        if not wp_url or not wp_user or not wp_password:
-             return AgentOutput(status="error", message="Missing WordPress credentials in Config/Secrets.")
+        if not wp_url or not wp_user:
+             return AgentOutput(status="error", message="Missing WordPress URL or username in Config.")
 
         # 2. FETCH READY PAGES (Pipeline Scoped)
         # Input: Utility sets status to 'ready_to_publish'

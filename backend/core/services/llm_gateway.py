@@ -74,6 +74,57 @@ class LLMGateway:
             f"LLM generation failed after {max_retries} attempts: {last_error}"
         )
 
+    def generate_embeddings(
+        self,
+        texts: list[str],
+        model: str = "text-embedding-004",
+        max_retries: int = 3,
+    ) -> list[list[float]]:
+        """
+        Generate embeddings using Google's embedding API.
+        
+        Args:
+            texts: List of text strings to embed
+            model: Embedding model to use (default: text-embedding-004)
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            List of embedding vectors (list of floats)
+        """
+        if not texts:
+            return []
+        
+        last_error = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.logger.debug(
+                    f"Embedding request attempt {attempt}/{max_retries} | model={model} | texts={len(texts)}"
+                )
+                
+                response = self.client.models.embed_content(
+                    model=model,
+                    contents=texts
+                )
+                
+                embeddings = [e.values for e in response.embeddings]
+                
+                if not embeddings or len(embeddings) != len(texts):
+                    raise ValueError(f"Embedding count mismatch: expected {len(texts)}, got {len(embeddings)}")
+                
+                return embeddings
+                
+            except Exception as e:
+                last_error = e
+                self.logger.warning(
+                    f"Embedding attempt {attempt} failed: {e}", exc_info=True
+                )
+        
+        # Exhausted retries
+        raise RuntimeError(
+            f"Embedding generation failed after {max_retries} attempts: {last_error}"
+        )
+
 
 # Singleton instance
 llm_gateway = LLMGateway()

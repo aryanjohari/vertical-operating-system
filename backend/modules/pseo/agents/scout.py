@@ -1,37 +1,41 @@
 # backend/modules/pseo/agents/scout.py
 import asyncio
+import hashlib
 from datetime import datetime
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.services.maps_sync import run_scout_sync  # The Heavy Lifter
 from backend.core.memory import memory
-from backend.core.config import ConfigLoader
 
 class ScoutAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Scout")
-        self.config_loader = ConfigLoader()
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
         Task: 'scout_anchors'
         Purpose: Find physical locations (Anchors) to ground the SEO strategy.
-        Input: user_id, project_id (implicit via memory), queries (optional override)
+        Input: user_id, project_id (injected by kernel), queries (optional override)
         """
-        task = input_data.task
-        user_id = input_data.user_id
-
-        # 1. GET PROJECT CONTEXT
-        project = memory.get_user_project(user_id)
-        if not project:
-            return AgentOutput(status="error", message="No active project found for user.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        project_id = project['project_id']
+        if not self.config:
+            self.logger.error("Missing injected config")
+            return AgentOutput(status="error", message="Configuration not loaded.")
         
-        # 2. LOAD DNA CONFIG
-        # We need the specific rules for this client (e.g. Block "Youth Prison")
-        config = self.config_loader.load(project_id)
-        scout_rules = config.get('modules', {}).get('local_seo', {}).get('scout_settings', {})
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
+        
+        # 2. USE INJECTED DNA CONFIG (loaded by kernel)
+        scout_rules = self.config.get('modules', {}).get('local_seo', {}).get('scout_settings', {})
         
         # 3. DETERMINE QUERIES
         # Priority: Direct Input > DNA Config > Default
@@ -58,7 +62,7 @@ class ScoutAgent(BaseAgent):
             
         block_kws = scout_rules.get('block_keywords', [])
 
-        self.log(f"📍 Launching Sync Scraper for {len(queries)} queries (Project: {project_id})...")
+        self.logger.info(f"📍 Launching Sync Scraper for {len(queries)} queries (Project: {project_id})...")
 
         # 5. EXECUTE SCRAPER (Threaded)
         # We use asyncio.to_thread because Playwright Sync is blocking
@@ -85,9 +89,10 @@ class ScoutAgent(BaseAgent):
         for item in results:
             if not isinstance(item, dict): continue
             
-            # Create Unique ID based on URL or Name+Address
+            # Create Unique ID based on URL or Name+Address (using SHA256 to prevent collisions)
             uid_source = item.get('google_maps_url') or f"{item.get('name')}-{item.get('address')}"
-            entity_id = f"loc_{hash(uid_source)}"
+            uid_hash = hashlib.sha256(uid_source.encode()).hexdigest()[:16]
+            entity_id = f"loc_{uid_hash}"
             
             entity_obj = Entity(
                 id=entity_id,

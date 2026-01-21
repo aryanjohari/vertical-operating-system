@@ -5,6 +5,8 @@ pydantic>=2.6.0
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 google-genai>=0.3.0
+google-auth>=2.23.0
+google-api-python-client>=2.100.0
 
 # AUTHENTICATION & SECURITY (JWT support - SQLite now, Supabase-ready)
 pyjwt>=2.8.0

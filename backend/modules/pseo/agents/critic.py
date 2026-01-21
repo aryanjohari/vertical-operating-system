@@ -11,13 +11,18 @@ class CriticAgent(BaseAgent):
         self.model = "gemini-2.5-flash-lite"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        # Get project context
-        project = memory.get_user_project(user_id)
-        if not project:
-            return AgentOutput(status="error", message="No active project found.")
-        project_id = project['project_id']
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
         
         # 1. FETCH UNREVIEWED DRAFTS (Scoped to Project)
         drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)

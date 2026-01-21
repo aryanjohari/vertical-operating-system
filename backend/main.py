@@ -1,4 +1,7 @@
-# backend/main.py
+from dotenv import load_dotenv
+load_dotenv() # backend/main.py
+
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -19,7 +22,10 @@ import os
 import re
 import traceback
 import sqlite3
+import yaml
 from datetime import datetime
+
+
 
 # Initialize logging system BEFORE app initialization
 setup_logging()
@@ -513,6 +519,66 @@ async def save_settings(
     except Exception as e:
         logger.error(f"Save settings error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to save settings")
+
+# DNA Config endpoints
+@app.get("/api/projects/{project_id}/dna")
+async def get_dna_config(
+    project_id: str,
+    user_id: str = Depends(get_current_user)
+):
+    """Get DNA configuration for a project."""
+    try:
+        # Verify project ownership
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
+        # Load config using ConfigLoader
+        from backend.core.config import ConfigLoader
+        config_loader = ConfigLoader()
+        config = config_loader.load(project_id)
+        
+        if "error" in config:
+            raise HTTPException(status_code=404, detail=config.get("error", "Config not found"))
+        
+        return {"config": config}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get DNA config error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load DNA configuration")
+
+@app.put("/api/projects/{project_id}/dna")
+async def update_dna_config(
+    project_id: str,
+    config: Dict[str, Any],
+    user_id: str = Depends(get_current_user)
+):
+    """Update DNA configuration for a project (writes to dna.custom.yaml)."""
+    try:
+        # Verify project ownership
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
+        # Get profile path
+        from backend.core.config import ConfigLoader
+        config_loader = ConfigLoader()
+        profile_path = os.path.join(config_loader.profiles_dir, project_id)
+        
+        # Ensure directory exists
+        os.makedirs(profile_path, exist_ok=True)
+        
+        # Write to dna.custom.yaml
+        custom_path = os.path.join(profile_path, "dna.custom.yaml")
+        with open(custom_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        
+        logger.info(f"Updated DNA config for project {project_id} by user {user_id}")
+        return {"success": True, "message": "DNA configuration updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update DNA config error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to update DNA configuration")
 
 # Include voice router
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])

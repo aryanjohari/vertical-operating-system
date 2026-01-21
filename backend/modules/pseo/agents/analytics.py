@@ -4,25 +4,34 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
-from backend.core.config import ConfigLoader
 
 class AnalyticsAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="DataScientist")
         self.scopes = ['https://www.googleapis.com/auth/webmasters.readonly']
-        # This file must exist on your server
-        self.service_account_file = 'service_account.json' 
-        self.config_loader = ConfigLoader()
+        # This file must exist on your server (can be overridden via env var)
+        self.service_account_file = os.getenv('GSC_SERVICE_ACCOUNT_FILE', 'service_account.json')
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project: return AgentOutput(status="error", message="No project.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        project_id = project['project_id']
+        if not self.config:
+            self.logger.error("Missing injected config")
+            return AgentOutput(status="error", message="Configuration not loaded.")
         
-        # 1. LOAD CONFIG (Dynamic Site URL)
-        config = self.config_loader.load(project_id)
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
+        
+        # 1. USE INJECTED CONFIG (Dynamic Site URL, loaded by kernel)
+        config = self.config
         site_url = config.get('identity', {}).get('website')
         
         if not site_url:
@@ -30,7 +39,8 @@ class AnalyticsAgent(BaseAgent):
 
         # 2. CONNECT TO GSC
         if not os.path.exists(self.service_account_file):
-            return AgentOutput(status="skipped", message="No GSC Credentials (service_account.json).")
+            self.logger.warning(f"GSC credentials not found at {self.service_account_file}")
+            return AgentOutput(status="skipped", message=f"No GSC Credentials at {self.service_account_file}.")
 
         try:
             creds = service_account.Credentials.from_service_account_file(self.service_account_file, scopes=self.scopes)

@@ -12,6 +12,8 @@ class BaseAgent(ABC):
     def __init__(self, name: str, config: Dict[str, Any] = None):
         self.name = name
         self.config = config or {}
+        self.project_id: Optional[str] = None  # Injected by kernel
+        self.user_id: Optional[str] = None  # Injected by kernel
         self.logger = logging.getLogger(f"Apex.{name}")
         
     def log(self, message: str):

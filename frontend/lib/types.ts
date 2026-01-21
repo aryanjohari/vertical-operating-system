@@ -1,0 +1,105 @@
+// lib/types.ts
+export interface AgentInput {
+  task: string;
+  user_id: string;
+  params: Record<string, any>;
+  request_id?: string;
+}
+
+export interface AgentOutput {
+  status: 'success' | 'error' | 'complete' | 'warning' | 'skipped';
+  data: any;
+  message: string;
+  timestamp: string;
+  error_details?: any;
+}
+
+export interface Entity {
+  id: string;
+  tenant_id: string;
+  project_id?: string;
+  entity_type: string;
+  name: string;
+  primary_contact?: string;
+  metadata: Record<string, any>;
+  created_at: string;
+}
+
+export interface Project {
+  project_id: string;
+  user_id: string;
+  niche: string;
+  dna_path?: string;
+  created_at: string;
+}
+
+export interface DNAConfig {
+  identity: {
+    project_id: string;
+    business_name: string;
+    niche: string;
+    website: string;
+    contact: {
+      phone: string;
+      email: string;
+      address: string;
+    };
+  };
+  brand_brain: {
+    voice_tone: string;
+    key_differentiators: string[];
+    insider_tips: string[];
+    common_objections: string[];
+    forbidden_topics: string[];
+  };
+  modules: {
+    local_seo?: {
+      enabled: boolean;
+      scout_settings: {
+        anchor_entities: string[];
+        geo_scope: {
+          cities: string[];
+        };
+      };
+      publisher_settings: {
+        cms: string;
+        url: string;
+        username: string;
+      };
+    };
+    lead_gen?: {
+      enabled: boolean;
+      voice_agent: {
+        forwarding_number: string;
+        greeting: string;
+      };
+      tools: {
+        lead_magnets: string[];
+      };
+    };
+  };
+}
+
+export interface AuthResponse {
+  success: boolean;
+  user_id?: string;
+  token?: string;
+}
+
+export interface Settings {
+  wp_url: string;
+  wp_user: string;
+  wp_password: string;
+}
+
+export interface PipelineStats {
+  anchors: number;
+  kws_total: number;
+  kws_pending: number;
+  '1_unreviewed': number;
+  '2_validated': number;
+  '3_linked': number;
+  '4_imaged': number;
+  '5_ready': number;
+  '6_live': number;
+}

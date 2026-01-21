@@ -7,30 +7,30 @@ class AgentRegistry:
     Format: "key": ("module_path", "ClassName")
     
     CRITICAL NOTE: 
-    The 'key' must be a substring of the tasks sent by the Manager.
-    Example: key "writer" matches task "write_pages".
+    The 'key' should match the task name exactly for clarity.
+    System agents (like onboarding) bypass DNA loading because they create the config.
     """
     DIRECTORY = {
-        # --- MODULE: ONBOARDING ---
+        # --- MODULE: ONBOARDING (System Agent - Creates DNA) ---
         "onboarding": ("backend.modules.onboarding.genesis", "OnboardingAgent"),
 
         # --- MODULE: APEX GROWTH (pSEO) ---
         # The Manager (Orchestrator)
         "manager": ("backend.modules.pseo.manager", "ManagerAgent"),
         
-        # The Workers
-        "scout": ("backend.modules.pseo.agents.scout", "ScoutAgent"),
-        "strategist": ("backend.modules.pseo.agents.strategist", "StrategistAgent"), # NEW
-        "write": ("backend.modules.pseo.agents.writer", "SeoWriterAgent"),
-        "critic": ("backend.modules.pseo.agents.critic", "CriticAgent"),             # NEW
-        "librarian": ("backend.modules.pseo.agents.librarian", "LibrarianAgent"),    # NEW
-        "media": ("backend.modules.pseo.agents.media", "MediaAgent"),
-        "utility": ("backend.modules.lead_gen.agents.utility", "UtilityAgent"),      # Cross-module logic
+        # The Workers (Task names match Manager's _execute_task calls)
+        "scout_anchors": ("backend.modules.pseo.agents.scout", "ScoutAgent"),
+        "strategist_run": ("backend.modules.pseo.agents.strategist", "StrategistAgent"),
+        "write_pages": ("backend.modules.pseo.agents.writer", "SeoWriterAgent"),
+        "critic_review": ("backend.modules.pseo.agents.critic", "CriticAgent"),
+        "librarian_link": ("backend.modules.pseo.agents.librarian", "LibrarianAgent"),
+        "enhance_media": ("backend.modules.pseo.agents.media", "MediaAgent"),
+        "enhance_utility": ("backend.modules.lead_gen.agents.utility", "UtilityAgent"),
         "publish": ("backend.modules.pseo.agents.publisher", "PublisherAgent"),
-        "analytics": ("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),    # NEW
+        "analytics_audit": ("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),
 
-        # --- MODULE: APEX CONNECT (Lead Gen) ---
-        "twilio": ("backend.modules.lead_gen.agents.twilio", "TwilioAgent"),
+        # --- MODULE: APEX CONNECT (Lead Gen) - COMMENTED OUT ---
+        # "twilio": ("backend.modules.lead_gen.agents.twilio", "TwilioAgent"),
     }
 
 # --- 2. THE FEATURE REGISTRY (For the Frontend) ---

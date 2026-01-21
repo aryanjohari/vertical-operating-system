@@ -3,26 +3,37 @@ from datetime import datetime
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 from backend.core.models import Entity
-from backend.core.config import ConfigLoader
 from backend.core.services.llm_gateway import llm_gateway
 
 class SeoWriterAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="SEOWriter")
-        self.config_loader = ConfigLoader()
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
-        project = memory.get_user_project(user_id)
-        if not project: return AgentOutput(status="error", message="No project.")
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        # Load Config
-        config = self.config_loader.load(project['project_id'])
+        if not self.config:
+            self.logger.error("Missing injected config")
+            return AgentOutput(status="error", message="Configuration not loaded.")
+        
+        project_id = self.project_id
+        user_id = self.user_id
+        
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
+        
+        # Use injected config (loaded by kernel)
+        config = self.config
         contact = config['identity']['contact']
         phone_number = contact.get('phone', '')
         
         # 1. FETCH PENDING KEYWORDS
-        all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project['project_id'])
+        all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
         # Sort by cluster so we write related topics in batches (helps caching)
         pending = sorted(
             [k for k in all_kws if k['metadata'].get('status') == 'pending'],
@@ -35,13 +46,13 @@ class SeoWriterAgent(BaseAgent):
         
         # Retrieve map_embed_url from anchor_location metadata
         anchor_name = target_kw['metadata'].get('target_anchor', '')
-        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project['project_id'])
+        anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
         matching_anchor = [a for a in anchors if a['name'] == anchor_name]
         map_embed_url = matching_anchor[0]['metadata'].get('map_embed_url', '') if matching_anchor else ''
         
         # 2. RAG RETRIEVAL (The Brain)
         # We query the vector DB for specific wisdom related to this keyword
-        rag_hits = memory.query_context(tenant_id=user_id, query=target_kw['name'], project_id=project['project_id'])
+        rag_hits = memory.query_context(tenant_id=user_id, query=target_kw['name'], project_id=project_id)
         client_wisdom = rag_hits if rag_hits else "Focus on trust, speed, and reliability."
 
         # 3. GENERATE SLUG (SEO Friendly)
@@ -140,7 +151,7 @@ class SeoWriterAgent(BaseAgent):
         page = Entity(
             id=page_id,
             tenant_id=user_id,
-            project_id=project['project_id'],
+            project_id=project_id,
             entity_type="page_draft",
             name=target_kw['name'],
             metadata={
@@ -155,7 +166,7 @@ class SeoWriterAgent(BaseAgent):
             created_at=datetime.now()
         )
         # Explicitly pass project_id for clarity and reliability
-        memory.save_entity(page, project_id=project['project_id'])
+        memory.save_entity(page, project_id=project_id)
         
         # Update Keyword to 'drafted'
         memory.update_entity(target_kw['id'], {"status": "drafted"})

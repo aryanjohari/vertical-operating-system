@@ -1,4 +1,5 @@
 import yaml
+import asyncio
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 
@@ -7,14 +8,18 @@ class ManagerAgent(BaseAgent):
         super().__init__(name="Manager")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        user_id = input_data.user_id
+        # Validate injected context (Titanium Standard)
+        if not self.project_id or not self.user_id:
+            self.logger.error("Missing injected context: project_id or user_id")
+            return AgentOutput(status="error", message="Agent context not properly initialized.")
         
-        # 1. GET PROJECT CONTEXT
-        project = memory.get_user_project(user_id)
-        if not project:
-            return AgentOutput(status="error", message="No active project found.")
+        project_id = self.project_id
+        user_id = self.user_id
         
-        project_id = project['project_id']
+        # Verify project ownership (security: defense-in-depth)
+        if not memory.verify_project_ownership(user_id, project_id):
+            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return AgentOutput(status="error", message="Project not found or access denied.")
         
         # 2. FETCH ASSETS (Scoped to Project)
         anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
@@ -36,7 +41,7 @@ class ManagerAgent(BaseAgent):
             "6_live": len([d for d in drafts if d['metadata'].get('status') in ['published', 'live']])
         }
 
-        self.log(f"📊 Pipeline Status: {stats}")
+        self.logger.info(f"📊 Pipeline Status: {stats}")
 
         # 4. ORCHESTRATION LOGIC (Priority: Pull System - Finish what we started)
         # We check from the END of the pipeline backwards.
@@ -119,7 +124,7 @@ class ManagerAgent(BaseAgent):
         params['project_id'] = project_id
         params['user_id'] = user_id
         
-        self.log(f"🚀 Executing task: {task_name} ({step_labels.get(step_id, step_id)})")
+        self.logger.info(f"🚀 Executing task: {task_name} ({step_labels.get(step_id, step_id)})")
         
         # Create AgentInput for the task
         task_input = AgentInput(
@@ -128,9 +133,12 @@ class ManagerAgent(BaseAgent):
             params=params
         )
         
-        # Execute the task via kernel
+        # Execute the task via kernel (with timeout to prevent deadlock)
         try:
-            task_result = await kernel.dispatch(task_input)
+            task_result = await asyncio.wait_for(
+                kernel.dispatch(task_input),
+                timeout=300  # 5 minutes max per task
+            )
             
             # Return result with manager context
             return AgentOutput(
@@ -144,8 +152,21 @@ class ManagerAgent(BaseAgent):
                     "stats": self._format_stats(stats)
                 }
             )
+        except asyncio.TimeoutError:
+            self.logger.error(f"❌ Task {task_name} timed out after 5 minutes")
+            return AgentOutput(
+                status="error",
+                message=f"Task execution timed out after 5 minutes.",
+                data={
+                    "step": step_id,
+                    "action_label": step_labels.get(step_id, step_id),
+                    "task_executed": task_name,
+                    "error": "Task timeout",
+                    "stats": self._format_stats(stats)
+                }
+            )
         except Exception as e:
-            self.log(f"❌ Error executing task {task_name}: {e}")
+            self.logger.error(f"❌ Error executing task {task_name}: {e}", exc_info=True)
             return AgentOutput(
                 status="error",
                 message=f"Failed to execute {step_labels.get(step_id, step_id)}: {str(e)}",
