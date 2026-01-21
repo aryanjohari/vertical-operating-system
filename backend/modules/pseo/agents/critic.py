@@ -1,20 +1,14 @@
 import os
 import json
-from google import genai
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
+from backend.core.services.llm_gateway import llm_gateway
 
 class CriticAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Critic")
-        self._api_key = os.getenv("GOOGLE_API_KEY")
-        self._client = None
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
+        # Model selection for quality review (lightweight model for fast feedback)
+        self.model = "gemini-2.5-flash-lite"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
@@ -52,8 +46,14 @@ class CriticAgent(BaseAgent):
         """
         
         try:
-            res = self.client.models.generate_content(model='gemini-2.5-flash-lite', contents=prompt)
-            review = json.loads(res.text.replace('```json','').replace('```',''))
+            response_text = llm_gateway.generate_content(
+                system_prompt="You are a strict content editor. Always return valid JSON with 'score', 'reason', and 'pass' fields.",
+                user_prompt=prompt,
+                model=self.model,
+                temperature=0.3,  # Lower temperature for consistent scoring
+                max_retries=3
+            )
+            review = json.loads(response_text.replace('```json','').replace('```',''))
             
             # 3. ACTION
             new_meta = target['metadata'].copy()

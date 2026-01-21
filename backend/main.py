@@ -1,12 +1,17 @@
 # backend/main.py
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from backend.core.models import AgentInput, AgentOutput, Entity
 from backend.core.kernel import kernel
 from backend.core.memory import memory
 from backend.core.logger import setup_logging
+from backend.core.auth import (
+    get_current_user,
+    create_access_token,
+    verify_user_credentials
+)
 from backend.routers.voice import voice_router
 import logging
 import uvicorn
@@ -27,13 +32,18 @@ app = FastAPI(
     description="The Vertical Operating System for Revenue & Automation"
 )
 
-# Add CORS middleware to allow Next.js frontend (MVP: allow all origins)
+# CORS Configuration (secure defaults, configurable via env)
+ALLOWED_ORIGINS = os.getenv(
+    "APEX_CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001"  # Default: Next.js dev ports
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # MVP: Allow all origins for testing
+    allow_origins=ALLOWED_ORIGINS,  # Whitelist specific origins
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods (GET, POST, OPTIONS, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 @app.get("/")
@@ -47,30 +57,37 @@ def health_check():
     }
 
 @app.post("/api/run")
-async def run_command(payload: AgentInput):
+async def run_command(
+    payload: AgentInput,
+    user_id: str = Depends(get_current_user)
+):
     """
     The Single Entry Point with Safety Net.
     
     Data Flow:
     1. Receives AgentInput packet from frontend
-    2. Dispatches to Kernel which resolves agent via Registry
-    3. Kernel loads DNA config and executes agent
-    4. Agent saves snapshot and returns AgentOutput
-    5. Always returns HTTP 200 with structured JSON (never 500)
-    6. Frontend can always display the result, even on errors
+    2. Authenticates user via JWT token (user_id derived from token)
+    3. Dispatches to Kernel which resolves agent via Registry
+    4. Kernel loads DNA config and executes agent
+    5. Agent saves snapshot and returns AgentOutput
+    6. Always returns HTTP 200 with structured JSON (never 500)
+    7. Frontend can always display the result, even on errors
     
     This endpoint is wrapped in comprehensive error handling to ensure
     the frontend never sees a 500 error and can always display logs.
     """
     try:
+        # Override user_id from token (security: never trust client-supplied user_id)
+        payload.user_id = user_id
+        
         result = await kernel.dispatch(payload)
-        # Preserve original AgentOutput structure, add logs as additional field
+        
+        # Sanitize response - only return safe fields, not full dict
         return {
             "status": result.status,
             "data": result.data,
             "message": result.message,
             "timestamp": result.timestamp.isoformat() if hasattr(result.timestamp, 'isoformat') else str(result.timestamp),
-            "logs": result.dict(),  # Additional field for full logging/debugging
             "error_details": None
         }
     except ImportError as e:
@@ -80,10 +97,9 @@ async def run_command(payload: AgentInput):
         return {
             "status": "error",
             "data": None,
-            "message": f"ImportError: {str(e)}",
+            "message": "Internal server error. Please try again later.",
             "timestamp": datetime.now().isoformat(),
-            "logs": {},
-            "error_details": f"ImportError: {str(e)}\n{error_trace}"
+            "error_details": None
         }
     except Exception as e:
         # Catch all other exceptions (logic crashes, etc.)
@@ -92,10 +108,9 @@ async def run_command(payload: AgentInput):
         return {
             "status": "error",
             "data": None,
-            "message": f"Exception: {str(e)}",
+            "message": "Internal server error. Please try again later.",
             "timestamp": datetime.now().isoformat(),
-            "logs": {},
-            "error_details": f"Exception: {str(e)}\n{error_trace}"
+            "error_details": None
         }
 
 # Authentication endpoint
@@ -107,30 +122,40 @@ class AuthResponse(BaseModel):
     success: bool
     user_id: Optional[str] = None
 
-@app.post("/api/auth/verify", response_model=AuthResponse)
+class AuthResponseWithToken(AuthResponse):
+    """Extended response with JWT token."""
+    token: Optional[str] = None
+
+@app.post("/api/auth/verify", response_model=AuthResponseWithToken)
 async def verify_auth(request: AuthRequest):
-    """Verify user credentials against SQL database."""
+    """Verify user credentials and return JWT token."""
     try:
         # Trim whitespace from inputs
         email = request.email.strip()
         password = request.password.strip()
         
-        # Debug logging
+        # Validate inputs
+        if not email or not password:
+            logger.warning("Auth failed: empty email or password")
+            return AuthResponseWithToken(success=False, user_id=None, token=None)
+        
         logger.info(f"Verifying user: {email}")
         
-        is_valid = memory.verify_user(email, password)
+        # Verify credentials using auth provider (SQLite now, Supabase-ready)
+        user_id = verify_user_credentials(email, password)
         
-        if is_valid:
+        if user_id:
+            # Create JWT token
+            token = create_access_token(user_id)
             logger.info(f"Auth success: {email}")
-            return AuthResponse(success=True, user_id=email)
+            return AuthResponseWithToken(success=True, user_id=user_id, token=token)
         
-        # Debug: check if user exists
         logger.warning(f"Auth failed: credentials don't match for {email}")
-        return AuthResponse(success=False, user_id=None)
+        return AuthResponseWithToken(success=False, user_id=None, token=None)
     except Exception as e:
         # Log the error for debugging
         logger.error(f"Auth error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Authentication failed. Please try again.")
 
 @app.post("/api/auth/register", response_model=AuthResponse)
 async def register_user(request: AuthRequest):
@@ -162,20 +187,25 @@ async def register_user(request: AuthRequest):
 # Entities endpoints
 @app.get("/api/entities")
 async def get_entities(
-    user_id: str,
     entity_type: Optional[str] = None,
-    project_id: Optional[str] = None
+    project_id: Optional[str] = None,
+    user_id: str = Depends(get_current_user)
 ):
     """Get entities from SQL database for a specific user (RLS enforced)."""
     try:
+        # Verify project ownership if project_id provided
+        if project_id and not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
         entities = memory.get_entities(tenant_id=user_id, entity_type=entity_type, project_id=project_id)
         return {"entities": entities}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Entities error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch entities")
 
 class EntityCreateInput(BaseModel):
-    user_id: str
     entity_type: str
     name: str
     primary_contact: Optional[str] = None
@@ -188,11 +218,18 @@ class EntityUpdateInput(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 @app.post("/api/entities")
-async def create_entity(request: EntityCreateInput):
+async def create_entity(
+    request: EntityCreateInput,
+    user_id: str = Depends(get_current_user)
+):
     """Create a new entity."""
     try:
+        # Verify project ownership if project_id provided
+        if request.project_id and not memory.verify_project_ownership(user_id, request.project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
         entity = Entity(
-            tenant_id=request.user_id,
+            tenant_id=user_id,  # Use authenticated user_id
             entity_type=request.entity_type,
             name=request.name,
             primary_contact=request.primary_contact,
@@ -200,19 +237,21 @@ async def create_entity(request: EntityCreateInput):
         )
         success = memory.save_entity(entity, project_id=request.project_id)
         if success:
-            logger.info(f"Created entity: {entity.id} of type {request.entity_type} for user {request.user_id}")
+            logger.info(f"Created entity: {entity.id} of type {request.entity_type} for user {user_id}")
             return {"success": True, "entity": entity.dict()}
         else:
             raise HTTPException(status_code=500, detail="Failed to save entity")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Create entity error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create entity")
 
 @app.put("/api/entities/{entity_id}")
 async def update_entity_endpoint(
     entity_id: str,
     request: EntityUpdateInput,
-    user_id: str
+    user_id: str = Depends(get_current_user)
 ):
     """Update an existing entity (RLS enforced)."""
     try:
@@ -221,7 +260,7 @@ async def update_entity_endpoint(
         entity = next((e for e in entities if e.get("id") == entity_id), None)
         
         if not entity:
-            raise HTTPException(status_code=404, detail="Entity not found")
+            raise HTTPException(status_code=404, detail="Entity not found or access denied")
         
         # Build update metadata - combine all fields into metadata for update_entity
         update_metadata = {}
@@ -284,7 +323,10 @@ async def update_entity_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/entities/{entity_id}")
-async def delete_entity_endpoint(entity_id: str, user_id: str):
+async def delete_entity_endpoint(
+    entity_id: str,
+    user_id: str = Depends(get_current_user)
+):
     """Delete an entity (RLS enforced)."""
     try:
         success = memory.delete_entity(entity_id, user_id)
@@ -297,11 +339,10 @@ async def delete_entity_endpoint(entity_id: str, user_id: str):
         raise
     except Exception as e:
         logger.error(f"Delete entity error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to delete entity")
 
 # Lead capture endpoints
 class LeadInput(BaseModel):
-    user_id: str
     project_id: str
     source: str  # e.g., "Bail Calc - Auckland Central"
     data: Dict[str, Any]  # Flexible dictionary for captured form data
@@ -312,12 +353,19 @@ class LeadResponse(BaseModel):
     message: str = "Lead captured successfully"
 
 @app.post("/api/leads", response_model=LeadResponse)
-async def create_lead(request: LeadInput):
+async def create_lead(
+    request: LeadInput,
+    user_id: str = Depends(get_current_user)
+):
     """Capture a lead from calculator/contact form and save to SQLite."""
     try:
+        # Verify project ownership
+        if not memory.verify_project_ownership(user_id, request.project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
         # Create Entity for lead
         lead_entity = Entity(
-            tenant_id=request.user_id,
+            tenant_id=user_id,  # Use authenticated user_id
             entity_type="lead",
             name=request.source,
             metadata=request.data
@@ -327,27 +375,28 @@ async def create_lead(request: LeadInput):
         success = memory.save_entity(lead_entity, project_id=request.project_id)
         
         if success:
-            logger.info(f"Captured lead: {request.source} for user {request.user_id}, project {request.project_id}")
+            logger.info(f"Captured lead: {request.source} for user {user_id}, project {request.project_id}")
             return LeadResponse(success=True, lead_id=lead_entity.id, message="Lead captured successfully")
         else:
             raise HTTPException(status_code=500, detail="Failed to save lead")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Leads error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to capture lead")
 
 @app.get("/api/leads")
-async def get_leads(user_id: str):
+async def get_leads(user_id: str = Depends(get_current_user)):
     """Get all leads for a specific user (RLS enforced)."""
     try:
         leads = memory.get_entities(tenant_id=user_id, entity_type="lead")
         return {"leads": leads}
     except Exception as e:
         logger.error(f"Error fetching leads: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch leads")
 
 # Projects endpoint
 class ProjectInput(BaseModel):
-    user_id: str
     name: str
     niche: str
 
@@ -357,7 +406,11 @@ class ProjectResponse(BaseModel):
     message: str = "Project created successfully"
 
 @app.post("/api/projects", response_model=ProjectResponse)
-async def create_project(request: ProjectInput, background_tasks: BackgroundTasks):
+async def create_project(
+    request: ProjectInput,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user)
+):
     """Create a new project and trigger onboarding agent."""
     try:
         # Generate project_id from niche (sanitize for filesystem)
@@ -365,19 +418,19 @@ async def create_project(request: ProjectInput, background_tasks: BackgroundTask
         
         # Register project in database
         memory.register_project(
-            user_id=request.user_id,
+            user_id=user_id,  # Use authenticated user_id
             project_id=project_id,
             niche=request.name
         )
         
-        logger.info(f"Created project: {project_id} for user {request.user_id}")
+        logger.info(f"Created project: {project_id} for user {user_id}")
         
         # Automatically trigger onboarding agent in background
         async def trigger_onboarding():
             try:
                 onboarding_input = AgentInput(
                     task="onboarding",
-                    user_id=request.user_id,
+                    user_id=user_id,  # Use authenticated user_id
                     params={
                         "niche": project_id,
                         "message": "",
@@ -399,27 +452,26 @@ async def create_project(request: ProjectInput, background_tasks: BackgroundTask
         )
     except Exception as e:
         logger.error(f"Projects error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to create project")
 
 @app.get("/api/projects")
-async def get_projects(user_id: str):
+async def get_projects(user_id: str = Depends(get_current_user)):
     """Get all projects for a specific user."""
     try:
         projects = memory.get_projects(user_id=user_id)
         return {"projects": projects}
     except Exception as e:
         logger.error(f"Error fetching projects: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch projects")
 
 # Settings endpoints
 class SettingsInput(BaseModel):
-    user_id: str
     wp_url: str
     wp_user: str
     wp_password: str
 
 @app.get("/api/settings")
-async def get_settings(user_id: str):
+async def get_settings(user_id: str = Depends(get_current_user)):
     """Get WordPress credentials for a user."""
     try:
         secrets = memory.get_client_secrets(user_id)
@@ -427,7 +479,7 @@ async def get_settings(user_id: str):
             return {
                 "wp_url": secrets.get("wp_url", ""),
                 "wp_user": secrets.get("wp_user", ""),
-                "wp_password": ""  # Don't return password
+                "wp_password": ""  # Never return password in API
             }
         return {
             "wp_url": "",
@@ -436,20 +488,23 @@ async def get_settings(user_id: str):
         }
     except Exception as e:
         logger.error(f"Get settings error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch settings")
 
 @app.post("/api/settings")
-async def save_settings(request: SettingsInput):
+async def save_settings(
+    request: SettingsInput,
+    user_id: str = Depends(get_current_user)
+):
     """Save WordPress credentials for a user."""
     try:
         success = memory.save_client_secrets(
-            user_id=request.user_id,
+            user_id=user_id,  # Use authenticated user_id
             wp_url=request.wp_url,
             wp_user=request.wp_user,
             wp_password=request.wp_password
         )
         if success:
-            logger.info(f"Saved settings for user {request.user_id}")
+            logger.info(f"Saved settings for user {user_id}")
             return {"success": True, "message": "Settings saved successfully"}
         else:
             raise HTTPException(status_code=500, detail="Failed to save settings")
@@ -457,7 +512,7 @@ async def save_settings(request: SettingsInput):
         raise
     except Exception as e:
         logger.error(f"Save settings error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to save settings")
 
 # Include voice router
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])

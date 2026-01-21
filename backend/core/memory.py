@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from google import genai  # <--- REQUIRED
 from backend.core.models import Entity
+from backend.core.security import security_core
 
 # --- NEW: Google Embedding Wrapper (The Fix) ---
 class GoogleEmbeddingFunction:
@@ -171,6 +172,24 @@ class MemoryManager:
             if conn:
                 conn.close()
 
+    def _user_exists(self, user_id: str) -> bool:
+        """Check if user exists (for JWT validation)."""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
+            exists = cursor.fetchone() is not None
+            return exists
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error checking user existence for {user_id}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error checking user existence for {user_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
     def verify_user(self, email, password):
         self.logger.debug(f"Verifying user credentials for {email}")
         conn = None
@@ -267,6 +286,35 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Unexpected error fetching projects for user {user_id}: {e}")
             return []
+        finally:
+            if conn:
+                conn.close()
+
+    def verify_project_ownership(self, user_id: str, project_id: str) -> bool:
+        """
+        Verify that a project belongs to a specific user.
+        
+        Critical for multi-tenant security.
+        Future: With Supabase RLS, this check happens at database level.
+        """
+        self.logger.debug(f"Verifying project ownership: user={user_id}, project={project_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.execute(
+                "SELECT 1 FROM projects WHERE project_id = ? AND user_id = ?",
+                (project_id, user_id)
+            )
+            exists = cursor.fetchone() is not None
+            if not exists:
+                self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+            return exists
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error verifying project ownership: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error verifying project ownership: {e}")
+            return False
         finally:
             if conn:
                 conn.close()
@@ -458,11 +506,18 @@ class MemoryManager:
             
             if row:
                 self.logger.debug(f"Found client secrets for user {user_id}")
+                decrypted_password = None
+                if row["wp_auth_hash"]:
+                    try:
+                        decrypted_password = security_core.decrypt(row["wp_auth_hash"])
+                    except Exception as e:
+                        self.logger.error(f"Failed to decrypt wp_auth_hash for {user_id}: {e}")
+                        decrypted_password = None
+
                 return {
                     "wp_url": row["wp_url"],
                     "wp_user": row["wp_user"],
-                    # Note: In production you'd decrypt wp_auth_hash here
-                    "wp_password": row["wp_auth_hash"] 
+                    "wp_password": decrypted_password
                 }
             self.logger.debug(f"No client secrets found for user {user_id}")
             return None
@@ -483,12 +538,18 @@ class MemoryManager:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+
+            try:
+                encrypted_password = security_core.encrypt(wp_password)
+            except Exception as e:
+                self.logger.error(f"Encryption failed for wp_password for user {user_id}: {e}")
+                return False
             
             # Use INSERT OR REPLACE to update if exists
             cursor.execute('''
                 INSERT OR REPLACE INTO client_secrets (user_id, wp_url, wp_user, wp_auth_hash)
                 VALUES (?, ?, ?, ?)
-            ''', (user_id, wp_url, wp_user, wp_password))
+            ''', (user_id, wp_url, wp_user, encrypted_password))
             
             conn.commit()
             self.logger.info(f"Successfully saved client secrets for user {user_id}")

@@ -44,7 +44,26 @@ class UniversalScraper:
         }
         
         visited = set()
-        to_visit = [(url, 0)]  # (url, depth)
+        # Seed crawl with homepage + priority context pages (About/Services/Contact)
+        priority_paths = [
+            "",
+            "/about",
+            "/about-us",
+            "/services",
+            "/service",
+            "/practice-areas",
+            "/our-services",
+            "/contact",
+        ]
+
+        to_visit = []
+        seen_candidates = set()
+        for path in priority_paths:
+            candidate = urljoin(base_domain, path)
+            if candidate not in seen_candidates:
+                to_visit.append((candidate, 0))
+                seen_candidates.add(candidate)
+
         all_content = []
         homepage_title = ""
         

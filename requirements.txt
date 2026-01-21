@@ -6,6 +6,10 @@ pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 google-genai>=0.3.0
 
+# AUTHENTICATION & SECURITY (JWT support - SQLite now, Supabase-ready)
+pyjwt>=2.8.0
+cryptography>=41.0.0  # For Fernet encryption (already used in security.py)
+
 # MEMORY & DATABASE (The Librarian)
 sqlalchemy>=2.0.25
 chromadb>=0.4.22

@@ -3,28 +3,22 @@ import json
 import os
 import asyncio
 from datetime import datetime
-from google import genai
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 from backend.core.models import Entity
 from backend.core.services.universal import UniversalScraper
+from backend.core.services.llm_gateway import llm_gateway
 from backend.core.config import ConfigLoader
 
 class StrategistAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Strategist")
-        self._api_key = os.getenv("GOOGLE_API_KEY")
-        self._client = None
         self.scraper = UniversalScraper()
         self.config_loader = ConfigLoader()
         # Negative keywords to filter out irrelevant businesses (e.g., "Carpet Court")
         self.negative_keywords = ['carpet', 'flooring', 'store', 'shop']
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
+        # Model selection for strategy tasks (lightweight model for brainstorming)
+        self.model = "gemini-2.5-flash-lite"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
@@ -97,9 +91,15 @@ class StrategistAgent(BaseAgent):
 
     async def _generate_and_save(self, user_id, project_id, prompt, strategy_source):
         try:
-            res = self.client.models.generate_content(model='gemini-2.5-flash-lite', contents=prompt)
+            response_text = llm_gateway.generate_content(
+                system_prompt="You are an SEO strategist. Always return valid JSON arrays.",
+                user_prompt=prompt,
+                model=self.model,
+                temperature=0.7,
+                max_retries=3
+            )
             # Robust JSON cleaning
-            clean_json = res.text.replace('```json', '').replace('```', '').strip()
+            clean_json = response_text.replace('```json', '').replace('```', '').strip()
             if "[" not in clean_json: raise ValueError("AI did not return a list")
             
             topics = json.loads(clean_json)
@@ -159,13 +159,16 @@ class StrategistAgent(BaseAgent):
             
             try:
                 self.log(f"🧠 Generating keywords for {anchor_name}...")
-                response = self.client.models.generate_content(
-                    model='gemini-2.5-flash-lite',
-                    contents=prompt
+                response_text = llm_gateway.generate_content(
+                    system_prompt="You are an SEO keyword generator. Always return valid JSON arrays of strings.",
+                    user_prompt=prompt,
+                    model=self.model,
+                    temperature=0.7,
+                    max_retries=3
                 )
                 
                 # Clean JSON response
-                clean_json = response.text.replace('```json', '').replace('```', '').strip()
+                clean_json = response_text.replace('```json', '').replace('```', '').strip()
                 if "[" not in clean_json:
                     self.log(f"⚠️ Invalid response format for {anchor_name}, skipping...")
                     continue

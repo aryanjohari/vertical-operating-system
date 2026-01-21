@@ -1,25 +1,15 @@
 # backend/modules/pseo/agents/writer.py
-import os
 from datetime import datetime
-from google import genai
-from google.genai import types
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 from backend.core.models import Entity
 from backend.core.config import ConfigLoader
+from backend.core.services.llm_gateway import llm_gateway
 
 class SeoWriterAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="SEOWriter")
-        self._api_key = os.getenv("GOOGLE_API_KEY")
-        self._client = None
         self.config_loader = ConfigLoader()
-
-    @property
-    def client(self):
-        if self._client is None:
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id
@@ -93,21 +83,21 @@ class SeoWriterAgent(BaseAgent):
         # 4. GENERATE CONTENT WITH VALIDATION AND RETRY
         max_retries = 3
         min_content_length = 500  # Minimum characters for valid content
+        model = "gemini-1.5-pro"
         content = None
         
         for attempt in range(max_retries):
             try:
                 self.log(f"Generating content (attempt {attempt + 1}/{max_retries}) for: {target_kw['name']}")
                 
-                response = self.client.models.generate_content(
-                    model='gemini-2.5-flash-lite',
-                    contents=user_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=0.7
-                    )
+                response_text = llm_gateway.generate_content(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=model,
+                    temperature=0.7,
+                    max_retries=2,  # inner retries per attempt
                 )
-                content = response.text.replace("```html", "").replace("```", "").strip()
+                content = response_text.replace("```html", "").replace("```", "").strip()
                 
                 # Validate content
                 if not content:

@@ -106,14 +106,34 @@ class Kernel:
                     niche = project['project_id']
                     self.logger.info(f"🔍 Context Loaded: {niche}")
                 else:
-                    self.logger.warning(f"No project found for user {packet.user_id}, will use default")
+                    # No project found - fail explicitly instead of fallback
+                    self.logger.error(f"No project found for user {packet.user_id}")
+                    return AgentOutput(
+                        status="error",
+                        message=f"No active project found for user. Please create a project first."
+                    )
             except Exception as e:
                 self.logger.error(f"Failed to load user project for {packet.user_id}: {e}")
-                # Continue with fallback
+                return AgentOutput(
+                    status="error",
+                    message=f"Failed to load user project: {str(e)}"
+                )
 
         if not niche:
-            niche = "default" # Fallback
-            self.logger.warning(f"No niche/project_id specified, using fallback: {niche}")
+            # Fail explicitly - no project_id and no auto-lookup
+            self.logger.error(f"No niche/project_id specified for user {packet.user_id}")
+            return AgentOutput(
+                status="error",
+                message="No project_id specified. Please provide a valid project_id in params."
+            )
+
+        # CRITICAL: Verify project ownership before loading config
+        if not memory.verify_project_ownership(packet.user_id, niche):
+            self.logger.error(f"Project ownership verification failed: user={packet.user_id}, project={niche}")
+            return AgentOutput(
+                status="error",
+                message=f"Project '{niche}' not found or access denied."
+            )
 
         # Load DNA Profile
         from backend.core.config import ConfigLoader

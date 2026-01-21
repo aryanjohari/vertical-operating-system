@@ -1,6 +1,4 @@
 import os
-from google import genai
-from google.genai import types
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 from backend.core.config import ConfigLoader
@@ -8,20 +6,9 @@ from backend.core.config import ConfigLoader
 class UtilityAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Utility")
-        self._api_key = os.getenv("GOOGLE_API_KEY")
-        self._client = None
-        self.model_id = 'gemini-2.5-flash'
         self.config_loader = ConfigLoader()
         # API URL for the form to POST data to (e.g., https://api.yourdomain.com)
         self.api_base_url = os.getenv("NEXT_PUBLIC_API_URL", "http://localhost:8000")
-
-    @property
-    def client(self):
-        if self._client is None:
-            if not self._api_key:
-                raise ValueError("GOOGLE_API_KEY environment variable is not set.")
-            self._client = genai.Client(api_key=self._api_key)
-        return self._client
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         user_id = input_data.user_id

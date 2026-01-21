@@ -3,10 +3,10 @@ import os
 import json
 import yaml
 from dotenv import load_dotenv
-from google import genai
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 from backend.core.services.universal import UniversalScraper
+from backend.core.services.llm_gateway import llm_gateway
 
 load_dotenv()
 
@@ -14,18 +14,8 @@ class OnboardingAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Onboarding")
         self.template_path = "backend/core/profile_template.yaml"
-        self._client = None  # Lazy initialization
+        # Model selection for onboarding tasks (balanced speed/quality)
         self.model = "gemini-2.5-flash"
-    
-    @property
-    def client(self):
-        """Lazy initialization of GenAI client to avoid async httpx errors."""
-        if self._client is None:
-            api_key = os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                raise ValueError("GOOGLE_API_KEY environment variable is not set. Please set it in your .env file.")
-            self._client = genai.Client(api_key=api_key)
-        return self._client
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
@@ -65,10 +55,16 @@ class OnboardingAgent(BaseAgent):
         TEXT:
         {raw_data.get('content', '')[:10000]}
         """
-        response = self.client.models.generate_content(model=self.model, contents=prompt)
+        response_text = llm_gateway.generate_content(
+            system_prompt="You are an AI assistant that extracts business identity from website content. Always return valid JSON.",
+            user_prompt=prompt,
+            model=self.model,
+            temperature=0.5,
+            max_retries=3
+        )
         try:
             # Clean generic markdown
-            json_str = response.text.replace("```json", "").replace("```", "").strip()
+            json_str = response_text.replace("```json", "").replace("```", "").strip()
             identity_data = json.loads(json_str)
             identity_data['website'] = url
             
@@ -139,8 +135,14 @@ class OnboardingAgent(BaseAgent):
         {history}
         """
         
-        response = self.client.models.generate_content(model=self.model, contents=prompt)
-        reply = response.text
+        response_text = llm_gateway.generate_content(
+            system_prompt="You are Genesis, the Apex Consultant. Help users configure their business profile.",
+            user_prompt=prompt,
+            model=self.model,
+            temperature=0.7,
+            max_retries=3
+        )
+        reply = response_text
         
         if "```yaml" in reply:
             # We are done. Save and Register.
