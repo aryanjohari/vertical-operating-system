@@ -39,6 +39,15 @@ class AgentRegistry:
         "reactivator_agent": ("backend.modules.lead_gen.agents.reactivator", "ReactivatorAgent"),
         "lead_scorer": ("backend.modules.lead_gen.agents.scorer", "LeadScorerAgent"),
         # "twilio": ("backend.modules.lead_gen.agents.twilio", "TwilioAgent"),
+
+        # --- MODULE: SYSTEM OPERATIONS (Supervisor) ---
+        # The Manager (Orchestrator)
+        "system_ops_manager": ("backend.modules.system_ops.manager", "SystemOpsManager"),
+        
+        # The Workers
+        "health_check": ("backend.modules.system_ops.agents.sentinel", "SentinelAgent"),
+        "log_usage": ("backend.modules.system_ops.agents.accountant", "AccountantAgent"),
+        "cleanup": ("backend.modules.system_ops.agents.janitor", "JanitorAgent"),
     }
 
 # --- 2. THE FEATURE REGISTRY (For the Frontend) ---

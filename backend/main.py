@@ -17,6 +17,9 @@ from backend.core.auth import (
 )
 from backend.routers.voice import voice_router
 from backend.routers.webhooks import webhook_router
+from backend.modules.system_ops.middleware import security_middleware
+from backend.core.context import context_manager
+from contextlib import asynccontextmanager
 import logging
 import uvicorn
 import os
@@ -32,11 +35,103 @@ from datetime import datetime
 setup_logging()
 logger = logging.getLogger("Apex.Main")
 
+# Scheduler for background jobs
+scheduler = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup and shutdown events."""
+    global scheduler
+    
+    # Startup
+    logger.info("🚀 Starting Apex Sovereign OS...")
+    
+    # Initialize scheduler
+    try:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.interval import IntervalTrigger
+        from apscheduler.triggers.cron import CronTrigger
+        
+        scheduler = AsyncIOScheduler()
+        
+        # Schedule health check every 5 minutes
+        async def run_health_check():
+            try:
+                logger.debug("🔍 Running scheduled health check...")
+                from backend.core.models import AgentInput
+                # Call health_check directly (system agent, no project needed)
+                result = await kernel.dispatch(
+                    AgentInput(
+                        task="health_check",
+                        user_id="system",
+                        params={}
+                    )
+                )
+                if result.status == "error":
+                    logger.warning(f"Health check failed: {result.message}")
+                else:
+                    logger.debug(f"Health check completed: {result.data.get('status', 'unknown')}")
+            except Exception as e:
+                logger.error(f"Error in scheduled health check: {e}", exc_info=True)
+        
+        # Schedule cleanup every 24 hours at 3 AM
+        async def run_cleanup():
+            try:
+                logger.info("🧹 Running scheduled cleanup...")
+                from backend.core.models import AgentInput
+                result = await kernel.dispatch(
+                    AgentInput(
+                        task="cleanup",
+                        user_id="system",
+                        params={}
+                    )
+                )
+                if result.status == "error":
+                    logger.warning(f"Cleanup failed: {result.message}")
+                else:
+                    logger.info(f"Cleanup completed: {result.message}")
+            except Exception as e:
+                logger.error(f"Error in scheduled cleanup: {e}", exc_info=True)
+        
+        # Add jobs
+        scheduler.add_job(
+            run_health_check,
+            trigger=IntervalTrigger(minutes=5),
+            id="health_check",
+            replace_existing=True
+        )
+        
+        scheduler.add_job(
+            run_cleanup,
+            trigger=CronTrigger(hour=3, minute=0),  # 3 AM daily
+            id="cleanup",
+            replace_existing=True
+        )
+        
+        scheduler.start()
+        logger.info("✅ Scheduler started (health check: every 5min, cleanup: daily at 3 AM)")
+    except ImportError:
+        logger.warning("⚠️ APScheduler not available, scheduled jobs disabled")
+    except Exception as e:
+        logger.error(f"❌ Failed to start scheduler: {e}", exc_info=True)
+    
+    yield
+    
+    # Shutdown
+    logger.info("🛑 Shutting down Apex Sovereign OS...")
+    if scheduler:
+        try:
+            scheduler.shutdown()
+            logger.info("✅ Scheduler stopped")
+        except Exception as e:
+            logger.error(f"Error stopping scheduler: {e}", exc_info=True)
+
 # Initialize the App
 app = FastAPI(
     title="Apex Sovereign OS", 
     version="1.0",
-    description="The Vertical Operating System for Revenue & Automation"
+    description="The Vertical Operating System for Revenue & Automation",
+    lifespan=lifespan
 )
 
 # CORS Configuration (secure defaults, configurable via env)
@@ -53,6 +148,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+# Add security middleware
+app.middleware("http")(security_middleware)
+
 @app.get("/")
 def health_check():
     """Ping this to check if the OS is alive."""
@@ -63,10 +161,52 @@ def health_check():
         "loaded_agents": list(kernel.agents.keys())
     }
 
+@app.get("/health")
+def health_check_endpoint():
+    """Ping this to check if the OS is alive."""
+    return {
+        "status": "online", 
+        "system": "Apex Kernel", 
+        "version": "1.0",
+        "loaded_agents": list(kernel.agents.keys())
+    }
+
+@app.get("/api/context/{context_id}")
+async def get_context(context_id: str, user_id: str = Depends(get_current_user)):
+    """
+    Retrieve context status for async task polling.
+    
+    Returns context with task status and result (if completed).
+    """
+    try:
+        context = context_manager.get_context(context_id)
+        
+        if not context:
+            raise HTTPException(status_code=404, detail="Context not found or expired")
+        
+        # Verify user owns this context (security)
+        if context.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return {
+            "context_id": context.context_id,
+            "project_id": context.project_id,
+            "user_id": context.user_id,
+            "created_at": context.created_at.isoformat(),
+            "expires_at": context.expires_at.isoformat(),
+            "data": context.data
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving context {context_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve context")
+
 @app.post("/api/run")
 async def run_command(
     payload: AgentInput,
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    background_tasks: BackgroundTasks = BackgroundTasks()
 ):
     """
     The Single Entry Point with Safety Net.
@@ -74,11 +214,13 @@ async def run_command(
     Data Flow:
     1. Receives AgentInput packet from frontend
     2. Authenticates user via JWT token (user_id derived from token)
-    3. Dispatches to Kernel which resolves agent via Registry
-    4. Kernel loads DNA config and executes agent
-    5. Agent saves snapshot and returns AgentOutput
-    6. Always returns HTTP 200 with structured JSON (never 500)
-    7. Frontend can always display the result, even on errors
+    3. For heavy tasks: Executes in background (non-blocking) if background_tasks available
+    4. For light tasks: Executes synchronously (existing behavior)
+    5. Dispatches to Kernel which resolves agent via Registry
+    6. Kernel loads DNA config and executes agent
+    7. Agent saves snapshot and returns AgentOutput
+    8. Always returns HTTP 200 with structured JSON (never 500)
+    9. Frontend can always display the result, even on errors
     
     This endpoint is wrapped in comprehensive error handling to ensure
     the frontend never sees a 500 error and can always display logs.
@@ -87,6 +229,110 @@ async def run_command(
         # Override user_id from token (security: never trust client-supplied user_id)
         payload.user_id = user_id
         
+        # Define heavy tasks that should run in background
+        HEAVY_TASKS = ["sniper_agent", "sales_agent", "reactivator_agent", "onboarding"]
+        
+        # Map manager actions to heavy tasks (for async execution)
+        MANAGER_HEAVY_ACTIONS = {
+            "lead_gen_manager": ["hunt_sniper", "ignite_reactivation", "instant_call"],
+            # Add other managers if needed
+        }
+        
+        # Check if task is heavy OR if manager action maps to heavy task
+        current_action = payload.params.get("action")
+        is_heavy = (
+            payload.task in HEAVY_TASKS or 
+            current_action in MANAGER_HEAVY_ACTIONS.get(payload.task, [])
+        )
+        
+        # If heavy task and background_tasks available, execute in background
+        if is_heavy and background_tasks:
+            # Try to get project_id for context creation
+            project_id = payload.params.get("project_id") or payload.params.get("niche")
+            if not project_id:
+                # Try to get from user's active project
+                try:
+                    project = memory.get_user_project(user_id)
+                    if project:
+                        project_id = project.get('project_id')
+                except Exception as e:
+                    logger.debug(f"Could not get user project for context: {e}")
+            
+            # Create context if project_id available
+            context = None
+            if project_id:
+                try:
+                    context = context_manager.create_context(
+                        project_id=project_id,
+                        user_id=user_id,
+                        initial_data={"request_id": payload.request_id},
+                        ttl_seconds=3600
+                    )
+                    payload.params["context_id"] = context.context_id
+                except Exception as e:
+                    logger.warning(f"Failed to create context: {e}", exc_info=True)
+            
+            # Define background task wrapper
+            async def run_agent_background():
+                context_id_to_update = context.context_id if context else None
+                try:
+                    result = await kernel.dispatch(payload)
+                    logger.info(f"Background task {payload.task} completed: {result.status}")
+                    
+                    # Update context with result if context was created
+                    if context_id_to_update:
+                        try:
+                            context_manager.update_context(
+                                context_id_to_update,
+                                {
+                                    "status": "completed",
+                                    "result": result.dict()
+                                },
+                                extend_ttl=False  # Don't extend, task is done
+                            )
+                            logger.debug(f"Updated context {context_id_to_update} with result")
+                        except Exception as e:
+                            logger.error(f"Failed to update context with result: {e}", exc_info=True)
+                except Exception as e:
+                    logger.error(f"Background task {payload.task} failed: {e}", exc_info=True)
+                    
+                    # Update context with error if context was created
+                    if context_id_to_update:
+                        try:
+                            from backend.core.models import AgentOutput
+                            error_result = AgentOutput(
+                                status="error",
+                                message=f"Task failed: {str(e)}"
+                            )
+                            context_manager.update_context(
+                                context_id_to_update,
+                                {
+                                    "status": "failed",
+                                    "result": error_result.dict()
+                                },
+                                extend_ttl=False
+                            )
+                            logger.debug(f"Updated context {context_id_to_update} with error")
+                        except Exception as update_error:
+                            logger.error(f"Failed to update context with error: {update_error}", exc_info=True)
+            
+            # Schedule background task
+            background_tasks.add_task(run_agent_background)
+            logger.info(f"📡 Scheduled heavy task '{payload.task}' for background execution")
+            
+            # Return immediately
+            return {
+                "status": "processing",
+                "data": {
+                    "context_id": context.context_id if context else None,
+                    "task": payload.task
+                },
+                "message": f"Task '{payload.task}' is processing in background",
+                "timestamp": datetime.now().isoformat(),
+                "error_details": None
+            }
+        
+        # Light tasks or no background_tasks: Execute synchronously (existing behavior)
         result = await kernel.dispatch(payload)
         
         # Sanitize response - only return safe fields, not full dict

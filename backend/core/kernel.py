@@ -185,9 +185,11 @@ class Kernel:
                 )
 
             # --- 2. BYPASS RULE: System Agents (No DNA Needed) ---
-            # Only onboarding bypasses config loading because it creates the DNA config.
-            # Onboarding uses UniversalScraper directly and creates the project config.
-            system_agents = ["onboarding"]
+            # System agents bypass config loading because they don't need project context.
+            # - onboarding: Creates the DNA config
+            # - health_check: System-wide health monitoring (no project needed)
+            # - cleanup: System-wide maintenance (no project needed)
+            system_agents = ["onboarding", "health_check", "cleanup"]
             
             if agent_key in system_agents:
                 self.logger.debug(f"System agent detected: {agent_key} - bypassing DNA loading")

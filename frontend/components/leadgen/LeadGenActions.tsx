@@ -2,7 +2,7 @@
 'use client';
 
 import { useState } from 'react';
-import api from '@/lib/api';
+import api, { pollContextUntilComplete } from '@/lib/api';
 import { useAgentStore } from '@/lib/store';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
@@ -12,6 +12,9 @@ interface LeadGenActionsProps {
   projectId: string;
   onComplete?: () => void;
 }
+
+// Actions that trigger async tasks (via lead_gen_manager)
+const ASYNC_ACTIONS = ['hunt_sniper', 'ignite_reactivation', 'instant_call'];
 
 export default function LeadGenActions({ projectId, onComplete }: LeadGenActionsProps) {
   const { isRunning, runningAgent, setRunning, updateLastRunTime } = useAgentStore();
@@ -36,7 +39,32 @@ export default function LeadGenActions({ projectId, onComplete }: LeadGenActions
         },
       });
 
-      if (response.data.status === 'success' || response.data.status === 'complete') {
+      // Handle async response (processing status)
+      if (response.data.status === 'processing') {
+        const contextId = response.data.data?.context_id;
+        if (contextId) {
+          try {
+            // Poll for completion
+            const result = await pollContextUntilComplete(contextId);
+            if (result && (result.status === 'success' || result.status === 'complete')) {
+              updateLastRunTime(`lead_gen_${action}`);
+              if (onComplete) {
+                onComplete();
+              }
+              if (action === 'instant_call') {
+                setShowTestCallInput(false);
+                setTestCallLeadId('');
+              }
+            } else {
+              console.error(`Error running ${action}:`, result?.message || 'Task failed');
+            }
+          } catch (error) {
+            console.error(`Error polling context for ${action}:`, error);
+            // Show error to user
+          }
+        }
+      } else if (response.data.status === 'success' || response.data.status === 'complete') {
+        // Sync action completed immediately (e.g., dashboard_stats)
         updateLastRunTime(`lead_gen_${action}`);
         if (onComplete) {
           onComplete();

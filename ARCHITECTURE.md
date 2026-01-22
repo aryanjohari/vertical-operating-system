@@ -35,10 +35,12 @@ The client never needs to log in. The system works in the background, routing va
 | **Backend** | Python 3.9+, FastAPI, Uvicorn | REST API, Agent Orchestration |
 | **Frontend** | Next.js 16, TypeScript, Tailwind CSS | Dashboard, Forms, Real-time UI |
 | **Database** | SQLite (Relational), ChromaDB (Vector) | Structured data + RAG embeddings |
+| **Cache/Context** | Redis (Optional) | Short-term agent context, TTL-based expiration |
 | **AI Engine** | Google Gemini 1.5 Flash | Transcription, Content Generation, Lead Analysis |
 | **Communications** | Twilio (Voice, SMS) | Bridge calls, SMS alerts, call recording |
 | **Scraping** | Playwright (Chromium) | Web scraping for lead generation |
 | **Storage** | Local filesystem (SQLite, YAML) | Project DNA, entity storage |
+| **Concurrency** | FastAPI BackgroundTasks | Async task execution for heavy operations |
 
 ---
 
@@ -65,11 +67,14 @@ graph TB
         K[Kernel<br/>Agent Dispatcher]
         MEM[(Memory Manager<br/>SQLite + ChromaDB)]
         DNA[DNA Config Loader]
+        REDIS[(Redis<br/>Context Manager)]
+        BG[BackgroundTasks<br/>Queue]
     end
     
     subgraph "Agent Layer"
         LG[Lead Gen Agents]
         PSEO[pSEO Agents]
+        SO[System Ops Agents]
         ONB[Onboarding Agent]
     end
     
@@ -91,17 +96,26 @@ graph TB
     
     WH -->|Creates Lead| K
     VR -->|Handles Call| K
+    API -->|Agent Requests| K
     
     K -->|Loads Config| DNA
     K -->|Verifies Ownership| MEM
+    K -->|Creates Context| REDIS
     K -->|Dispatches| LG
     K -->|Dispatches| PSEO
+    K -->|Dispatches| SO
     K -->|Dispatches| ONB
+    K -->|Heavy Tasks| BG
+    
+    BG -->|Async Execution| LG
+    BG -->|Async Execution| PSEO
     
     LG -->|Bridge Call| TWILIO
     LG -->|Transcribe| GEMINI
     PSEO -->|Generate Content| GEMINI
     PSEO -->|Publish| WP_API
+    SO -->|Health Check| MEM
+    SO -->|Usage Tracking| MEM
     
     TWILIO -->|Rings| BOSS
     TWILIO -->|Connects| CUST
@@ -109,6 +123,8 @@ graph TB
     
     MEM -->|Stores| LG
     MEM -->|Stores| PSEO
+    MEM -->|Stores| SO
+    REDIS -->|Short-term Memory| K
 ```
 
 ### Component Interaction Flow
@@ -313,7 +329,79 @@ Handles all Twilio webhook callbacks:
 - **Purpose:** Analyzes performance and provides feedback
 - **Output:** Performance metrics and recommendations
 
-### 3.3 Onboarding Module (`modules/onboarding/`)
+### 3.3 System Operations Module (`modules/system_ops/`)
+
+**Purpose:** System health monitoring, resource usage tracking, and maintenance operations.
+
+#### SystemOpsManager (Orchestrator)
+- **Task:** `system_ops_manager`
+- **Actions:**
+  - `run_diagnostics` - Triggers comprehensive health check
+
+#### SentinelAgent
+**The "Health Monitor"**
+
+- **Task:** `health_check`
+- **Purpose:** Performs system-wide health diagnostics
+- **Checks:**
+  1. Internet connectivity (Google ping)
+  2. Disk space availability (warns if < 1GB free)
+  3. Twilio API connectivity
+  4. Database connectivity (SQLite)
+  5. Gemini API key configuration
+- **Output:** `SystemHealthStatus` with overall status and component health
+- **Response Format:**
+  ```json
+  {
+    "status": "healthy" | "critical",
+    "database_ok": true,
+    "twilio_ok": true,
+    "gemini_ok": true,
+    "disk_space_ok": true
+  }
+  ```
+
+#### AccountantAgent
+**The "Billing Tracker"**
+
+- **Task:** `log_usage`
+- **Purpose:** Tracks resource usage and enforces spending limits
+- **Input Params:**
+  - `resource`: Resource type (e.g., "twilio_voice", "gemini_token")
+  - `quantity`: Quantity used (e.g., minutes, tokens)
+- **Flow:**
+  1. Validates project ownership
+  2. Calculates cost based on resource type and quantity
+  3. Logs usage to `usage_ledger` table
+  4. Checks monthly spend against project limit
+  5. Returns status: "ACTIVE" or "PAUSED" if limit exceeded
+- **Resource Types:**
+  - `twilio_voice`: $0.05 per minute
+  - `gemini_token`: $0.001 per 1k tokens
+- **Database:** `usage_ledger` table tracks all resource usage per project
+
+#### JanitorAgent
+**The "Cleanup Service"**
+
+- **Task:** `cleanup`
+- **Purpose:** Cleans up old files and maintains disk space
+- **Operations:**
+  - Deletes log files older than 30 days
+  - Deletes download files older than 24 hours
+  - Reports total space freed
+
+**Configuration:**
+```yaml
+modules:
+  system_ops:
+    enabled: true
+    health_check:
+      disk_space_threshold_gb: 1.0
+    billing:
+      default_project_limit_usd: 50.0
+```
+
+### 3.4 Onboarding Module (`modules/onboarding/`)
 
 **Purpose:** Project initialization and DNA generation.
 
@@ -352,10 +440,23 @@ Handles all Twilio webhook callbacks:
      - `entity_type` = "lead"
      - `metadata` = {source, status: "new", project_id, raw_payload}
 
-4. **SalesAgent triggered**
-   - Kernel dispatches `sales_agent` task
-   - SalesAgent fetches lead from database
-   - Reads `destination_phone` from DNA config
+4. **SalesAgent triggered (Async Processing)**
+   - Webhook calls `/api/run` with `task: "sales_agent"`
+   - Backend detects heavy task → Creates Redis context → Returns immediately:
+     ```json
+     {
+       "status": "processing",
+       "data": {
+         "context_id": "uuid-here",
+         "task": "sales_agent"
+       },
+       "message": "Task 'sales_agent' is processing in background"
+     }
+     ```
+   - Background task executes:
+     - Kernel dispatches `sales_agent` task
+     - SalesAgent fetches lead from database
+     - Reads `destination_phone` from DNA config
 
 5. **Bridge call initiated**
    - Twilio calls boss's phone
@@ -372,8 +473,11 @@ Handles all Twilio webhook callbacks:
    - Transcribes with Google Gemini
    - Analyzes transcription (sentiment, intent, next steps)
    - Updates lead entity with call data
+   - Updates Redis context with completion status
 
 **Time to Connection:** < 30 seconds from form submit to voice connection.
+
+**Key Change:** Webhook now returns HTTP 200 immediately with `status: "processing"` instead of waiting for full execution. Frontend can poll Redis context or wait for webhook callbacks for completion status.
 
 ### Flow B: The "Inbound Intelligence" (Google Maps Call → CRM Update)
 
@@ -465,6 +569,110 @@ Handles all Twilio webhook callbacks:
    - Customer connected instantly
 
 **Result:** High-value leads are automatically identified and connected within minutes of posting.
+
+---
+
+## 4.5 Concurrency Model (Titanium Upgrade)
+
+### Synchronous vs Asynchronous Execution
+
+**Before (Synchronous):**
+- All `/api/run` requests waited for agent completion
+- Frontend blocked until task finished (could be 30+ seconds)
+- Webhooks timed out on long-running operations
+- No way to track task progress
+
+**After (Asynchronous with Context):**
+- Heavy tasks execute in background via `FastAPI BackgroundTasks`
+- Immediate HTTP 200 response with `status: "processing"` and `context_id`
+- Frontend can poll context or use webhooks for completion
+- Redis stores short-term context (TTL: 1 hour default)
+
+### Task Classification
+
+**Heavy Tasks (Async):**
+- `sniper_agent` - Lead scraping (can take 5+ minutes)
+- `sales_agent` - Bridge call setup (can take 1+ minute)
+- `reactivator_agent` - SMS campaigns (can take 5+ minutes)
+- `onboarding` - DNA generation (can take 2+ minutes)
+
+**Light Tasks (Sync):**
+- `manager` (dashboard_stats) - Stats aggregation (< 1 second)
+- `lead_gen_manager` (dashboard_stats) - Stats aggregation (< 1 second)
+- `health_check` - System diagnostics (< 5 seconds)
+- All other quick operations
+
+### Context Management
+
+**Redis Context (Short-term Memory):**
+- **Purpose:** Track async task progress and state
+- **TTL:** 3600 seconds (1 hour) default
+- **Storage:** Redis (with in-memory fallback if Redis unavailable)
+- **Structure:**
+  ```json
+  {
+    "context_id": "uuid",
+    "project_id": "apex-bail-manukau",
+    "user_id": "user@example.com",
+    "created_at": "2024-01-01T00:00:00",
+    "expires_at": "2024-01-01T01:00:00",
+    "data": {
+      "request_id": "uuid",
+      "task": "sales_agent",
+      "status": "processing" | "completed" | "failed"
+    }
+  }
+  ```
+
+**Context Lifecycle:**
+1. Created when heavy task is scheduled
+2. Updated by agents during execution
+3. Automatically expires after TTL
+4. Can be extended via `context.extend_ttl()`
+
+### API Response Patterns
+
+**Synchronous Response (Light Tasks):**
+```json
+{
+  "status": "success" | "error",
+  "data": { ... },
+  "message": "Task completed",
+  "timestamp": "2024-01-01T00:00:00"
+}
+```
+
+**Asynchronous Response (Heavy Tasks):**
+```json
+{
+  "status": "processing",
+  "data": {
+    "context_id": "uuid-here",
+    "task": "sniper_agent"
+  },
+  "message": "Task 'sniper_agent' is processing in background",
+  "timestamp": "2024-01-01T00:00:00"
+}
+```
+
+### Frontend Integration
+
+**Polling Pattern:**
+```typescript
+// Poll context every 2 seconds until complete
+const pollContext = async (contextId: string) => {
+  const context = await api.get(`/api/context/${contextId}`);
+  if (context.data.status === 'completed') {
+    return context.data.result;
+  }
+  // Continue polling...
+};
+```
+
+**Webhook Pattern:**
+- Agents can trigger webhooks on completion
+- Frontend listens for webhook callbacks
+- More efficient than polling
 
 ---
 
@@ -562,6 +770,21 @@ CREATE TABLE entities (
 **`client_secrets`**
 - Encrypted WordPress credentials
 - Uses `security_core` (Fernet encryption)
+
+**`usage_ledger`**
+- Resource usage tracking for billing
+- Structure:
+  ```sql
+  CREATE TABLE usage_ledger (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      resource_type TEXT NOT NULL,  -- "twilio_voice", "gemini_token"
+      quantity REAL NOT NULL,        -- Minutes, tokens, etc.
+      cost_usd REAL NOT NULL,
+      timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+  ```
+- Indexed on `(project_id, timestamp)` for monthly spend queries
 
 ### Vector Storage (ChromaDB)
 

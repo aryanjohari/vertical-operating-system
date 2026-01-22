@@ -129,8 +129,13 @@ class SniperAgent(BaseAgent):
         """
         
         try:
-            # Use a cheap model for scraping (Flash)
-            response_text = llm_gateway.generate(agent_name="Sniper", prompt=prompt)
+            # Use LLM Gateway with proper API
+            response_text = llm_gateway.generate_content(
+                system_prompt="You are a Lead Scraper. Extract job leads from HTML content and return valid JSON only.",
+                user_prompt=prompt,
+                model="gemini-2.5-flash",  # Use cheap model for scraping
+                temperature=0.3
+            )
             
             # Clean formatting (remove markdown ```json ... ```)
             cleaned_text = response_text.replace("```json", "").replace("```", "").strip()

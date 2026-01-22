@@ -3,7 +3,7 @@
 
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
+import api, { pollContextUntilComplete } from '@/lib/api';
 import { LeadGenStats } from '@/lib/types';
 import LeadGenDashboard from '@/components/leadgen/LeadGenDashboard';
 import LeadGenActions from '@/components/leadgen/LeadGenActions';
@@ -65,7 +65,29 @@ export default function LeadGenPage() {
         },
       });
 
-      if (response.data.status === 'success') {
+      // Handle async response (instant_call is now async)
+      if (response.data.status === 'processing') {
+        const contextId = response.data.data?.context_id;
+        if (contextId) {
+          alert('Call is being initiated...');
+          try {
+            // Poll for completion
+            const result = await pollContextUntilComplete(contextId);
+            if (result && result.status === 'success') {
+              alert('Call initiated successfully!');
+              refetch();
+            } else {
+              alert(`Error: ${result?.message || 'Failed to initiate call'}`);
+            }
+          } catch (error: any) {
+            console.error('Error polling context:', error);
+            alert('Call initiation timed out or failed. Please try again.');
+          }
+        } else {
+          alert('Error: No context ID received');
+        }
+      } else if (response.data.status === 'success') {
+        // Sync completion (shouldn't happen, but handle it)
         alert('Call initiated successfully!');
         refetch();
       } else {

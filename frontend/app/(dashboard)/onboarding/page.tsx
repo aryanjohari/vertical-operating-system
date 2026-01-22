@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
-import api from '@/lib/api';
+import api, { pollContextUntilComplete } from '@/lib/api';
 import Card from '@/components/ui/Card';
 import Input from '@/components/ui/Input';
 import Button from '@/components/ui/Button';
@@ -157,27 +157,65 @@ export default function OnboardingPage() {
         },
       });
 
-      if (response.data.status === 'error') {
-        throw new Error(response.data.message || 'Compilation failed');
-      }
+      // Handle async response (onboarding is now async)
+      if (response.data.status === 'processing') {
+        const contextId = response.data.data?.context_id;
+        if (contextId) {
+          addLog('Generating your project DNA...');
+          
+          try {
+            // Poll for completion
+            const result = await pollContextUntilComplete(contextId, 120, 2000); // 4 minutes max
+            
+            if (result && result.status === 'success') {
+              addLog('Saving Profile...');
+              await new Promise((resolve) => setTimeout(resolve, 500));
 
-      addLog('Saving Profile...');
-      await new Promise((resolve) => setTimeout(resolve, 500));
+              addLog('Injecting Wisdom into RAG...');
+              await new Promise((resolve) => setTimeout(resolve, 500));
 
-      addLog('Injecting Wisdom into RAG...');
-      await new Promise((resolve) => setTimeout(resolve, 500));
+              addLog('Project Created ✓');
 
-      addLog('Project Created ✓');
-
-      // Redirect to dashboard after a brief delay
-      setTimeout(() => {
-        const projectId = response.data.data?.project_id;
-        if (projectId) {
-          router.push(`/projects/${projectId}`);
+              // Redirect to dashboard after a brief delay
+              setTimeout(() => {
+                const projectId = result.data?.project_id || response.data.data?.project_id;
+                if (projectId) {
+                  router.push(`/projects/${projectId}`);
+                } else {
+                  router.push('/dashboard');
+                }
+              }, 1000);
+            } else {
+              throw new Error(result?.message || 'Compilation failed');
+            }
+          } catch (error: any) {
+            throw new Error(error.message || 'Compilation timed out or failed');
+          }
         } else {
-          router.push('/dashboard');
+          throw new Error('No context ID received for async task');
         }
-      }, 1000);
+      } else if (response.data.status === 'error') {
+        throw new Error(response.data.message || 'Compilation failed');
+      } else if (response.data.status === 'success') {
+        // Sync completion (shouldn't happen for onboarding, but handle it)
+        addLog('Saving Profile...');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        addLog('Injecting Wisdom into RAG...');
+        await new Promise((resolve) => setTimeout(resolve, 500));
+
+        addLog('Project Created ✓');
+
+        // Redirect to dashboard after a brief delay
+        setTimeout(() => {
+          const projectId = response.data.data?.project_id;
+          if (projectId) {
+            router.push(`/projects/${projectId}`);
+          } else {
+            router.push('/dashboard');
+          }
+        }, 1000);
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to compile profile. Please try again.');
       addLog('✗ Error: ' + (err.message || 'Compilation failed'));

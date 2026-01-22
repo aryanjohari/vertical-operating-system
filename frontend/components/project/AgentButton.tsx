@@ -2,7 +2,7 @@
 'use client';
 
 import { useState } from 'react';
-import api from '@/lib/api';
+import api, { isHeavyTask, pollContextUntilComplete } from '@/lib/api';
 import { useAgentStore } from '@/lib/store';
 import Button from '@/components/ui/Button';
 
@@ -42,7 +42,30 @@ export default function AgentButton({
         },
       });
 
-      if (response.data.status === 'success' || response.data.status === 'complete') {
+      // Handle async response (processing status)
+      if (response.data.status === 'processing') {
+        const contextId = response.data.data?.context_id;
+        if (contextId) {
+          try {
+            // Poll for completion
+            const result = await pollContextUntilComplete(contextId);
+            if (result && (result.status === 'success' || result.status === 'complete')) {
+              updateLastRunTime(agentKey);
+              // Add small delay to ensure DB writes are committed
+              await new Promise(resolve => setTimeout(resolve, 500));
+              if (onComplete) {
+                onComplete();
+              }
+            } else {
+              console.error(`Task ${agentKey} completed with status:`, result?.status);
+            }
+          } catch (error) {
+            console.error(`Error polling context for ${agentKey}:`, error);
+            // Show error to user - task may have failed or timed out
+          }
+        }
+      } else if (response.data.status === 'success' || response.data.status === 'complete') {
+        // Sync task completed immediately
         updateLastRunTime(agentKey);
         // Add small delay to ensure DB writes are committed
         await new Promise(resolve => setTimeout(resolve, 500));

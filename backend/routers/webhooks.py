@@ -4,12 +4,13 @@ import re
 import json
 import logging
 from datetime import datetime
-from fastapi import APIRouter, Request, Response, HTTPException
+from fastapi import APIRouter, Request, Response, HTTPException, BackgroundTasks
 from typing import Dict, Any, Optional
 from backend.core.memory import memory
 from backend.core.models import Entity
 from backend.core.kernel import kernel
 from backend.core.agent_base import AgentInput
+from backend.core.context import context_manager
 
 # Initialize Logger
 logger = logging.getLogger("Apex.Webhooks")
@@ -85,9 +86,18 @@ def _get_user_id_from_project(project_id: str) -> Optional[str]:
         return None
     return memory.get_project_owner(project_id)
 
-async def _create_and_trigger_lead(normalized_data: Dict[str, Any], source: str, project_id: str, user_id: str = None) -> Dict[str, Any]:
+async def _create_and_trigger_lead(
+    normalized_data: Dict[str, Any], 
+    source: str, 
+    project_id: str, 
+    user_id: str = None,
+    background_tasks: Optional[BackgroundTasks] = None
+) -> Dict[str, Any]:
     """
     Creates a lead entity and triggers SalesAgent for instant call.
+    
+    If background_tasks is provided, executes SalesAgent in background (non-blocking).
+    Otherwise, executes synchronously (backward compatible).
     """
     # Validate project_id format (security: prevent path traversal)
     if not _validate_project_id(project_id):
@@ -136,27 +146,71 @@ async def _create_and_trigger_lead(normalized_data: Dict[str, Any], source: str,
     
     logger.info(f"💾 Saved lead {lead_entity.id} from {source} for project {project_id}")
     
-    # Trigger SalesAgent for instant call
-    try:
-        await kernel.dispatch(AgentInput(
-            task="sales_agent",
+    # If background_tasks is available, execute in background (non-blocking)
+    if background_tasks:
+        # Create context for this workflow
+        context = context_manager.create_context(
+            project_id=project_id,
             user_id=user_id,
-            params={
-                "action": "instant_call",
+            initial_data={
                 "lead_id": lead_entity.id,
-                "project_id": project_id
-            }
-        ))
-        logger.info(f"📞 Triggered SalesAgent for lead {lead_entity.id}")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to trigger SalesAgent for lead {lead_entity.id}: {e}", exc_info=True)
-        # Don't fail the webhook if SalesAgent fails - lead is still saved
-    
-    return {
-        "success": True,
-        "lead_id": lead_entity.id,
-        "message": "Lead captured and bridge call initiated"
-    }
+                "source": source,
+                "normalized_data": normalized_data
+            },
+            ttl_seconds=3600  # 1 hour
+        )
+        
+        # Define background task wrapper
+        async def trigger_sales_agent():
+            try:
+                await kernel.dispatch(AgentInput(
+                    task="sales_agent",
+                    user_id=user_id,
+                    params={
+                        "action": "instant_call",
+                        "lead_id": lead_entity.id,
+                        "project_id": project_id,
+                        "context_id": context.context_id  # Pass context to agent
+                    }
+                ))
+                logger.info(f"📞 Background SalesAgent completed for lead {lead_entity.id}")
+            except Exception as e:
+                logger.error(f"❌ Background SalesAgent failed for lead {lead_entity.id}: {e}", exc_info=True)
+        
+        # Schedule background task
+        background_tasks.add_task(trigger_sales_agent)
+        logger.info(f"📞 Scheduled SalesAgent for lead {lead_entity.id} (background)")
+        
+        # Return immediately with context_id
+        return {
+            "success": True,
+            "lead_id": lead_entity.id,
+            "context_id": context.context_id,
+            "status": "processing",
+            "message": "Lead captured and bridge call initiated (processing in background)"
+        }
+    else:
+        # Backward compatibility: Execute synchronously
+        try:
+            await kernel.dispatch(AgentInput(
+                task="sales_agent",
+                user_id=user_id,
+                params={
+                    "action": "instant_call",
+                    "lead_id": lead_entity.id,
+                    "project_id": project_id
+                }
+            ))
+            logger.info(f"📞 Triggered SalesAgent for lead {lead_entity.id}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to trigger SalesAgent for lead {lead_entity.id}: {e}", exc_info=True)
+            # Don't fail the webhook if SalesAgent fails - lead is still saved
+        
+        return {
+            "success": True,
+            "lead_id": lead_entity.id,
+            "message": "Lead captured and bridge call initiated"
+        }
 
 # --- 0. CORS PREFLIGHT HANDLERS ---
 @webhook_router.options("/google-ads")
@@ -187,7 +241,7 @@ async def handle_wordpress_webhook_options(request: Request):
 
 # --- 1. GOOGLE ADS WEBHOOK ---
 @webhook_router.post("/google-ads")
-async def handle_google_ads_webhook(request: Request):
+async def handle_google_ads_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Receives leads from Google Ads conversion tracking.
     Expected payload: JSON with name, phone, email, message, etc.
@@ -238,7 +292,13 @@ async def handle_google_ads_webhook(request: Request):
         normalized_data = _normalize_lead_data(payload, "google_ads")
         
         # Create lead and trigger SalesAgent
-        result = await _create_and_trigger_lead(normalized_data, "google_ads", project_id, user_id=project_owner)
+        result = await _create_and_trigger_lead(
+            normalized_data, 
+            "google_ads", 
+            project_id, 
+            user_id=project_owner,
+            background_tasks=background_tasks
+        )
         
         return result
         
@@ -250,7 +310,7 @@ async def handle_google_ads_webhook(request: Request):
 
 # --- 2. WORDPRESS FORMS WEBHOOK ---
 @webhook_router.post("/wordpress")
-async def handle_wordpress_webhook(request: Request):
+async def handle_wordpress_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     Receives leads from WordPress forms (Gravity Forms, Contact Form 7, etc.).
     Accepts both JSON and form-encoded data.
@@ -309,7 +369,13 @@ async def handle_wordpress_webhook(request: Request):
         normalized_data = _normalize_lead_data(payload, "wordpress_form")
         
         # Create lead and trigger SalesAgent
-        result = await _create_and_trigger_lead(normalized_data, "wordpress_form", project_id, user_id=project_owner)
+        result = await _create_and_trigger_lead(
+            normalized_data, 
+            "wordpress_form", 
+            project_id, 
+            user_id=project_owner,
+            background_tasks=background_tasks
+        )
         
         return result
         

@@ -3,7 +3,7 @@
 
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
-import api from '@/lib/api';
+import api, { pollContextUntilComplete } from '@/lib/api';
 import Button from '@/components/ui/Button';
 import Input from '@/components/ui/Input';
 
@@ -39,7 +39,26 @@ export default function URLInput({ onAnalyze }: URLInputProps) {
         },
       });
 
-      if (response.data.status === 'success' && response.data.data) {
+      // Handle async response (onboarding is now async)
+      if (response.data.status === 'processing') {
+        const contextId = response.data.data?.context_id;
+        if (contextId) {
+          try {
+            // Poll for completion
+            const result = await pollContextUntilComplete(contextId, 60, 2000);
+            if (result && result.status === 'success' && result.data) {
+              onAnalyze(data.url, result.data);
+            } else {
+              setError(result?.message || 'Failed to analyze website');
+            }
+          } catch (error: any) {
+            setError(error.message || 'Analysis timed out or failed');
+          }
+        } else {
+          setError('No context ID received for async task');
+        }
+      } else if (response.data.status === 'success' && response.data.data) {
+        // Sync completion (shouldn't happen, but handle it)
         onAnalyze(data.url, response.data.data);
       } else {
         setError(response.data.message || 'Failed to analyze website');

@@ -663,6 +663,128 @@ class MemoryManager:
                 conn.close()
 
     # ====================================================
+    # SECTION C.5: USAGE TRACKING & BILLING
+    # ====================================================
+    def create_usage_table_if_not_exists(self):
+        """Creates the usage_ledger table if it doesn't exist."""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usage_ledger (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    cost_usd REAL NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Create index for faster monthly spend queries
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_project_timestamp ON usage_ledger(project_id, timestamp)")
+            
+            conn.commit()
+            self.logger.debug("Usage ledger table ready")
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error creating usage_ledger table: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error creating usage_ledger table: {e}")
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+    def log_usage(self, project_id: str, resource_type: str, quantity: float, cost_usd: float) -> bool:
+        """
+        Logs resource usage to the usage_ledger table.
+        
+        Args:
+            project_id: Project identifier
+            resource_type: Type of resource (e.g., "twilio_voice", "gemini_token")
+            quantity: Quantity used (e.g., minutes, tokens)
+            cost_usd: Cost in USD
+            
+        Returns:
+            True on success, False on error
+        """
+        self.logger.debug(f"Logging usage: {resource_type} x {quantity} = ${cost_usd:.4f} for project {project_id}")
+        conn = None
+        try:
+            # Ensure table exists
+            self.create_usage_table_if_not_exists()
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Generate ID
+            import uuid
+            usage_id = str(uuid.uuid4())
+            
+            cursor.execute('''
+                INSERT INTO usage_ledger (id, project_id, resource_type, quantity, cost_usd, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (usage_id, project_id, resource_type, quantity, cost_usd, datetime.now()))
+            
+            conn.commit()
+            self.logger.debug(f"Successfully logged usage record {usage_id}")
+            return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error logging usage for project {project_id}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error logging usage for project {project_id}: {e}")
+            return False
+        finally:
+            if conn:
+                conn.close()
+
+    def get_monthly_spend(self, project_id: str) -> float:
+        """
+        Gets the total monthly spend for a project (current month).
+        
+        Args:
+            project_id: Project identifier
+            
+        Returns:
+            Total spend in USD for the current month (0.0 if no records)
+        """
+        self.logger.debug(f"Getting monthly spend for project {project_id}")
+        conn = None
+        try:
+            # Ensure table exists
+            self.create_usage_table_if_not_exists()
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Query for current month's spend
+            cursor.execute('''
+                SELECT SUM(cost_usd) 
+                FROM usage_ledger 
+                WHERE project_id = ? 
+                AND timestamp >= date('now', 'start of month')
+            ''', (project_id,))
+            
+            row = cursor.fetchone()
+            total_spend = float(row[0]) if row and row[0] is not None else 0.0
+            
+            self.logger.debug(f"Monthly spend for project {project_id}: ${total_spend:.2f}")
+            return total_spend
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error getting monthly spend for project {project_id}: {e}")
+            return 0.0
+        except Exception as e:
+            self.logger.error(f"Unexpected error getting monthly spend for project {project_id}: {e}")
+            return 0.0
+        finally:
+            if conn:
+                conn.close()
+
+    # ====================================================
     # SECTION D: SEMANTIC MEMORY (RAG)
     # ====================================================
     def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None):

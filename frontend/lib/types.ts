@@ -7,11 +7,36 @@ export interface AgentInput {
 }
 
 export interface AgentOutput {
-  status: 'success' | 'error' | 'complete' | 'warning' | 'skipped';
+  status: 'success' | 'error' | 'complete' | 'warning' | 'skipped' | 'processing';
   data: any;
   message: string;
   timestamp: string;
   error_details?: any;
+  context_id?: string;
+}
+
+export interface ProcessingResponse {
+  status: 'processing';
+  data: {
+    context_id: string;
+    task: string;
+  };
+  message: string;
+  timestamp: string;
+}
+
+export interface AgentContext {
+  context_id: string;
+  project_id: string;
+  user_id: string;
+  created_at: string;
+  expires_at: string;
+  data: {
+    request_id?: string;
+    task?: string;
+    status?: 'processing' | 'completed' | 'failed';
+    result?: AgentOutput;
+  };
 }
 
 export interface Entity {
