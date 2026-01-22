@@ -32,6 +32,8 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     control,
     handleSubmit,
     reset,
+    getValues,
+    setValue,
     formState: { errors, isDirty },
   } = useForm<DNAConfig>({
     defaultValues: dnaData,
@@ -98,6 +100,15 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
   } = useFieldArray({
     control,
     name: 'modules.lead_gen.tools.lead_magnets',
+  });
+
+  const {
+    fields: services,
+    append: appendService,
+    remove: removeService,
+  } = useFieldArray({
+    control,
+    name: 'identity.services',
   });
 
   useEffect(() => {
@@ -167,6 +178,15 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
             {...register('identity.website')}
             error={errors.identity?.website?.message}
           />
+          <Input
+            label="Schema Type"
+            {...register('identity.schema_type')}
+            error={errors.identity?.schema_type?.message}
+            placeholder="LocalBusiness, Plumber, LegalService, etc."
+          />
+          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            Used for JSON-LD structured data. Options: LocalBusiness, Plumber, LegalService, Locksmith, etc.
+          </div>
           <div className="grid grid-cols-3 gap-4">
             <Input
               label="Phone"
@@ -314,6 +334,127 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
         </div>
       </Card>
 
+      {/* Services Section */}
+      <Card className="p-6">
+        <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+          Services
+        </h2>
+        <div className="space-y-6">
+          {services.map((service, serviceIndex) => (
+            <div key={service.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white">
+                  Service {serviceIndex + 1}
+                </h3>
+                <Button
+                  type="button"
+                  variant="danger"
+                  onClick={() => removeService(serviceIndex)}
+                >
+                  Remove Service
+                </Button>
+              </div>
+              <div className="space-y-4">
+                <Input
+                  label="Service Name"
+                  {...register(`identity.services.${serviceIndex}.name`)}
+                  error={errors.identity?.services?.[serviceIndex]?.name?.message}
+                />
+                <Input
+                  label="Slug"
+                  {...register(`identity.services.${serviceIndex}.slug`)}
+                  error={errors.identity?.services?.[serviceIndex]?.slug?.message}
+                  placeholder="e.g., bail"
+                />
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Primary Keywords (for H1/Title)
+                    <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                      (Money terms - used in page titles)
+                    </span>
+                  </label>
+                  {(service.primary_keywords || []).map((_, kwIndex) => (
+                    <div key={kwIndex} className="flex gap-2 mb-2">
+                      <input
+                        {...register(`identity.services.${serviceIndex}.primary_keywords.${kwIndex}`)}
+                        className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                        placeholder="e.g., bail lawyer"
+                      />
+                      <Button
+                        type="button"
+                        variant="danger"
+                        onClick={() => {
+                          const current = getValues(`identity.services.${serviceIndex}.primary_keywords`) || [];
+                          const newKeywords = current.filter((_: any, i: number) => i !== kwIndex);
+                          setValue(`identity.services.${serviceIndex}.primary_keywords`, newKeywords);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const current = getValues(`identity.services.${serviceIndex}.primary_keywords`) || [];
+                      setValue(`identity.services.${serviceIndex}.primary_keywords`, [...current, '']);
+                    }}
+                  >
+                    Add Primary Keyword
+                  </Button>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Context Keywords (for Body/H2)
+                    <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                      (Semantic safety terms - used in content sections)
+                    </span>
+                  </label>
+                  {(service.context_keywords || []).map((_, kwIndex) => (
+                    <div key={kwIndex} className="flex gap-2 mb-2">
+                      <input
+                        {...register(`identity.services.${serviceIndex}.context_keywords.${kwIndex}`)}
+                        className="flex-1 px-3 py-2 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white"
+                        placeholder="e.g., emergency legal help"
+                      />
+                      <Button
+                        type="button"
+                        variant="danger"
+                        onClick={() => {
+                          const current = getValues(`identity.services.${serviceIndex}.context_keywords`) || [];
+                          const newKeywords = current.filter((_: any, i: number) => i !== kwIndex);
+                          setValue(`identity.services.${serviceIndex}.context_keywords`, newKeywords);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => {
+                      const current = getValues(`identity.services.${serviceIndex}.context_keywords`) || [];
+                      setValue(`identity.services.${serviceIndex}.context_keywords`, [...current, '']);
+                    }}
+                  >
+                    Add Context Keyword
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => appendService({ name: '', slug: '', primary_keywords: [], context_keywords: [] })}
+          >
+            Add Service
+          </Button>
+        </div>
+      </Card>
+
       {/* pSEO Module */}
       <Card className="p-6">
         <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
@@ -400,6 +541,45 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
               label="Publisher Username"
               {...register('modules.local_seo.publisher_settings.username')}
             />
+          </div>
+
+          {/* SEO Rules Section */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4">
+            <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-4">
+              SEO Rules
+            </h3>
+            <div className="space-y-4">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  {...register('modules.local_seo.seo_rules.force_schema_injection')}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  Force Schema Injection
+                </span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  {...register('modules.local_seo.seo_rules.force_meta_description')}
+                  className="w-4 h-4"
+                />
+                <span className="text-sm text-gray-700 dark:text-gray-300">
+                  Force Meta Description
+                </span>
+              </label>
+              <div>
+                <Input
+                  label="Title Format"
+                  {...register('modules.local_seo.seo_rules.structure.title_format')}
+                  placeholder="{Keyword} {City} | {Business_Name}"
+                />
+                <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  Use {"{Keyword}"}, {"{City}"}, and {"{Business_Name}"} as placeholders
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </Card>

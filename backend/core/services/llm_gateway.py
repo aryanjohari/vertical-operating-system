@@ -24,7 +24,7 @@ class LLMGateway:
             raise ValueError("GOOGLE_API_KEY environment variable is not set.")
 
         self.client = genai.Client(api_key=api_key)
-        self.default_model = os.getenv("APEX_LLM_MODEL", "gemini-1.5-pro")
+        self.default_model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash")
 
     def generate_content(
         self,

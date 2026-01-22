@@ -21,6 +21,9 @@ class ManagerAgent(BaseAgent):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
         
+        # Get action parameter (default to dashboard_stats for stats-only mode)
+        action = input_data.params.get("action", "dashboard_stats")
+        
         # 2. FETCH ASSETS (Scoped to Project)
         anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
         kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
@@ -43,8 +46,40 @@ class ManagerAgent(BaseAgent):
 
         self.logger.info(f"📊 Pipeline Status: {stats}")
 
-        # 4. ORCHESTRATION LOGIC (Priority: Pull System - Finish what we started)
-        # We check from the END of the pipeline backwards.
+        # 4. ACTION-BASED ROUTING
+        if action == "dashboard_stats":
+            # Return stats only, no orchestration
+            # Also include recommended next step
+            next_step = self._get_recommended_next_step(stats)
+            return AgentOutput(
+                status="success",
+                message="Stats retrieved",
+                data={
+                    "stats": self._format_stats(stats),
+                    "next_step": next_step
+                }
+            )
+        elif action == "auto_orchestrate":
+            # Run orchestration logic (only when explicitly triggered)
+            return await self._run_orchestration(stats, user_id, project_id)
+        else:
+            # Unknown action, return stats
+            self.logger.warning(f"Unknown action: {action}, returning stats")
+            return AgentOutput(
+                status="success",
+                message="Stats retrieved",
+                data={
+                    "stats": self._format_stats(stats)
+                }
+            )
+
+    async def _run_orchestration(self, stats: dict, user_id: str, project_id: str) -> AgentOutput:
+        """
+        Orchestration Logic (Priority: Pull System - Finish what we started)
+        Only runs when explicitly triggered via action="auto_orchestrate"
+        We check from the END of the pipeline backwards.
+        """
+        self.logger.info("🔄 Running pipeline orchestration...")
         
         # Phase 8: Publishing (Clear the exit)
         if stats["5_ready"] > 0:
@@ -86,7 +121,7 @@ class ManagerAgent(BaseAgent):
         # Pipeline balanced
         return AgentOutput(
             status="complete",
-            message="Pipeline Balanced. Monitoring...",
+            message="Pipeline Balanced. No actions needed.",
             data={
                 "step": "complete",
                 "action_label": "System Idle",
@@ -179,10 +214,104 @@ class ManagerAgent(BaseAgent):
                 }
             )
     
+    def _get_recommended_next_step(self, stats: dict) -> dict:
+        """
+        Determine the recommended next step based on pipeline status.
+        Returns: { agent_key, label, description, reason }
+        """
+        # Phase 8: Publishing (Clear the exit)
+        if stats["5_ready"] > 0:
+            return {
+                "agent_key": "publish",
+                "label": "Publisher",
+                "description": "Publish ready content",
+                "reason": f"{stats['5_ready']} pages ready to publish"
+            }
+
+        # Phase 7: Lead Gen (Add Tools)
+        if stats["4_imaged"] > 0:
+            return {
+                "agent_key": "enhance_utility",
+                "label": "Utility",
+                "description": "Build lead magnets",
+                "reason": f"{stats['4_imaged']} pages need tools"
+            }
+
+        # Phase 6: Visuals (Add Images)
+        if stats["3_linked"] > 0:
+            return {
+                "agent_key": "enhance_media",
+                "label": "Media",
+                "description": "Add images",
+                "reason": f"{stats['3_linked']} pages need images"
+            }
+
+        # Phase 5: Internal Linking (Librarian)
+        if stats["2_validated"] > 0:
+            return {
+                "agent_key": "librarian_link",
+                "label": "Librarian",
+                "description": "Add internal links",
+                "reason": f"{stats['2_validated']} pages need links"
+            }
+
+        # Phase 4: Quality Control (Critic)
+        if stats["1_unreviewed"] > 0:
+            return {
+                "agent_key": "critic_review",
+                "label": "Critic",
+                "description": "Quality check",
+                "reason": f"{stats['1_unreviewed']} drafts need review"
+            }
+
+        # Phase 3: Drafting (Writer)
+        if stats["kws_pending"] > 0 and stats["1_unreviewed"] < 2:
+            return {
+                "agent_key": "write_pages",
+                "label": "Writer",
+                "description": "Create content",
+                "reason": f"{stats['kws_pending']} keywords need pages"
+            }
+
+        # Phase 2: Strategy (Get Keywords)
+        if stats["kws_total"] < (stats["anchors"] * 5) and stats["anchors"] > 0:
+            return {
+                "agent_key": "strategist_run",
+                "label": "Strategist",
+                "description": "Generate keywords",
+                "reason": f"Need more keywords ({stats['kws_total']}/{stats['anchors'] * 5})"
+            }
+
+        # Phase 1: Context (Scout)
+        if stats["anchors"] == 0:
+            return {
+                "agent_key": "scout_anchors",
+                "label": "Scout",
+                "description": "Find locations",
+                "reason": "No anchor locations found"
+            }
+
+        # Phase 9: Feedback Loop (Analytics)
+        if stats["6_live"] > 20:
+            return {
+                "agent_key": "analytics_audit",
+                "label": "Analytics",
+                "description": "Analyze performance",
+                "reason": f"{stats['6_live']} live pages ready for analysis"
+            }
+
+        # Pipeline balanced
+        return {
+            "agent_key": None,
+            "label": "Pipeline Balanced",
+            "description": "All stages are progressing well",
+            "reason": "No immediate action needed"
+        }
+
     def _format_stats(self, stats):
         return {
-            "Locations": stats["anchors"],
-            "Keywords": stats["kws_total"],
+            "anchors": stats["anchors"],
+            "kws_total": stats["kws_total"],
             "Drafts": stats["1_unreviewed"] + stats["2_validated"] + stats["3_linked"] + stats["4_imaged"] + stats["5_ready"] + stats["6_live"],
             "1_unreviewed": stats["1_unreviewed"],
             "2_validated": stats["2_validated"],

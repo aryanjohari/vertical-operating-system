@@ -44,6 +44,8 @@ export default function AgentButton({
 
       if (response.data.status === 'success' || response.data.status === 'complete') {
         updateLastRunTime(agentKey);
+        // Add small delay to ensure DB writes are committed
+        await new Promise(resolve => setTimeout(resolve, 500));
         if (onComplete) {
           onComplete();
         }

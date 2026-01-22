@@ -1,3 +1,4 @@
+import json
 import requests
 import base64
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
@@ -84,20 +85,43 @@ class PublisherAgent(BaseAgent):
         )
 
     def publish_to_wordpress(self, page, wp_url: str, wp_user: str, wp_password: str):
-        """Publish a page to WordPress using proper Slug and Content."""
+        """Publish a page to WordPress with Schema injection and SEO metadata."""
         # Ensure URL ends with endpoint
         endpoint = f"{wp_url.rstrip('/')}/wp-json/wp/v2/posts"
         
         creds = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
         
+        # Extract structured data from metadata
+        metadata = page['metadata']
+        title = metadata.get('title', page['name'])
+        content = metadata.get('content', '')
+        meta_description = metadata.get('meta_description', '')
+        schema_json = metadata.get('schema_json', {})
+        slug = metadata.get('slug', '')
+        
+        # Inject JSON-LD schema into content
+        if schema_json:
+            try:
+                schema_script = f"<script type='application/ld+json'>{json.dumps(schema_json, ensure_ascii=False)}</script>"
+                content = content + "\n\n" + schema_script
+            except Exception as e:
+                self.log(f"⚠️ Failed to inject schema: {e}")
+        
         # WordPress Payload
         post_data = {
-            "title": page['name'],
-            "content": page['metadata']['content'],
-            "slug": page['metadata'].get('slug'), # CRITICAL for SEO
-            "status": "publish", 
-            "categories": [1] # Default category, can be smarter later
+            "title": title,
+            "content": content,
+            "slug": slug,  # CRITICAL for SEO
+            "status": "publish",
+            "excerpt": meta_description,  # WordPress excerpt = meta description
+            "categories": [1],  # Default category, can be smarter later
+            "meta": {}  # Custom meta fields
         }
+        
+        # Add SEO plugin meta fields (Yoast and Rank Math)
+        if meta_description:
+            post_data["meta"]["_yoast_wpseo_metadesc"] = meta_description
+            post_data["meta"]["rank_math_description"] = meta_description
         
         try:
             res = requests.post(
@@ -107,10 +131,11 @@ class PublisherAgent(BaseAgent):
                 timeout=10
             )
             if res.status_code in [200, 201]:
+                self.log(f"✅ Published '{title}' with schema and meta description")
                 return True
             else:
-                print(f"WP Error {res.status_code}: {res.text}")
+                self.log(f"❌ WP Error {res.status_code}: {res.text}")
                 return False
         except Exception as e:
-            print(f"WP Connection Failed: {e}")
+            self.log(f"❌ WP Connection Failed: {e}")
             return False

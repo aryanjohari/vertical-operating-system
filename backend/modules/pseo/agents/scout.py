@@ -82,9 +82,29 @@ class ScoutAgent(BaseAgent):
             msg = response.get("message", "Unknown Scraper Error") if isinstance(response, dict) else "Invalid Response"
             return AgentOutput(status="error", message=msg)
 
-        # 7. SAVE ENTITIES (Scoped to Project)
+        # 7. SAVE ENTITIES (Scoped to Project) with Deduplication
         results = response.get("data", []) or []
         saved_count = 0
+        skipped_count = 0
+        
+        # Get existing entities to check for duplicates
+        existing_entities = memory.get_entities(
+            tenant_id=user_id,
+            entity_type="anchor_location",
+            project_id=project_id,
+            limit=1000
+        )
+        existing_ids = {e.get('id') for e in existing_entities if e.get('id')}
+        existing_urls = {
+            e.get('metadata', {}).get('google_maps_url') 
+            for e in existing_entities 
+            if isinstance(e.get('metadata'), dict) and e.get('metadata', {}).get('google_maps_url')
+        }
+        existing_names_addresses = {
+            f"{e.get('name', '')}-{e.get('metadata', {}).get('address', '')}" 
+            for e in existing_entities
+            if e.get('name') and isinstance(e.get('metadata'), dict) and e.get('metadata', {}).get('address')
+        }
         
         for item in results:
             if not isinstance(item, dict): continue
@@ -93,6 +113,25 @@ class ScoutAgent(BaseAgent):
             uid_source = item.get('google_maps_url') or f"{item.get('name')}-{item.get('address')}"
             uid_hash = hashlib.sha256(uid_source.encode()).hexdigest()[:16]
             entity_id = f"loc_{uid_hash}"
+            
+            # Deduplication check: Skip if entity already exists
+            google_url = item.get('google_maps_url')
+            name_address = f"{item.get('name', '')}-{item.get('address', '')}"
+            
+            if entity_id in existing_ids:
+                skipped_count += 1
+                self.logger.debug(f"Skipping duplicate entity (ID): {item.get('name')}")
+                continue
+            
+            if google_url and google_url in existing_urls:
+                skipped_count += 1
+                self.logger.debug(f"Skipping duplicate entity (URL): {item.get('name')}")
+                continue
+            
+            if name_address in existing_names_addresses:
+                skipped_count += 1
+                self.logger.debug(f"Skipping duplicate entity (Name+Address): {item.get('name')}")
+                continue
             
             entity_obj = Entity(
                 id=entity_id,
@@ -111,14 +150,27 @@ class ScoutAgent(BaseAgent):
             # Explicitly pass project_id for clarity and reliability
             if memory.save_entity(entity_obj, project_id=project_id):
                 saved_count += 1
+                # Update tracking sets for subsequent items in this batch
+                existing_ids.add(entity_id)
+                if google_url:
+                    existing_urls.add(google_url)
+                existing_names_addresses.add(name_address)
         
         # 8. RETURN STATUS
         # Manager logic: If we found 0, something is wrong. If >0, success.
         if saved_count == 0 and len(results) == 0:
              return AgentOutput(status="warning", message="Scout finished but found NO locations. Check queries/filters.")
+        
+        message = f"Scout Mission Complete. Secured {saved_count} new Anchor Locations."
+        if skipped_count > 0:
+            message += f" Skipped {skipped_count} duplicates."
              
         return AgentOutput(
             status="success", 
-            message=f"Scout Mission Complete. Secured {saved_count} Anchor Locations.", 
-            data={"count": saved_count, "locations": [r.get('name') for r in results[:5]]}
+            message=message, 
+            data={
+                "count": saved_count,
+                "skipped": skipped_count,
+                "locations": [r.get('name') for r in results[:5]]
+            }
         )

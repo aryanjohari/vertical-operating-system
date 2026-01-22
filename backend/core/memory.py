@@ -49,6 +49,27 @@ class GoogleEmbeddingFunction:
         except Exception as e:
             logging.getLogger("ApexMemory").error(f"Failed to generate embeddings: {e}", exc_info=True)
             raise
+    
+    def embed_query(self, input: str) -> List[float]:
+        """
+        Generate embedding for a single query string.
+        Required by ChromaDB for query operations.
+        
+        Args:
+            input: Single query string to embed (ChromaDB passes this as keyword arg)
+            
+        Returns:
+            Embedding vector (list of floats)
+        """
+        if not input:
+            return []
+        
+        try:
+            embeddings = self.__call__([input])
+            return embeddings[0] if embeddings else []
+        except Exception as e:
+            logging.getLogger("ApexMemory").error(f"Failed to generate query embedding: {e}", exc_info=True)
+            raise
 
 class MemoryManager:
     def __init__(self, db_path="data/apex.db", vector_path="data/chroma_db"):
@@ -68,26 +89,49 @@ class MemoryManager:
         try:
             self.chroma_client = chromadb.PersistentClient(path=self.vector_path)
             
-            # Create embedding function instance (uses Google Gemini API)
-            embedding_fn = GoogleEmbeddingFunction()
+            # Create and store embedding function instance (uses Google Gemini API)
+            # We'll manually use this for all operations to ensure Google embeddings
+            self.embedding_fn = GoogleEmbeddingFunction()
             
-            # Try to get existing collection first (ChromaDB persists the embedding function)
+            # Try to get existing collection first
             try:
-                # Get existing collection - ChromaDB will use the stored embedding function
-                # If collection exists, it will use its stored embedding function
-                # We pass embedding_fn to ensure new operations use Google embeddings
+                # get_collection() uses the stored embedding function from when collection was created
+                # Don't pass embedding_function - ChromaDB doesn't accept it for get_collection()
                 self.vector_collection = self.chroma_client.get_collection(
-                    name="apex_context",
-                    embedding_function=embedding_fn
+                    name="apex_context"
                 )
+                # Manually set our embedding function to ensure we use Google embeddings
+                # This overrides whatever ChromaDB stored
+                try:
+                    self.vector_collection._embedding_function = self.embedding_fn
+                except Exception:
+                    # If we can't set it directly, we'll manually embed in query/save methods
+                    pass
                 self.logger.info("Loaded existing ChromaDB collection (using Google embeddings)")
-            except Exception as e:
+            except Exception as get_error:
                 # Collection doesn't exist, create it with Google embedding function
-                self.vector_collection = self.chroma_client.create_collection(
-                    name="apex_context",
-                    embedding_function=embedding_fn
-                )
-                self.logger.info("Created new ChromaDB collection with Google embeddings")
+                try:
+                    self.vector_collection = self.chroma_client.create_collection(
+                        name="apex_context",
+                        embedding_function=self.embedding_fn
+                    )
+                    self.logger.info("Created new ChromaDB collection with Google embeddings")
+                except Exception as create_error:
+                    # Collection might have been created between get and create
+                    error_msg = str(create_error).lower()
+                    if "already exists" in error_msg or "duplicate" in error_msg:
+                        # Collection exists, get it and set our embedding function
+                        self.vector_collection = self.chroma_client.get_collection(
+                            name="apex_context"
+                        )
+                        try:
+                            self.vector_collection._embedding_function = self.embedding_fn
+                        except Exception:
+                            pass
+                        self.logger.info("Loaded existing ChromaDB collection (recovered from race condition)")
+                    else:
+                        # Re-raise if it's a different error
+                        raise create_error
             
             self.chroma_enabled = True
             self.logger.info("🧠 Memory Systems Online (SQL + Google RAG)")
@@ -410,7 +454,7 @@ class MemoryManager:
                 params.append(entity_type)
             
             if project_id:
-                query += " AND (project_id = ? OR project_id IS NULL)"
+                query += " AND project_id = ?"
                 params.append(project_id)
                 
             query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
@@ -599,9 +643,13 @@ class MemoryManager:
             metadata['tenant_id'] = tenant_id
             if project_id:
                 metadata['project_id'] = project_id
-                
+            
+            # Manually embed using our Google embedding function to ensure consistency
+            embeddings = self.embedding_fn([text])
+            
             self.vector_collection.add(
                 documents=[text],
+                embeddings=embeddings,  # Pass pre-embedded vectors
                 metadatas=[metadata],
                 ids=[str(uuid.uuid4())]
             )
@@ -623,9 +671,12 @@ class MemoryManager:
                         {"project_id": project_id}
                     ]
                 }
+            
+            # Manually embed query using our Google embedding function to ensure consistency
+            query_embedding = self.embedding_fn.embed_query(query)
                 
             results = self.vector_collection.query(
-                query_texts=[query],
+                query_embeddings=[query_embedding],  # Use pre-embedded vector instead of query_texts
                 n_results=n_results,
                 where=where_clause
             )

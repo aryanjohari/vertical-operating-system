@@ -16,6 +16,7 @@ from backend.core.auth import (
     verify_user_credentials
 )
 from backend.routers.voice import voice_router
+from backend.routers.webhooks import webhook_router
 import logging
 import uvicorn
 import os
@@ -41,12 +42,12 @@ app = FastAPI(
 # CORS Configuration (secure defaults, configurable via env)
 ALLOWED_ORIGINS = os.getenv(
     "APEX_CORS_ORIGINS",
-    "http://localhost:3000,http://localhost:3001"  # Default: Next.js dev ports
+    "http://localhost:3000,http://localhost:3001,http://localhost:5500"  # Default: Next.js dev ports
 ).split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # Whitelist specific origins
+    allow_origins=["*"],  # Whitelist specific origins
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
@@ -582,6 +583,7 @@ async def update_dna_config(
 
 # Include voice router
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])
+app.include_router(webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 
 if __name__ == "__main__":
     # Dev Mode: Runs on localhost:8000

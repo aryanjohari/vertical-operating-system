@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
 import { useProjectStore } from '@/lib/store';
+import ProjectSelector from '@/components/dashboard/ProjectSelector';
 
 interface SidebarProps {
   projectId: string;
@@ -72,6 +73,15 @@ export default function Sidebar({ projectId }: SidebarProps) {
         </svg>
       ),
     },
+    {
+      name: 'Lead Gen',
+      href: `/projects/${projectId}/lead-gen`,
+      icon: (
+        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+        </svg>
+      ),
+    },
   ];
 
   const isActive = (href: string) => pathname === href;
@@ -80,7 +90,22 @@ export default function Sidebar({ projectId }: SidebarProps) {
     <div className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 h-screen flex flex-col">
       {/* Header */}
       <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Project</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Project</h2>
+          <a
+            href="/dashboard"
+            onClick={(e) => {
+              e.preventDefault();
+              router.push('/dashboard');
+            }}
+            className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            All Projects
+          </a>
+        </div>
+        <div className="mt-2">
+          <ProjectSelector />
+        </div>
       </div>
 
       {/* Navigation */}
@@ -111,6 +136,10 @@ export default function Sidebar({ projectId }: SidebarProps) {
         <div className="space-y-2">
           <div className="flex items-center justify-between px-3 py-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
             <span className="text-sm text-gray-900 dark:text-white">Apex Growth (pSEO)</span>
+            <span className="text-xs text-green-600 dark:text-green-400">Active</span>
+          </div>
+          <div className="flex items-center justify-between px-3 py-2 bg-green-50 dark:bg-green-900/20 rounded-lg">
+            <span className="text-sm text-gray-900 dark:text-white">Apex Connect (Lead Gen)</span>
             <span className="text-xs text-green-600 dark:text-green-400">Active</span>
           </div>
         </div>

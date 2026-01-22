@@ -242,17 +242,16 @@ class UtilityAgent(BaseAgent):
                 }}
                 
                 try {{
-                    // POST to backend
-                    const response = await fetch('{self.api_base_url}/api/leads', {{
+                    // POST to webhook endpoint (no JWT required - works from WordPress/public sites)
+                    const response = await fetch('{self.api_base_url}/api/webhooks/wordpress?project_id={project_id}', {{
                         method: 'POST',
                         headers: {{
                             'Content-Type': 'application/json'
                         }},
                         body: JSON.stringify({{
-                            user_id: '{user_id}',
-                            project_id: '{project_id}',
-                            source: '{source_label}',
-                            data: formData
+                            name: formData.name,
+                            phone: formData.phone,
+                            message: formData.message
                         }})
                     }});
                     

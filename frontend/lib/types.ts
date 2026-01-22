@@ -103,3 +103,30 @@ export interface PipelineStats {
   '5_ready': number;
   '6_live': number;
 }
+
+export interface NextStep {
+  agent_key: string | null;
+  label: string;
+  description: string;
+  reason: string;
+}
+
+export interface LeadGenStats {
+  total_leads: number;
+  avg_lead_score: number;
+  total_pipeline_value: number;
+  conversion_rate: number;
+  sources: {
+    sniper: number;
+    web: number;
+    voice: number;
+    google_ads: number;
+    wordpress_form: number;
+  };
+  priorities: {
+    high: number;
+    medium: number;
+    low: number;
+  };
+  recent_leads: string[];
+}

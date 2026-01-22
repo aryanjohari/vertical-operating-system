@@ -1,8 +1,12 @@
 // components/project/Pipeline.tsx
 'use client';
 
+import { useState } from 'react';
 import { PipelineStats } from '@/lib/types';
 import AgentButton from './AgentButton';
+import Button from '@/components/ui/Button';
+import api from '@/lib/api';
+import { useAgentStore } from '@/lib/store';
 
 interface PipelineProps {
   stats: PipelineStats;
@@ -77,9 +81,53 @@ const pipelineStages = [
 ];
 
 export default function Pipeline({ stats, projectId, onRefresh }: PipelineProps) {
+  const [isOrchestrating, setIsOrchestrating] = useState(false);
+  const { isRunning, setRunning } = useAgentStore();
+
+  const handleAutoOrchestrate = async () => {
+    if (isRunning || isOrchestrating) return;
+
+    setIsOrchestrating(true);
+    setRunning(true, 'auto_orchestrate');
+
+    try {
+      const response = await api.post('/api/run', {
+        task: 'manager',
+        user_id: '',
+        params: {
+          project_id: projectId,
+          action: 'auto_orchestrate',
+        },
+      });
+      
+      if (response.data.status === 'success' || response.data.status === 'complete') {
+        onRefresh();
+      }
+    } catch (error) {
+      console.error('Error running orchestration:', error);
+    } finally {
+      setIsOrchestrating(false);
+      setRunning(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 dark:text-white">pSEO Pipeline</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">pSEO Pipeline</h2>
+        <Button
+          onClick={handleAutoOrchestrate}
+          variant="primary"
+          disabled={isRunning || isOrchestrating}
+          isLoading={isOrchestrating}
+          className="flex items-center gap-2"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {isOrchestrating ? 'Orchestrating...' : 'Auto Orchestrate'}
+        </Button>
+      </div>
       
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-3 gap-4">
         {pipelineStages.map((stage, index) => {

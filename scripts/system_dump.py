@@ -1,5 +1,15 @@
 import csv
 import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import sys
+
+# Add parent directory to path to import backend modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import json
 import chromadb
 import sqlite3
@@ -52,6 +62,10 @@ def dump_entities():
                     # Fill metadata columns
                     for key in headers[4:]:
                         val = meta.get(key, "")
+
+                        if key == "content":
+                            row.append(val)
+                            continue
                         # Truncate strictly for CSV, but keep enough to verify
                         if isinstance(val, str) and len(val) > 200:
                             val = val[:200] + "... [TRUNCATED]"

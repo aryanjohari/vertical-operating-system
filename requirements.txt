@@ -34,3 +34,4 @@ tenacity>=8.2.3  # For retrying failed agents
 
 twilio>=9.0.0
 python-multipart>=0.0.9
+# Note: Using Google Gemini for transcription (via google-genai, already included above)

@@ -29,7 +29,15 @@ class AgentRegistry:
         "publish": ("backend.modules.pseo.agents.publisher", "PublisherAgent"),
         "analytics_audit": ("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),
 
-        # --- MODULE: APEX CONNECT (Lead Gen) - COMMENTED OUT ---
+        # --- MODULE: APEX CONNECT (Lead Gen) ---
+        # The Manager (Orchestrator)
+        "lead_gen_manager": ("backend.modules.lead_gen.manager", "LeadGenManager"),
+        
+        # The Workers
+        "sniper_agent": ("backend.modules.lead_gen.agents.sniper", "SniperAgent"),
+        "sales_agent": ("backend.modules.lead_gen.agents.sales", "SalesAgent"),
+        "reactivator_agent": ("backend.modules.lead_gen.agents.reactivator", "ReactivatorAgent"),
+        "lead_scorer": ("backend.modules.lead_gen.agents.scorer", "LeadScorerAgent"),
         # "twilio": ("backend.modules.lead_gen.agents.twilio", "TwilioAgent"),
     }
 

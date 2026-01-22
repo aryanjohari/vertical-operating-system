@@ -19,299 +19,211 @@ class OnboardingAgent(BaseAgent):
             "core",
             "profile_template.yaml"
         )
-        # Model selection for onboarding tasks (balanced speed/quality)
+        # Model selection for onboarding tasks (fast and cost-effective)
         self.model = "gemini-2.5-flash"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
-        State Machine Routing:
-        Step 1: 'analyze' -> Scrape URL & Extract Identity
-        Step 2: 'interview_start' -> Generate Questions based on Modules
-        Step 3: 'interview_loop' -> Chat until Wisdom is extracted
+        Single-shot compiler: Takes form data and generates DNA profile.
+        Action: 'compile_profile'
         """
-        step = input_data.params.get("step", "analyze")
+        action = input_data.params.get("action", "compile_profile")
         
-        if step == "analyze":
-            return await self._phase_1_analyze(input_data)
-        elif step == "interview_start":
-            return await self._phase_2_start(input_data)
-        elif step == "interview_loop":
-            return await self._phase_3_loop(input_data)
+        if action == "compile_profile":
+            return await self._compile_profile(input_data)
         else:
-            return AgentOutput(status="error", message=f"Unknown step: {step}")
+            return AgentOutput(status="error", message=f"Unknown action: {action}")
 
-    # --- PHASE 1: THE COLD READ ---
-    async def _phase_1_analyze(self, packet):
-        url = packet.params.get("url")
-        if not url:
-            self.logger.warning("Phase 1 analyze called without URL parameter")
-            return AgentOutput(status="error", message="URL required for analysis.")
-
-        # 1. Scrape the Site
-        self.log(f"Scraping {url}...")
-        try:
-            scraper = UniversalScraper()
-            raw_data = await scraper.scrape(url)
-            
-            if not raw_data or not raw_data.get('content'):
-                self.logger.warning(f"Scraping returned no content for URL: {url}")
-                return AgentOutput(status="error", message="Failed to scrape website content. Please check the URL.")
-        except Exception as e:
-            self.logger.error(f"Scraping failed for {url}: {e}", exc_info=True)
-            return AgentOutput(status="error", message=f"Failed to scrape website: {str(e)}")
-        
-        # 2. AI Extraction
-        prompt = f"""
-        Analyze this raw website text. Extract the Core Identity.
-        JSON Output ONLY.
-        Keys: business_name, niche (2-3 words), phone, email, address, key_services (list).
-        
-        TEXT:
-        {raw_data.get('content', '')[:10000]}
+    async def _compile_profile(self, input_data: AgentInput) -> AgentOutput:
+        """
+        Single-shot profile compiler.
+        Steps: Scrape (optional) → Compile → Save → RAG
         """
         try:
-            response_text = llm_gateway.generate_content(
-                system_prompt="You are an AI assistant that extracts business identity from website content. Always return valid JSON.",
-                user_prompt=prompt,
-                model=self.model,
-                temperature=0.5,
-                max_retries=3
-            )
-        except Exception as e:
-            self.logger.error(f"LLM generation failed in phase 1: {e}", exc_info=True)
-            return AgentOutput(status="error", message="Failed to extract identity. Please try again.")
-        
-        try:
-            # Clean generic markdown
-            json_str = response_text.replace("```json", "").replace("```", "").strip()
-            identity_data = json.loads(json_str)
+            # Extract input data
+            identity = input_data.params.get("identity", {})
+            modules = input_data.params.get("modules", [])
             
-            # Validate extracted identity has minimum required fields
-            if not isinstance(identity_data, dict):
-                raise ValueError("Identity data is not a dictionary")
+            # Validate required fields
+            if not isinstance(identity, dict):
+                return AgentOutput(status="error", message="Invalid identity data format.")
             
-            if not identity_data.get('business_name'):
-                self.logger.warning("Extracted identity missing business_name")
+            if not identity.get("business_name"):
+                return AgentOutput(status="error", message="Business name is required.")
             
-            identity_data['website'] = url
+            if not identity.get("niche"):
+                return AgentOutput(status="error", message="Niche is required.")
             
-            self.logger.info(f"Successfully extracted identity for: {identity_data.get('business_name', 'Unknown')}")
+            if not isinstance(modules, list) or len(modules) == 0:
+                return AgentOutput(status="error", message="At least one module must be selected.")
             
-            return AgentOutput(
-                status="success",
-                message="Analysis Complete",
-                data={"identity": identity_data} # Send back to UI for User Confirmation
-            )
-        except json.JSONDecodeError as e:
-            self.logger.error(f"JSON parsing failed in phase 1: {e}\nResponse preview: {response_text[:200]}")
-            return AgentOutput(status="error", message="Failed to parse identity data. Please try again.")
-        except ValueError as e:
-            self.logger.error(f"Identity validation failed: {e}")
-            return AgentOutput(status="error", message="Invalid identity data format. Please try again.")
-        except Exception as e:
-            self.logger.error(f"Unexpected error in phase 1 identity extraction: {e}", exc_info=True)
-            return AgentOutput(status="error", message="Failed to extract identity. Please try again.")
-
-    # --- PHASE 2: THE STRATEGY SELECTOR ---
-    async def _phase_2_start(self, packet):
-        """
-        Input: Confirmed Identity + Selected Modules List
-        Output: The "First Question" to start the Deep Dive.
-        """
-        identity_raw = packet.params.get("identity", {})
-        modules = packet.params.get("modules", []) # e.g. ['local_seo', 'lead_gen']
-        
-        # Handle nested identity structure (from phase 1 response: {identity: {...}})
-        if isinstance(identity_raw, dict) and "identity" in identity_raw and len(identity_raw) == 1:
-            identity = identity_raw.get("identity", {})
-        else:
-            identity = identity_raw
-        
-        # Validate inputs
-        if not isinstance(identity, dict):
-            self.logger.warning("Phase 2 called with invalid identity format")
-            return AgentOutput(status="error", message="Invalid identity data provided.")
-        
-        if not isinstance(modules, list):
-            self.logger.warning("Phase 2 called with invalid modules format")
-            return AgentOutput(status="error", message="Invalid modules list provided.")
-        
-        # Validate modules are known/valid
-        valid_modules = ["local_seo", "lead_gen", "social_media"]
-        invalid_modules = [m for m in modules if m not in valid_modules]
-        if invalid_modules:
-            self.logger.warning(f"Unknown modules requested: {invalid_modules}")
-            # Continue with valid modules only
-        
-        # Build the "Wisdom Agenda"
-        agenda = []
-        if "local_seo" in modules:
-            agenda.append("I need to know your 'Anchor Locations' (e.g. Courts, Suppliers).")
-            agenda.append("What is a common mistake your customers make that you fix?")
-        if "lead_gen" in modules:
-            agenda.append("Do you have a specific phone number for forwarding calls?")
+            # Validate modules
+            valid_modules = ["local_seo", "lead_gen", "admin"]
+            modules = [m for m in modules if m in valid_modules]
+            if len(modules) == 0:
+                return AgentOutput(status="error", message="No valid modules selected.")
             
-        start_msg = (
-            f"Great. I've set up the project for **{identity.get('business_name')}**.\n\n"
-            f"To activate the **{', '.join(modules)}** modules, I need to extract some expert knowledge.\n\n"
-            f"First: {agenda[0] if agenda else 'Tell me about your business.'}"
-        )
-        
-        self.logger.info(f"Starting interview for: {identity.get('business_name', 'Unknown')}, modules: {modules}")
-        
-        return AgentOutput(
-            status="continue",
-            message="Starting Interview",
-            data={"reply": start_msg, "context": {"modules": modules, "identity": identity}}
-        )
-
-    # --- PHASE 3: THE DEEP DIVE (Chat Loop) ---
-    async def _phase_3_loop(self, packet):
-        history_raw = packet.params.get("history", "")
-        user_msg = packet.params.get("message", "")
-        context_raw = packet.params.get("context", {}) # Passed back and forth
-        
-        # Handle history as string (from frontend) - keep as string for prompt
-        if isinstance(history_raw, list):
-            # Convert list to string format
-            history = "\n".join(str(item) for item in history_raw)
-        else:
-            history = str(history_raw) if history_raw else ""
-        
-        # Handle context as string (from frontend) or dict
-        if isinstance(context_raw, str):
-            if context_raw:
+            self.logger.info(f"Compiling profile for: {identity.get('business_name')}, modules: {modules}")
+            
+            # --- STEP A: SCRAPE (Optional) ---
+            context_bio = ""
+            website = identity.get("website", "").strip()
+            
+            if website:
+                self.log(f"Scraping {website}...")
                 try:
-                    import json
-                    context = json.loads(context_raw)
-                except:
-                    context = {}
+                    scraper = UniversalScraper()
+                    raw_data = await scraper.scrape(website)
+                    
+                    if raw_data and raw_data.get('content'):
+                        # Extract bio/context from scraped content
+                        content = raw_data.get('content', '')[:20000]  # Limit to 20k chars
+                        context_bio = f"Website Content:\n{content}"
+                        self.logger.info(f"Successfully scraped {len(content)} characters from website")
+                    else:
+                        self.logger.warning(f"Scraping returned no content for URL: {website}")
+                        # Fall back to description if available
+                        if identity.get("description"):
+                            context_bio = f"Business Description: {identity.get('description')}"
+                except Exception as e:
+                    self.logger.warning(f"Scraping failed for {website}: {e}")
+                    # Fall back to description if available
+                    if identity.get("description"):
+                        context_bio = f"Business Description: {identity.get('description')}"
             else:
-                context = {}
-        else:
-            context = context_raw if isinstance(context_raw, dict) else {}
-        
-        # Handle nested identity structure if passed directly in params
-        identity_raw = packet.params.get("identity")
-        if identity_raw and isinstance(identity_raw, dict) and "identity" in identity_raw and len(identity_raw) == 1:
-            identity = identity_raw.get("identity", {})
-            # Update context with correct identity if not already set
-            if not context.get("identity"):
-                context["identity"] = identity
-        
-        # Validate context
-        if not isinstance(context, dict):
-            self.logger.warning("Phase 3 called with invalid context format")
-            context = {}  # Use empty dict instead of error
-        
-        # Load Template
-        try:
-            if not os.path.exists(self.template_path):
-                self.logger.error(f"Template file not found: {self.template_path}")
-                return AgentOutput(status="error", message="Template file not found. System error.")
+                # Use description if no website
+                if identity.get("description"):
+                    context_bio = f"Business Description: {identity.get('description')}"
             
-            with open(self.template_path, 'r') as f:
-                template = f.read()
+            # --- STEP B: COMPILE ---
+            self.log("Compiling DNA profile...")
             
-            if not template:
-                self.logger.error("Template file is empty")
-                return AgentOutput(status="error", message="Template file is empty. System error.")
-        except PermissionError as e:
-            self.logger.error(f"Permission denied reading template: {e}")
-            return AgentOutput(status="error", message="Cannot read template file. System error.")
-        except Exception as e:
-            self.logger.error(f"Failed to load template: {e}", exc_info=True)
-            return AgentOutput(status="error", message="Failed to load template. System error.")
-
-        prompt = f"""
-        ROLE: You are Genesis, the Apex Consultant.
-        GOAL: Fill the YAML Template based on the User's inputs.
-        
-        CONTEXT:
-        - Business: {context.get('identity')}
-        - Modules Active: {context.get('modules')}
-        
-        TEMPLATE TO FILL:
-        {template}
-        
-        INSTRUCTIONS:
-        1. Check if we have enough info to fill the 'identity', 'brand_brain', and ACTIVE 'modules'.
-        2. IF MISSING INFO: Ask the next logical question. Focus on "Expert Nuggets" (insider tips, specific guarantees).
-        3. IF COMPLETE: Output the full VALID YAML inside ```yaml``` tags.
-        
-        CHAT HISTORY:
-        {history}
-        """
-        
-        try:
-            response_text = llm_gateway.generate_content(
-                system_prompt="You are Genesis, the Apex Consultant. Help users configure their business profile.",
-                user_prompt=prompt,
-                model=self.model,
-                temperature=0.7,
-                max_retries=3
-            )
-        except Exception as e:
-            self.logger.error(f"LLM generation failed in phase 3: {e}", exc_info=True)
-            return AgentOutput(status="error", message="Failed to generate response. Please try again.")
-        
-        reply = response_text
-        
-        if "```yaml" in reply:
-            # We are done. Save and Register.
+            # Load template
             try:
-                yaml_content = reply.split("```yaml")[1].split("```")[0].strip()
+                if not os.path.exists(self.template_path):
+                    return AgentOutput(status="error", message="Template file not found. System error.")
                 
-                # Validate YAML can be parsed before saving
-                try:
-                    parsed_yaml = yaml.safe_load(yaml_content)
-                    if not parsed_yaml:
-                        raise ValueError("YAML is empty or invalid")
-                except yaml.YAMLError as e:
-                    self.logger.error(f"Generated YAML is invalid: {e}")
-                    return AgentOutput(
-                        status="error",
-                        message="Generated configuration is invalid. Please continue the interview."
-                    )
+                with open(self.template_path, 'r') as f:
+                    template = f.read()
                 
-                # Get project_id with validation
-                project_id = context.get('identity', {}).get('project_id')
-                if not project_id:
-                    # Fallback to generating from business name
-                    business_name = context.get('identity', {}).get('business_name', 'new_project')
-                    project_id = re.sub(r'[^a-zA-Z0-9_-]', '_', business_name.lower())[:50]
-                    self.logger.info(f"Generated project_id from business name: {project_id}")
-                
-                # Validate project_id format for safety
-                if not re.match(r'^[a-zA-Z0-9_-]+$', project_id):
-                    self.logger.error(f"Invalid project_id format: {project_id}")
-                    return AgentOutput(status="error", message="Invalid project identifier. Please try again.")
-                
-                # Save profile (with error handling)
-                save_result = self._save_profile(project_id, yaml_content, packet.user_id)
-                if not save_result:
-                    return AgentOutput(status="error", message="Failed to save profile. Please try again.")
-                
-                self.logger.info(f"Successfully completed onboarding for project: {project_id}, user: {packet.user_id}")
-                
-                return AgentOutput(
-                    status="complete",
-                    message="Profile Generated",
-                    data={
-                        "reply": "Configuration saved. System ready.", 
-                        "path": f"data/profiles/{project_id}",
-                        "project_id": project_id
-                    }
+                if not template:
+                    return AgentOutput(status="error", message="Template file is empty. System error.")
+            except Exception as e:
+                self.logger.error(f"Failed to load template: {e}", exc_info=True)
+                return AgentOutput(status="error", message="Failed to load template. System error.")
+            
+            # Build compilation prompt
+            modules_list = ", ".join(modules)
+            enable_instructions = []
+            if "local_seo" in modules:
+                enable_instructions.append("- Enable 'local_seo' module (set enabled: true)")
+            if "lead_gen" in modules:
+                enable_instructions.append("- Enable 'lead_gen' module (set enabled: true)")
+            if "admin" in modules:
+                enable_instructions.append("- Enable 'admin' module (set enabled: true)")
+            
+            compilation_prompt = f"""
+You are Genesis, the Apex Profile Compiler. Your task is to fill the YAML template with the provided business data.
+
+INPUT DATA:
+- Business Name: {identity.get('business_name')}
+- Niche: {identity.get('niche')}
+- Phone: {identity.get('phone', '')}
+- Email: {identity.get('email', '')}
+- Website: {identity.get('website', '')}
+- Address: {identity.get('address', '')}
+- Description: {identity.get('description', '')}
+
+SELECTED MODULES: {modules_list}
+
+{context_bio}
+
+TEMPLATE TO FILL:
+{template}
+
+INSTRUCTIONS:
+1. Fill the 'identity' section with the provided business data.
+2. Generate a valid 'project_id' from the business name (lowercase, alphanumeric + underscores/hyphens only).
+3. Fill 'brand_brain' section based on the niche and context:
+   - Set appropriate 'voice_tone' for the niche
+   - Generate 3-5 'key_differentiators' relevant to the business
+   - Generate 3-5 'insider_tips' based on the niche and context
+   - Generate 2-3 'common_objections' customers might have
+   - Set appropriate 'forbidden_topics' for the niche
+4. Module Configuration:
+{chr(10).join(enable_instructions)}
+   - For modules NOT in the selected list, set enabled: false
+5. If 'local_seo' is enabled, set reasonable default anchor_entities and geo_scope based on niche.
+6. If 'lead_gen' is enabled, leave sales_bridge settings as template defaults (user will configure later).
+
+OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not include any other text.
+"""
+            
+            try:
+                response_text = llm_gateway.generate_content(
+                    system_prompt="You are Genesis, the Apex Profile Compiler. Generate valid YAML configuration files.",
+                    user_prompt=compilation_prompt,
+                    model=self.model,
+                    temperature=0.5,
+                    max_retries=3
                 )
             except Exception as e:
-                self.logger.error(f"Failed to process completed YAML: {e}", exc_info=True)
-                return AgentOutput(status="error", message="Failed to save configuration. Please try again.")
-        else:
+                self.logger.error(f"LLM generation failed: {e}", exc_info=True)
+                return AgentOutput(status="error", message="Failed to compile profile. Please try again.")
+            
+            # Extract YAML from response
+            if "```yaml" in response_text:
+                yaml_content = response_text.split("```yaml")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                # Fallback: try to extract any code block
+                parts = response_text.split("```")
+                if len(parts) >= 2:
+                    yaml_content = parts[1].strip()
+                    if yaml_content.startswith("yaml"):
+                        yaml_content = yaml_content[4:].strip()
+                else:
+                    yaml_content = response_text.strip()
+            else:
+                yaml_content = response_text.strip()
+            
+            # Validate YAML can be parsed
+            try:
+                parsed_yaml = yaml.safe_load(yaml_content)
+                if not parsed_yaml:
+                    raise ValueError("YAML is empty or invalid")
+            except yaml.YAMLError as e:
+                self.logger.error(f"Generated YAML is invalid: {e}\nYAML preview: {yaml_content[:500]}")
+                return AgentOutput(status="error", message="Generated configuration is invalid. Please try again.")
+            
+            # --- STEP C: SAVE ---
+            self.log("Saving profile...")
+            
+            # Generate and sanitize project_id
+            business_name = identity.get('business_name', 'new_project')
+            project_id = re.sub(r'[^a-zA-Z0-9_-]', '_', business_name.lower())[:50]
+            
+            # Ensure project_id in DNA matches
+            parsed_yaml['identity']['project_id'] = project_id
+            
+            # Save profile
+            save_result = self._save_profile(project_id, yaml_content, input_data.user_id)
+            if not save_result:
+                return AgentOutput(status="error", message="Failed to save profile. Please try again.")
+            
+            self.logger.info(f"Successfully compiled and saved profile for project: {project_id}, user: {input_data.user_id}")
+            
             return AgentOutput(
-                status="continue",
-                message="Interviewing",
-                data={"reply": reply, "context": context}
+                status="complete",
+                message="Profile Generated",
+                data={
+                    "project_id": project_id,
+                    "path": f"data/profiles/{project_id}"
+                }
             )
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected error in _compile_profile: {e}", exc_info=True)
+            return AgentOutput(status="error", message=f"Failed to compile profile: {str(e)}")
 
     def _validate_dna_structure(self, parsed_yaml: dict) -> tuple[bool, str]:
         """Validate DNA has required fields."""
@@ -391,8 +303,8 @@ class OnboardingAgent(BaseAgent):
                 self.logger.error(f"Failed to register project in database: {e}", exc_info=True)
                 # Continue anyway - file is saved, DB registration can be retried
 
-            # --- 3. THE MISSING RAG INJECTION ---
-            # We must feed the "Brand Brain" into ChromaDB so the Writer can find it.
+            # --- 3. RAG INJECTION ---
+            # Feed the "Brand Brain" into ChromaDB so agents can find it
             brand_brain = parsed.get('brand_brain', {})
             if not isinstance(brand_brain, dict):
                 brand_brain = {}
@@ -400,7 +312,7 @@ class OnboardingAgent(BaseAgent):
             nugget_count = 0
             tip_count = 0
             
-            # A. Index Knowledge Nuggets
+            # A. Index Knowledge Nuggets (if present)
             nuggets = brand_brain.get('knowledge_nuggets', [])
             if isinstance(nuggets, list):
                 for nugget in nuggets:
