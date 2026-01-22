@@ -28,3 +28,4 @@ Thumbs.db
 # 5. IDE SETTINGS (Optional but cleaner)
 .vscode/
 .idea/
+logs/*
