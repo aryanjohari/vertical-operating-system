@@ -1,10 +1,10 @@
 # backend/routers/voice.py
 import os
 import logging
-import sqlite3
+import re
 import urllib.parse
 from datetime import datetime
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Request, Response, HTTPException
 from twilio.twiml.voice_response import VoiceResponse, Dial
 from twilio.rest import Client
 from backend.core.config import ConfigLoader
@@ -15,28 +15,24 @@ from backend.core.memory import memory
 logger = logging.getLogger("Apex.Voice")
 voice_router = APIRouter()
 
+def _validate_project_id(project_id: str) -> bool:
+    """
+    Validates project_id format to prevent path traversal attacks.
+    """
+    if not isinstance(project_id, str) or not project_id:
+        return False
+    # Only allow alphanumeric, underscores, and hyphens (same as kernel validation)
+    return bool(re.match(r'^[a-zA-Z0-9_-]+$', project_id))
+
 def _get_user_id_from_project(project_id: str):
     """
     Gets the user_id (owner) of a project.
     Used to find the correct tenant_id for lead lookup.
+    Now uses memory abstraction instead of direct DB access.
     """
-    try:
-        conn = sqlite3.connect(memory.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM projects WHERE project_id = ?", (project_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            user_id = row[0]
-            logger.debug(f"Found project owner: {user_id} for project {project_id}")
-            return user_id
-        else:
-            logger.warning(f"Project {project_id} not found in database")
-            return None
-    except Exception as e:
-        logger.error(f"Error finding project owner: {e}", exc_info=True)
+    if not project_id:
         return None
+    return memory.get_project_owner(project_id)
 
 # --- 1. THE BRIDGE CONNECTOR (SPEED-TO-LEAD) ---
 # Triggered when the Boss presses "1" on the "Whisper Call".
@@ -158,6 +154,14 @@ async def handle_incoming_call(request: Request):
         # For MVP, we default to the env var or query param
         project_id = request.query_params.get("project_id") or os.getenv("DEFAULT_PROJECT_ID")
         
+        # Validate project_id format (security: prevent path traversal)
+        if project_id and not _validate_project_id(project_id):
+            logger.error(f"Invalid project_id format in incoming call: {project_id}")
+            response = VoiceResponse()
+            response.say("Error. Invalid project configuration.")
+            response.hangup()
+            return Response(content=str(response), media_type="application/xml")
+        
         # 2. Load Config to find where to forward
         config_loader = ConfigLoader()
         config = config_loader.load(project_id)
@@ -213,6 +217,11 @@ async def handle_call_status(request: Request):
         # Get lead_id and project_id from query params (set by SalesAgent)
         lead_id = request.query_params.get("lead_id")
         project_id = request.query_params.get("project_id") or os.getenv("DEFAULT_PROJECT_ID")
+
+        # Validate project_id format (security: prevent path traversal)
+        if project_id and not _validate_project_id(project_id):
+            logger.error(f"Invalid project_id format in call status: {project_id}")
+            return Response(content="Invalid project_id", status_code=400)
 
         logger.info(f"📞 Call Status: {call_sid} | Status: {call_status} | Lead: {lead_id} | Project: {project_id}")
 
@@ -392,26 +401,28 @@ Return only valid JSON, no markdown formatting."""
         # E. HANDLE INBOUND CALLS (existing logic - no lead_id)
         elif not lead_id:
             recording_url = form_data.get("RecordingUrl", "")
-        if recording_url:
-            lead_entity = Entity(
-                tenant_id="admin",
-                entity_type="lead",
-                name="Inbound Call",
-                primary_contact=from_number,
-                metadata={
-                    "source": "voice_call",
-                    "recording_url": recording_url,
-                    "call_sid": call_sid,
-                    "call_status": call_status,
-                    "project_id": project_id,
-                    "status": "new"
-                }
-            )
-            memory.save_entity(lead_entity, project_id=project_id)
-            logger.info(f"💾 Saved Inbound Call Recording for Call {call_sid}")
+            if recording_url and project_id:
+                # Get project owner for tenant_id (security: use actual owner, not hardcoded admin)
+                project_owner = _get_user_id_from_project(project_id) or "system"
+                lead_entity = Entity(
+                    tenant_id=project_owner,
+                    entity_type="lead",
+                    name="Inbound Call",
+                    primary_contact=from_number,
+                    metadata={
+                        "source": "voice_call",
+                        "recording_url": recording_url,
+                        "call_sid": call_sid,
+                        "call_status": call_status,
+                        "project_id": project_id,
+                        "status": "new"
+                    }
+                )
+                memory.save_entity(lead_entity, project_id=project_id)
+                logger.info(f"💾 Saved Inbound Call Recording for Call {call_sid}")
 
         # F. NURTURE LOGIC (existing - for missed calls)
-        if call_status in ["busy", "no-answer", "failed"]:
+        if call_status in ["busy", "no-answer", "failed"] and project_id:
             config_loader = ConfigLoader()
             config = config_loader.load(project_id)
             nurture_config = config.get('modules', {}).get('lead_gen', {}).get('nurturing', {})
@@ -424,28 +435,33 @@ Return only valid JSON, no markdown formatting."""
                     from backend.core.kernel import kernel
                     from backend.core.agent_base import AgentInput
                     
-                    logger.info(f"🚑 Triggering Nurture SMS to {customer_phone}")
-                    
-                    try:
-                        await kernel.dispatch(AgentInput(
-                            task="sales_agent",
-                        user_id="admin",
-                        project_id=project_id,
-                        params={
-                                "action": "notify_sms",
-                                "lead_id": "DIRECT_SMS",
-                            "direct_phone": customer_phone,
-                            "custom_message": nurture_text
-                        }
-                    ))
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to send nurture SMS: {e}", exc_info=True)
+                    # Get project owner for proper user_id (security: use actual owner, not hardcoded admin)
+                    project_owner = _get_user_id_from_project(project_id)
+                    if not project_owner:
+                        logger.warning(f"⚠️ Could not find project owner for {project_id}, skipping nurture SMS")
+                    else:
+                        logger.info(f"🚑 Triggering Nurture SMS to {customer_phone}")
+                        
+                        try:
+                            await kernel.dispatch(AgentInput(
+                                task="sales_agent",
+                                user_id=project_owner,
+                                params={
+                                    "action": "notify_sms",
+                                    "lead_id": "DIRECT_SMS",
+                                    "direct_phone": customer_phone,
+                                    "custom_message": nurture_text,
+                                    "project_id": project_id
+                                }
+                            ))
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to send nurture SMS: {e}", exc_info=True)
 
         return Response(content="", status_code=200)
         
     except Exception as e:
         logger.error(f"❌ Error handling call status: {e}", exc_info=True)
-        return Response(content="", status_code=200)
+        return Response(content="Internal server error", status_code=500)
 
 
 # --- 4. RECORDING STATUS CALLBACK ---
@@ -490,7 +506,7 @@ async def handle_recording_status(request: Request):
         return Response(content="", status_code=200)
     except Exception as e:
         logger.error(f"❌ Error handling recording status: {e}", exc_info=True)
-        return Response(content="", status_code=200)
+        return Response(content="Internal server error", status_code=500)
 
 
 # --- 5. TRANSCRIPTION CALLBACK ---
@@ -515,8 +531,17 @@ async def handle_transcription(request: Request):
                 # Search all projects for lead with this call_sid
                 project_id = request.query_params.get("project_id") or os.getenv("DEFAULT_PROJECT_ID")
                 
+                # Validate project_id format (security: prevent path traversal)
+                if project_id and not _validate_project_id(project_id):
+                    logger.error(f"Invalid project_id format in transcription: {project_id}")
+                    return Response(content="Invalid project_id", status_code=400)
+                
+                # Get project owner for proper tenant_id lookup
+                project_owner = _get_user_id_from_project(project_id) if project_id else None
+                tenant_id = project_owner or "system"
+                
                 all_leads = memory.get_entities(
-                    tenant_id="system",
+                    tenant_id=tenant_id,
                     entity_type="lead",
                     project_id=project_id,
                     limit=1000
@@ -541,4 +566,4 @@ async def handle_transcription(request: Request):
         return Response(content="", status_code=200)
     except Exception as e:
         logger.error(f"❌ Error handling transcription: {e}", exc_info=True)
-        return Response(content="", status_code=200)
+        return Response(content="Internal server error", status_code=500)

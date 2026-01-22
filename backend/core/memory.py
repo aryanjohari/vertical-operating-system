@@ -385,6 +385,38 @@ class MemoryManager:
             if conn:
                 conn.close()
 
+    def get_project_owner(self, project_id: str) -> Optional[str]:
+        """
+        Get the user_id (owner) of a project.
+        
+        Used to find the correct tenant_id for operations.
+        Returns None if project doesn't exist.
+        """
+        self.logger.debug(f"Getting project owner for project {project_id}")
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id FROM projects WHERE project_id = ?", (project_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                user_id = row[0]
+                self.logger.debug(f"Found project owner: {user_id} for project {project_id}")
+                return user_id
+            else:
+                self.logger.warning(f"Project {project_id} not found in database")
+                return None
+        except sqlite3.Error as e:
+            self.logger.error(f"Database error getting project owner for {project_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error getting project owner for {project_id}: {e}")
+            return None
+        finally:
+            if conn:
+                conn.close()
+
     # ====================================================
     # SECTION C: SCALABLE ENTITY STORAGE
     # ====================================================

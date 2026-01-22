@@ -3,7 +3,6 @@ import os
 import re
 import json
 import logging
-import sqlite3
 from datetime import datetime
 from fastapi import APIRouter, Request, Response, HTTPException
 from typing import Dict, Any, Optional
@@ -80,38 +79,33 @@ def _get_user_id_from_project(project_id: str) -> Optional[str]:
     """
     Gets the user_id (owner) of a project.
     For webhooks, we need to find the project owner to set tenant_id correctly.
+    Now uses memory abstraction instead of direct DB access.
     """
-    try:
-        # Query the projects table to find the owner
-        conn = sqlite3.connect(memory.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT user_id FROM projects WHERE project_id = ?", (project_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            user_id = row[0]
-            logger.info(f"Found project owner: {user_id} for project {project_id}")
-            return user_id
-        else:
-            logger.warning(f"Project {project_id} not found in database")
-            return None
-    except Exception as e:
-        logger.error(f"Error finding project owner: {e}", exc_info=True)
+    if not project_id:
         return None
+    return memory.get_project_owner(project_id)
 
 async def _create_and_trigger_lead(normalized_data: Dict[str, Any], source: str, project_id: str, user_id: str = None) -> Dict[str, Any]:
     """
     Creates a lead entity and triggers SalesAgent for instant call.
     """
+    # Validate project_id format (security: prevent path traversal)
+    if not _validate_project_id(project_id):
+        raise HTTPException(status_code=400, detail="Invalid project_id format. Only alphanumeric characters, underscores, and hyphens allowed.")
+    
     # Get the actual project owner if user_id not provided
     if not user_id:
-        user_id = _get_user_id_from_project(project_id) or "system"
+        user_id = _get_user_id_from_project(project_id)
+        if not user_id:
+            # Project doesn't exist - fail early for security
+            logger.warning(f"Project {project_id} not found in database")
+            raise HTTPException(status_code=404, detail="Project not found")
         logger.info(f"Using tenant_id: {user_id} for project {project_id}")
     
-    # Verify project ownership (security: ensure project exists and is valid)
-    # Note: We can't fully verify ownership without user_id, but kernel will verify when agent runs
-    # For webhooks, we accept that the project_id must be valid and the kernel will enforce ownership
+    # Verify project ownership (security: ensure project exists and belongs to user_id)
+    if not memory.verify_project_ownership(user_id, project_id):
+        logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+        raise HTTPException(status_code=403, detail="Project access denied")
     
     # Create Entity
     lead_entity = Entity(
