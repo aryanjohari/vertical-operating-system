@@ -90,4 +90,75 @@ export async function pollContextUntilComplete(
   throw new Error('Task timeout: Context polling exceeded max attempts');
 }
 
+/**
+ * System monitoring API functions
+ */
+
+export interface SystemHealth {
+  status: string;
+  system: string;
+  version: string;
+  loaded_agents: string[];
+  redis_ok: boolean;
+  database_ok: boolean;
+  twilio_ok: boolean;
+}
+
+export interface SystemLogs {
+  logs: string[];
+  total_lines: number;
+  message?: string;
+}
+
+export interface UsageRecord {
+  id: string;
+  project_id: string;
+  resource_type: string;
+  quantity: number;
+  cost_usd: number;
+  timestamp: string;
+}
+
+export interface UsageResponse {
+  usage: UsageRecord[];
+  total: number;
+}
+
+/**
+ * Get system health status
+ */
+export async function getSystemHealth(): Promise<SystemHealth> {
+  const response = await api.get<SystemHealth>('/api/health');
+  return response.data;
+}
+
+/**
+ * Get system logs
+ * @param lines - Number of lines to retrieve (default: 50)
+ */
+export async function getSystemLogs(lines: number = 50): Promise<SystemLogs> {
+  const response = await api.get<SystemLogs>('/api/logs', {
+    params: { lines }
+  });
+  return response.data;
+}
+
+/**
+ * Get usage records
+ * @param projectId - Optional project ID to filter by
+ * @param limit - Maximum number of records to return (default: 100)
+ */
+export async function getUsageRecords(
+  projectId?: string,
+  limit: number = 100
+): Promise<UsageResponse> {
+  const response = await api.get<UsageResponse>('/api/usage', {
+    params: {
+      ...(projectId && { project_id: projectId }),
+      limit
+    }
+  });
+  return response.data;
+}
+
 export default api;

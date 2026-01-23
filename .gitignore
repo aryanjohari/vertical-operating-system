@@ -20,6 +20,12 @@ __pycache__/
 venv/
 .venv/
 env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # 4. OS JUNK
 .DS_Store
@@ -28,4 +34,35 @@ Thumbs.db
 # 5. IDE SETTINGS (Optional but cleaner)
 .vscode/
 .idea/
-logs/*
+*.swp
+*.swo
+*~
+
+# 6. LOGS (Ignore log files, but allow logs directory structure)
+logs/*.log
+logs/**/*.log
+# Ignore log files in root and common locations, but allow test logs if needed
+*.log
+!pytest.log
+
+# 7. FRONTEND BUILD ARTIFACTS
+frontend/.next/
+frontend/node_modules/
+frontend/.turbo/
+frontend/dist/
+frontend/build/
+frontend/.env.local
+frontend/.env*.local
+
+# 8. TEST ARTIFACTS (Keep test files, ignore test outputs)
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+*.cover
+.hypothesis/
+
+# 9. TEMPORARY FILES
+*.tmp
+*.temp
+.cache/

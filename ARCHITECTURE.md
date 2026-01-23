@@ -1,6 +1,6 @@
 # Apex Vertical Operating System - Architecture Documentation
 
-**Version:** 3.0 (Titanium Kernel)  
+**Version:** 3.1 (Titanium Kernel)  
 **Target Audience:** Senior Engineers, CTOs, System Architects  
 **Purpose:** Comprehensive technical documentation for a SaaS product targeting MRR
 
@@ -28,19 +28,47 @@ The system operates as an "Invisible Bridge" - connecting customers to clients i
 
 The client never needs to log in. The system works in the background, routing value directly to their phone.
 
+### Core Concepts (Titanium Execution Model)
+
+The system uses an **Opt-Out Async** execution model. All task execution is designed for non-blocking, observable workflows.
+
+**By default, all tasks generate a Ticket (Context ID).** When a client calls `/api/run` or a webhook triggers an agent:
+
+1. The API creates a **Ticket** — a unique `context_id` stored in Redis with a TTL (default 1 hour).
+2. Heavy tasks (e.g. `sniper_agent`, `sales_agent`, `onboarding`) are queued to **BackgroundTasks** and return immediately with `status: "processing"` and the Ticket.
+3. The frontend (or webhook consumer) can **poll** `GET /api/context/{context_id}` to check status and retrieve the result when `status` is `completed` or `failed`.
+
+**Only specific "Instant Actions" bypass the queue.** These are lightweight, sub-second operations that run synchronously and return a full result in the same HTTP response. Examples:
+
+- `lead_gen_manager` with `action: "dashboard_stats"` — stats aggregation
+- `manager` with `action: "dashboard_stats"` — pSEO stats
+- `health_check` — system diagnostics
+- `log_usage` — usage ledger writes
+
+All other tasks are treated as **heavy** and go through the async path: Ticket → background worker → context updates in Redis.
+
+**Redis "Sticky Note" System.** Redis is used as short-term, TTL-based state storage for async workflows:
+
+- **Key pattern:** `context:{context_id}`
+- **Value:** JSON-serialized context (project_id, user_id, `data` with status, result, etc.)
+- **TTL:** Configurable via `REDIS_TTL_SECONDS` (default 3600). Keys expire automatically.
+- **Fallback:** If Redis is unavailable, the context manager uses an in-memory dictionary (single-instance only; not suitable for multi-worker production).
+
+This provides a single source of truth for "where is this task?" and "what was the outcome?" without blocking the API or webhooks.
+
 ### Tech Stack
 
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Backend** | Python 3.9+, FastAPI, Uvicorn | REST API, Agent Orchestration |
-| **Frontend** | Next.js 16, TypeScript, Tailwind CSS | Dashboard, Forms, Real-time UI |
-| **Database** | SQLite (Relational), ChromaDB (Vector) | Structured data + RAG embeddings |
-| **Cache/Context** | Redis (Optional) | Short-term agent context, TTL-based expiration |
-| **AI Engine** | Google Gemini 1.5 Flash | Transcription, Content Generation, Lead Analysis |
-| **Communications** | Twilio (Voice, SMS) | Bridge calls, SMS alerts, call recording |
-| **Scraping** | Playwright (Chromium) | Web scraping for lead generation |
-| **Storage** | Local filesystem (SQLite, YAML) | Project DNA, entity storage |
-| **Concurrency** | FastAPI BackgroundTasks | Async task execution for heavy operations |
+| Layer              | Technology                             | Purpose                                          |
+| ------------------ | -------------------------------------- | ------------------------------------------------ |
+| **Backend**        | Python 3.9+, FastAPI, Uvicorn          | REST API, Agent Orchestration                    |
+| **Frontend**       | Next.js 16, TypeScript, Tailwind CSS   | Dashboard, Forms, Real-time UI                   |
+| **Database**       | SQLite (Relational), ChromaDB (Vector) | Structured data + RAG embeddings                 |
+| **Cache/Context**  | Redis (Optional)                       | Short-term agent context, TTL-based expiration   |
+| **AI Engine**      | Google Gemini 1.5 Flash                | Transcription, Content Generation, Lead Analysis |
+| **Communications** | Twilio (Voice, SMS)                    | Bridge calls, SMS alerts, call recording         |
+| **Scraping**       | Playwright (Chromium)                  | Web scraping for lead generation                 |
+| **Storage**        | Local filesystem (SQLite, YAML)        | Project DNA, entity storage                      |
+| **Concurrency**    | FastAPI BackgroundTasks                | Async task execution for heavy operations        |
 
 ---
 
@@ -56,13 +84,13 @@ graph TB
         TM[TradeMe Jobs]
         MAPS[Google Maps]
     end
-    
+
     subgraph "Entry Points"
         WH[Webhooks Router]
         VR[Voice Router]
         API[FastAPI /api/run]
     end
-    
+
     subgraph "Core System"
         K[Kernel<br/>Agent Dispatcher]
         MEM[(Memory Manager<br/>SQLite + ChromaDB)]
@@ -70,34 +98,34 @@ graph TB
         REDIS[(Redis<br/>Context Manager)]
         BG[BackgroundTasks<br/>Queue]
     end
-    
+
     subgraph "Agent Layer"
         LG[Lead Gen Agents]
         PSEO[pSEO Agents]
         SO[System Ops Agents]
         ONB[Onboarding Agent]
     end
-    
+
     subgraph "External Services"
         TWILIO[Twilio API]
         GEMINI[Google Gemini API]
         WP_API[WordPress API]
     end
-    
+
     subgraph "Client & Customer"
         BOSS[Client Phone]
         CUST[Customer Phone]
     end
-    
+
     GA -->|POST /webhooks/google-ads| WH
     WP -->|POST /webhooks/wordpress| WH
     TM -->|Scraped by| LG
     MAPS -->|Calls| VR
-    
+
     WH -->|Creates Lead| K
     VR -->|Handles Call| K
     API -->|Agent Requests| K
-    
+
     K -->|Loads Config| DNA
     K -->|Verifies Ownership| MEM
     K -->|Creates Context| REDIS
@@ -106,21 +134,21 @@ graph TB
     K -->|Dispatches| SO
     K -->|Dispatches| ONB
     K -->|Heavy Tasks| BG
-    
+
     BG -->|Async Execution| LG
     BG -->|Async Execution| PSEO
-    
+
     LG -->|Bridge Call| TWILIO
     LG -->|Transcribe| GEMINI
     PSEO -->|Generate Content| GEMINI
     PSEO -->|Publish| WP_API
     SO -->|Health Check| MEM
     SO -->|Usage Tracking| MEM
-    
+
     TWILIO -->|Rings| BOSS
     TWILIO -->|Connects| CUST
     BOSS -.->|Presses 1| CUST
-    
+
     MEM -->|Stores| LG
     MEM -->|Stores| PSEO
     MEM -->|Stores| SO
@@ -138,7 +166,7 @@ sequenceDiagram
     participant T as Twilio
     participant B as Boss/Client
     participant M as Memory
-    
+
     C->>W: Submits Form
     W->>K: POST /webhooks/google-ads
     K->>M: Verify Project Ownership
@@ -181,6 +209,7 @@ modules/{module_name}/
 **Purpose:** Active lead generation, instant connection, and lead nurturing.
 
 #### LeadGenManager (Orchestrator)
+
 - **Task:** `lead_gen_manager`
 - **Actions:**
   - `hunt_sniper` - Triggers lead scraping
@@ -190,6 +219,7 @@ modules/{module_name}/
   - `dashboard_stats` - Analytics aggregation
 
 #### SalesAgent
+
 **The "Speed-to-Lead" Engine**
 
 - **Task:** `sales_agent`
@@ -198,6 +228,7 @@ modules/{module_name}/
   - `notify_sms` - Sends SMS alert to boss
 
 **Flow:**
+
 1. Receives lead_id from webhook/manager
 2. Fetches lead from database
 3. Calls boss's phone with Twilio
@@ -206,16 +237,18 @@ modules/{module_name}/
 6. Call is recorded, transcribed, and analyzed
 
 **Configuration (DNA):**
+
 ```yaml
 modules:
   lead_gen:
     sales_bridge:
-      destination_phone: "+6421000000"  # Boss's private mobile
+      destination_phone: "+6421000000" # Boss's private mobile
       whisper_text: "Apex Alert. New high-value lead on the line. Press 1 to connect."
       sms_alert_template: "🔥 HOT LEAD: [Source] - [Name]"
 ```
 
 #### SniperAgent
+
 **The "Lead Hunter"**
 
 - **Task:** `sniper_agent`
@@ -230,6 +263,7 @@ modules:
   7. Automatically triggers scoring for new leads
 
 **Configuration:**
+
 ```yaml
 modules:
   lead_gen:
@@ -241,6 +275,7 @@ modules:
 ```
 
 #### ReactivatorAgent
+
 **The "Old Client Miner"**
 
 - **Task:** `reactivator_agent`
@@ -252,6 +287,7 @@ modules:
   4. Tracks responses and updates lead status
 
 #### LeadScorerAgent
+
 **The "Quality Filter"**
 
 - **Task:** `lead_scorer`
@@ -263,6 +299,7 @@ modules:
   4. High-scoring leads trigger instant bridge calls
 
 #### Voice Router (`routers/voice.py`)
+
 **The "Call Handler"**
 
 Handles all Twilio webhook callbacks:
@@ -274,6 +311,7 @@ Handles all Twilio webhook callbacks:
 - `/api/voice/transcription` - Transcription completion
 
 **Key Features:**
+
 - Automatic call recording (dual-channel)
 - Transcription via Google Gemini
 - Call analysis (sentiment, intent, next steps)
@@ -284,47 +322,56 @@ Handles all Twilio webhook callbacks:
 **Purpose:** Programmatic SEO for Google Maps dominance through automated content generation.
 
 #### ManagerAgent (Orchestrator)
+
 - **Task:** `manager`
 - **Purpose:** Orchestrates the full pSEO pipeline
 - **Pipeline:** Scout → Strategist → Writer → Critic → Librarian → Media → Publisher → Analytics
 
 #### ScoutAgent
+
 - **Task:** `scout_anchors`
 - **Purpose:** Finds anchor locations (Courts, Police Stations, etc.) for location-based content
 - **Output:** List of anchor entities with coordinates
 
 #### StrategistAgent
+
 - **Task:** `strategist_run`
 - **Purpose:** Analyzes keywords and generates content clusters
 - **Output:** Keyword matrix with primary/secondary keywords per location
 
 #### SeoWriterAgent
+
 - **Task:** `write_pages`
 - **Purpose:** Generates HTML content based on Project DNA
 - **Input:** DNA config (brand_brain, services, geo_scope)
 - **Output:** SEO-optimized HTML pages with schema markup
 
 #### CriticAgent
+
 - **Task:** `critic_review`
 - **Purpose:** Quality assurance - reviews generated content
 - **Output:** Quality score + improvement suggestions
 
 #### LibrarianAgent
+
 - **Task:** `librarian_link`
 - **Purpose:** Adds internal linking between location pages
 - **Output:** Updated HTML with internal links
 
 #### MediaAgent
+
 - **Task:** `enhance_media`
 - **Purpose:** Adds images, maps, and visual elements
 - **Output:** Enhanced HTML with media
 
 #### PublisherAgent
+
 - **Task:** `publish`
 - **Purpose:** Deploys content to WordPress/CMS
 - **Configuration:** WordPress URL, credentials (encrypted in database)
 
 #### AnalyticsAgent
+
 - **Task:** `analytics_audit`
 - **Purpose:** Analyzes performance and provides feedback
 - **Output:** Performance metrics and recommendations
@@ -334,11 +381,13 @@ Handles all Twilio webhook callbacks:
 **Purpose:** System health monitoring, resource usage tracking, and maintenance operations.
 
 #### SystemOpsManager (Orchestrator)
+
 - **Task:** `system_ops_manager`
 - **Actions:**
   - `run_diagnostics` - Triggers comprehensive health check
 
 #### SentinelAgent
+
 **The "Health Monitor"**
 
 - **Task:** `health_check`
@@ -362,6 +411,7 @@ Handles all Twilio webhook callbacks:
   ```
 
 #### AccountantAgent
+
 **The "Billing Tracker"**
 
 - **Task:** `log_usage`
@@ -381,6 +431,7 @@ Handles all Twilio webhook callbacks:
 - **Database:** `usage_ledger` table tracks all resource usage per project
 
 #### JanitorAgent
+
 **The "Cleanup Service"**
 
 - **Task:** `cleanup`
@@ -391,6 +442,7 @@ Handles all Twilio webhook callbacks:
   - Reports total space freed
 
 **Configuration:**
+
 ```yaml
 modules:
   system_ops:
@@ -406,6 +458,7 @@ modules:
 **Purpose:** Project initialization and DNA generation.
 
 #### OnboardingAgent
+
 - **Task:** `onboarding`
 - **System Agent:** Bypasses DNA loading (creates the DNA)
 - **Flow:**
@@ -574,37 +627,83 @@ modules:
 
 ## 4.5 Concurrency Model (Titanium Upgrade)
 
-### Synchronous vs Asynchronous Execution
+This section details the **Opt-Out Async** model introduced in **Core Concepts**. The default is async: tasks produce a **Ticket** (Context ID) and run in the background; only **Instant Actions** bypass the queue.
 
-**Before (Synchronous):**
-- All `/api/run` requests waited for agent completion
-- Frontend blocked until task finished (could be 30+ seconds)
-- Webhooks timed out on long-running operations
-- No way to track task progress
+### Execution Paths
 
-**After (Asynchronous with Context):**
-- Heavy tasks execute in background via `FastAPI BackgroundTasks`
-- Immediate HTTP 200 response with `status: "processing"` and `context_id`
-- Frontend can poll context or use webhooks for completion
-- Redis stores short-term context (TTL: 1 hour default)
+**Async path (default for heavy work):**
+
+- Request hits `/api/run` or webhook-triggered flow.
+- API creates a Redis **context** (Ticket), queues the task to **FastAPI BackgroundTasks**, and returns immediately with `status: "processing"` and `context_id`.
+- Frontend polls `GET /api/context/{context_id}` until `data.status` is `completed` or `failed`, then reads `data.result`.
+- Redis stores short-term context (TTL: 1 hour default). See **Redis "Sticky Note" System** in Core Concepts.
+
+**Sync path (Instant Actions only):**
+
+- Reserved for sub-second, read-heavy or simple write operations.
+- No Ticket is created; the handler runs the agent synchronously and returns the full result in the same HTTP response.
 
 ### Task Classification
 
-**Heavy Tasks (Async):**
-- `sniper_agent` - Lead scraping (can take 5+ minutes)
-- `sales_agent` - Bridge call setup (can take 1+ minute)
-- `reactivator_agent` - SMS campaigns (can take 5+ minutes)
-- `onboarding` - DNA generation (can take 2+ minutes)
+**Heavy tasks (async, always produce a Ticket):**
 
-**Light Tasks (Sync):**
-- `manager` (dashboard_stats) - Stats aggregation (< 1 second)
-- `lead_gen_manager` (dashboard_stats) - Stats aggregation (< 1 second)
-- `health_check` - System diagnostics (< 5 seconds)
-- All other quick operations
+- `sniper_agent` — Lead scraping (5+ minutes)
+- `sales_agent` — Bridge call setup (1+ minute)
+- `reactivator_agent` — SMS campaigns (5+ minutes)
+- `onboarding` — DNA generation (2+ minutes)
+- Manager actions: `hunt_sniper`, `ignite_reactivation`, `instant_call` (when triggered via `lead_gen_manager`)
+
+**Instant Actions (sync, bypass queue):**
+
+- `manager` with `action: "dashboard_stats"` — pSEO stats aggregation
+- `lead_gen_manager` with `action: "dashboard_stats"` — Lead gen stats
+- `health_check` — System diagnostics
+- `log_usage` — Usage ledger writes
+- Other fast, non–long-running operations
+
+### Titanium Request Flow
+
+```mermaid
+flowchart TB
+    subgraph Client
+        U[User / Frontend]
+    end
+
+    subgraph API["FastAPI /api/run"]
+        A[Receive Request]
+        A --> B{Instant Action?}
+        B -->|Yes| C[Run Sync]
+        B -->|No| D[Create Ticket]
+        D --> E[Store in Redis]
+        E --> F[Queue to BackgroundTasks]
+        F --> G[Return 200 + context_id]
+        C --> H[Return 200 + result]
+    end
+
+    subgraph Worker["Background Worker"]
+        W[Execute Agent]
+        W --> UPD[Update Redis Context]
+    end
+
+    subgraph Redis["Redis Sticky Notes"]
+        R[(context:uuid)]
+    end
+
+    U -->|POST /api/run| A
+    G --> U
+    H --> U
+    F --> W
+    E --> R
+    W --> UPD
+    UPD --> R
+```
+
+**Flow summary:** The API classifies each request as **Instant** or **Heavy**. Instant actions run synchronously and return the result. Heavy tasks create a Ticket in Redis, enqueue work to the background worker, and return the `context_id`. The worker updates Redis on completion. The client polls `GET /api/context/{context_id}` (served by the API, which reads from Redis) until `status` is `completed` or `failed`.
 
 ### Context Management
 
 **Redis Context (Short-term Memory):**
+
 - **Purpose:** Track async task progress and state
 - **TTL:** 3600 seconds (1 hour) default
 - **Storage:** Redis (with in-memory fallback if Redis unavailable)
@@ -625,6 +724,7 @@ modules:
   ```
 
 **Context Lifecycle:**
+
 1. Created when heavy task is scheduled
 2. Updated by agents during execution
 3. Automatically expires after TTL
@@ -633,6 +733,7 @@ modules:
 ### API Response Patterns
 
 **Synchronous Response (Light Tasks):**
+
 ```json
 {
   "status": "success" | "error",
@@ -643,6 +744,7 @@ modules:
 ```
 
 **Asynchronous Response (Heavy Tasks):**
+
 ```json
 {
   "status": "processing",
@@ -658,11 +760,12 @@ modules:
 ### Frontend Integration
 
 **Polling Pattern:**
+
 ```typescript
 // Poll context every 2 seconds until complete
 const pollContext = async (contextId: string) => {
   const context = await api.get(`/api/context/${contextId}`);
-  if (context.data.status === 'completed') {
+  if (context.data.status === "completed") {
     return context.data.result;
   }
   // Continue polling...
@@ -670,6 +773,7 @@ const pollContext = async (contextId: string) => {
 ```
 
 **Webhook Pattern:**
+
 - Agents can trigger webhooks on completion
 - Frontend listens for webhook callbacks
 - More efficient than polling
@@ -700,26 +804,31 @@ CREATE TABLE entities (
 #### Why This Works
 
 **1. Multi-Tenant Isolation**
+
 - `tenant_id` = User ID (Row-Level Security)
 - All queries filtered by `tenant_id`
 - Prevents cross-tenant data leaks
 
 **2. Project Scoping**
+
 - `project_id` = Business/Client
 - One user can have multiple projects
 - Entities can be project-scoped or global
 
 **3. Type Flexibility**
+
 - `entity_type` = "lead", "keyword", "page", "tender", etc.
 - Same table structure for all types
 - Type-specific logic in application layer
 
 **4. Schema Evolution**
+
 - `metadata` JSON column stores type-specific data
 - No migrations needed for new fields
 - Example metadata structures:
 
 **Lead Entity:**
+
 ```json
 {
   "source": "google_ads",
@@ -736,6 +845,7 @@ CREATE TABLE entities (
 ```
 
 **Keyword Entity:**
+
 ```json
 {
   "primary_keyword": "bail lawyer",
@@ -747,6 +857,7 @@ CREATE TABLE entities (
 ```
 
 **Page Entity:**
+
 ```json
 {
   "url": "https://example.com/bail-lawyer-manukau",
@@ -759,19 +870,23 @@ CREATE TABLE entities (
 #### Additional Tables
 
 **`users`**
+
 - User accounts with hashed passwords
 - JWT token validation
 
 **`projects`**
+
 - Project registry
 - Links `user_id` → `project_id`
 - Stores DNA path
 
 **`client_secrets`**
+
 - Encrypted WordPress credentials
 - Uses `security_core` (Fernet encryption)
 
 **`usage_ledger`**
+
 - Resource usage tracking for billing
 - Structure:
   ```sql
@@ -795,6 +910,7 @@ CREATE TABLE entities (
 **Embeddings:** Google `text-embedding-004`
 
 **Metadata:**
+
 ```json
 {
   "tenant_id": "user@example.com",
@@ -805,6 +921,7 @@ CREATE TABLE entities (
 ```
 
 **Usage:**
+
 - Stores "insider tips" from DNA
 - Stores "key differentiators"
 - Agents query for context-aware content generation
@@ -818,6 +935,7 @@ CREATE TABLE entities (
 **Location:** `data/profiles/{project_id}/`
 
 **Files:**
+
 - `dna.generated.yaml` - AI-generated (read-only, created by OnboardingAgent)
 - `dna.custom.yaml` - User overrides (merged on top)
 
@@ -873,6 +991,7 @@ modules:
 ```
 
 **Why YAML?**
+
 - Human-readable for debugging
 - Version-controllable
 - Easy to merge (generated + custom)
@@ -906,12 +1025,14 @@ DEFAULT_PROJECT_ID=apex-bail-manukau  # Fallback project
 **Purpose:** Expose local backend to Twilio webhooks during development
 
 **Flow:**
+
 1. Local backend runs on `localhost:8000`
 2. Ngrok creates tunnel: `https://abc123.ngrok.io → localhost:8000`
 3. Twilio webhooks point to `https://abc123.ngrok.io/api/voice/*`
 4. Production: Use `NEXT_PUBLIC_API_URL` instead
 
 **Why Needed:**
+
 - Twilio requires HTTPS for webhooks
 - Local development doesn't have SSL
 - Ngrok provides temporary HTTPS tunnel
@@ -927,6 +1048,7 @@ The system is **production-ready for MVP** but requires enhancements for **enter
 ### 7.1 Security Enhancements
 
 #### ✅ Implemented
+
 - JWT authentication
 - Project ownership verification
 - Input validation (project_id regex)
@@ -986,6 +1108,7 @@ async def handle_google_ads_webhook(...):
 ### 7.2 Multi-Tenancy Hardening
 
 #### ✅ Implemented
+
 - `tenant_id` filtering in all queries
 - Project ownership verification
 - Project_id format validation
@@ -1115,6 +1238,7 @@ class MemoryManager:
 **Trigger:** API response time > 500ms
 
 **Solution:** Redis cache for:
+
 - DNA configs (rarely change)
 - User sessions
 - Frequently queried entities
@@ -1124,6 +1248,7 @@ class MemoryManager:
 **Trigger:** Webhook processing time > 5 seconds
 
 **Solution:** Celery + Redis for:
+
 - Long-running tasks (scraping, transcription)
 - Background processing
 - Scheduled jobs (reactivation campaigns)
@@ -1222,18 +1347,104 @@ async def health_check():
 ### Environment-Specific Configurations
 
 **Development:**
+
 - SQLite (local file)
 - Ngrok tunnel for webhooks
 - Local ChromaDB
 
 **Production:**
+
 - PostgreSQL (managed database)
 - Public API URL
 - Persistent ChromaDB volume
 
 ---
 
-## 9. Future Enhancements
+## 9. Phase 4: Production & DevOps
+
+This section defines the **production deployment architecture** and **CI/CD pipeline** for the Titanium kernel. It serves as the single source of truth for deployable infrastructure and release workflows.
+
+### Deployment Architecture
+
+**Stack overview**
+
+| Layer                | Technology                           | Notes                                                                           |
+| -------------------- | ------------------------------------ | ------------------------------------------------------------------------------- |
+| **Frontend**         | Vercel (Next.js Edge Network)        | Serverless, global CDN, automatic HTTPS                                         |
+| **Backend**          | Railway or Render (Python container) | FastAPI + Uvicorn; horizontal scaling                                           |
+| **Database**         | PostgreSQL                           | Migrating from SQLite; managed instance (e.g. Railway Postgres, Supabase, Neon) |
+| **Memory / Context** | Cloud Redis                          | Migrating from local Redis; managed Redis (e.g. Upstash, Railway Redis)         |
+
+**Data flow**
+
+- **Frontend:** Next.js app on Vercel. Calls backend via `NEXT_PUBLIC_API_URL`. No direct DB access.
+- **Backend:** Python container on Railway/Render. Connects to PostgreSQL and Redis via env vars. Exposes `/api/*`, `/health`, webhooks.
+- **Database:** PostgreSQL holds users, projects, entities, `usage_ledger`, etc. SQLite is deprecated for production.
+- **Redis:** Stores Titanium context (Tickets). Replaces in-memory fallback for multi-worker and production reliability.
+
+**Environment variables (production)**
+
+- `APEX_JWT_SECRET`, `APEX_KMS_KEY` — **required**; no defaults.
+- `DATABASE_URL` — PostgreSQL connection string.
+- `REDIS_URL` — Cloud Redis connection string.
+- `GOOGLE_API_KEY`, `TWILIO_*`, `NEXT_PUBLIC_API_URL` — as per existing config.
+
+### CI/CD Pipeline
+
+**Workflow: Feature branch, no direct pushes to `main`**
+
+1. All changes are developed on **feature branches** (e.g. `feature/xyz`, `fix/abc`).
+2. **No direct pushes to `main`.** Updates reach `main` only via **Pull Requests**.
+3. On **PR**:
+   - GitHub Actions runs the **unit test suite** (e.g. `pytest backend/tests/`).
+   - PR must be approved and tests must pass before merge.
+4. On **merge to `main`**:
+   - GitHub Actions runs tests again (optional but recommended).
+   - **Auto-deploy to production:** Frontend → Vercel; Backend → Railway/Render. Deploys are triggered by merge to `main`.
+
+**CI/CD pipeline (overview)**
+
+```mermaid
+flowchart LR
+    subgraph Local
+        CODE[Local Code]
+        BR[Feature Branch]
+        CODE --> BR
+    end
+
+    subgraph GitHub
+        PR[Pull Request]
+        TESTS[GitHub Actions: Unit Tests]
+        MERGE[Merge to main]
+        DEPLOY[Auto-Deploy]
+        BR --> PR
+        PR --> TESTS
+        TESTS -->|Pass| MERGE
+        MERGE --> DEPLOY
+    end
+
+    subgraph Production
+        VERCEL[Vercel: Frontend]
+        RAILWAY[Railway / Render: Backend]
+        DEPLOY --> VERCEL
+        DEPLOY --> RAILWAY
+    end
+```
+
+**Implementing the pipeline**
+
+- **Tests:** Add a GitHub Actions workflow (e.g. `.github/workflows/test.yml`) that runs `pytest backend/tests/` on PR and on push to `main`.
+- **Vercel:** Connect the repo to Vercel; set production branch to `main`. Vercel auto-deploys on merge.
+- **Railway/Render:** Connect the repo; set root to backend or use a Dockerfile. Configure build and start commands, and env vars. Auto-deploy on `main` (or on successful CI if integrated).
+
+### Migration Notes (SQLite → PostgreSQL, Local Redis → Cloud Redis)
+
+- **Database:** Use a migration tool (e.g. Alembic) or one-off scripts to move schema and data. Update `MemoryManager` (or equivalent) to use `DATABASE_URL` and a PostgreSQL driver.
+- **Redis:** Point `REDIS_URL` to the managed Redis instance. Ensure encryption (TLS) and authentication. No application logic change beyond configuration.
+
+---
+
+## 10. Future Enhancements
 
 ### Phase 2: Enterprise Features
 
@@ -1279,20 +1490,22 @@ The Apex Vertical Operating System is architected for **scalability, security, a
 **Enterprise Ready:** After implementing security, reliability, and monitoring enhancements outlined in Section 7.
 
 **Key Strengths:**
+
 - ✅ Flexible entity model (no schema migrations)
 - ✅ Multi-tenant isolation (tenant_id RLS)
 - ✅ Agent-based architecture (easy to extend)
 - ✅ DNA configuration system (per-client customization)
 
 **Next Steps for MRR Growth:**
+
 1. Implement webhook signature validation
 2. Add rate limiting
 3. Set up monitoring (APM, structured logging)
-4. Plan PostgreSQL migration (when > 10 concurrent writes)
+4. Execute Phase 4 (Section 9): Production stack (Vercel, Railway/Render, PostgreSQL, Cloud Redis) and CI/CD
 5. Add retry logic for AI operations
 
 ---
 
-**Document Version:** 3.0  
-**Last Updated:** 2024  
+**Document Version:** 3.1  
+**Last Updated:** 2025  
 **Maintained By:** Engineering Team

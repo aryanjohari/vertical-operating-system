@@ -189,10 +189,66 @@ class Kernel:
             # - onboarding: Creates the DNA config
             # - health_check: System-wide health monitoring (no project needed)
             # - cleanup: System-wide maintenance (no project needed)
-            system_agents = ["onboarding", "health_check", "cleanup"]
+            # - log_usage: System-wide usage tracking (uses hardcoded pricing, no config needed, but needs project_id/user_id)
+            system_agents = ["onboarding", "health_check", "cleanup", "log_usage"]
+            # System agents that need context injection (project_id/user_id) but not DNA config
+            system_agents_with_context = ["log_usage"]
             
             if agent_key in system_agents:
                 self.logger.debug(f"System agent detected: {agent_key} - bypassing DNA loading")
+                
+                # Some system agents still need project_id/user_id injected (but not DNA config)
+                if agent_key in system_agents_with_context:
+                    # Extract project_id from params
+                    niche = None
+                    if packet.params:
+                        niche = packet.params.get("niche") or packet.params.get("project_id")
+                    
+                    if not niche:
+                        self.logger.error(f"No project_id specified for system agent {agent_key}")
+                        return AgentOutput(
+                            status="error",
+                            message="No project_id specified. Please provide a valid project_id in params."
+                        )
+                    
+                    # Validate project_id format
+                    if not isinstance(niche, str) or not niche:
+                        self.logger.error(f"Invalid project_id format: {niche}")
+                        return AgentOutput(
+                            status="error",
+                            message="Invalid project identifier format."
+                        )
+                    
+                    import re
+                    if not re.match(r'^[a-zA-Z0-9_-]+$', niche):
+                        self.logger.error(f"Project_id contains invalid characters: {niche}")
+                        return AgentOutput(
+                            status="error",
+                            message="Invalid project identifier format. Only alphanumeric characters, underscores, and hyphens allowed."
+                        )
+                    
+                    # Verify project ownership
+                    try:
+                        if not memory.verify_project_ownership(packet.user_id, niche):
+                            self.logger.error(f"Project ownership verification failed: user={packet.user_id}, project={niche}")
+                            return AgentOutput(
+                                status="error",
+                                message=f"Project '{niche}' not found or access denied."
+                            )
+                    except Exception as e:
+                        self.logger.error(f"Project ownership verification error: {e}", exc_info=True)
+                        return AgentOutput(
+                            status="error",
+                            message="Failed to verify project ownership."
+                        )
+                    
+                    # Inject context (but not config - system agents don't need DNA)
+                    agent = self.agents[agent_key]
+                    agent.project_id = niche
+                    agent.user_id = packet.user_id
+                    agent.config = {}  # Empty config for system agents
+                    self.logger.debug(f"Injected context for system agent {agent_key}: project={niche}, user={packet.user_id}")
+                
                 try:
                     return await self.agents[agent_key].run(packet)
                 except Exception as e:

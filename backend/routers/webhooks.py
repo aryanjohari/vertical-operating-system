@@ -285,8 +285,8 @@ async def handle_google_ads_webhook(request: Request, background_tasks: Backgrou
         # Get project owner for tenant_id
         project_owner = _get_user_id_from_project(project_id)
         if not project_owner:
-            logger.warning(f"Could not find owner for project {project_id}, using 'system'")
-            project_owner = "system"
+            logger.warning(f"Project {project_id} not found in database")
+            raise HTTPException(status_code=404, detail="Project not found")
         
         # Normalize payload
         normalized_data = _normalize_lead_data(payload, "google_ads")
@@ -362,8 +362,8 @@ async def handle_wordpress_webhook(request: Request, background_tasks: Backgroun
         # Get project owner for tenant_id
         project_owner = _get_user_id_from_project(project_id)
         if not project_owner:
-            logger.warning(f"Could not find owner for project {project_id}, using 'system'")
-            project_owner = "system"
+            logger.warning(f"Project {project_id} not found in database")
+            raise HTTPException(status_code=404, detail="Project not found")
         
         # Normalize payload
         normalized_data = _normalize_lead_data(payload, "wordpress_form")

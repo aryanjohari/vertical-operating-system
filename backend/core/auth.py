@@ -23,7 +23,10 @@ logger = logging.getLogger("Apex.Auth")
 security = HTTPBearer()
 
 # JWT Configuration (can be moved to env/config later)
-JWT_SECRET = os.getenv("APEX_JWT_SECRET", os.getenv("JWT_SECRET", "change-me-in-production"))
+_jwt_secret = os.getenv("APEX_JWT_SECRET") or os.getenv("JWT_SECRET")
+if not _jwt_secret:
+    raise ValueError("APEX_JWT_SECRET or JWT_SECRET environment variable must be set. Cannot start without a secure JWT secret.")
+JWT_SECRET = _jwt_secret
 JWT_ALGORITHM = os.getenv("APEX_JWT_ALGORITHM", "HS256")
 JWT_EXPIRATION_HOURS = int(os.getenv("APEX_JWT_EXPIRATION_HOURS", "24"))
 

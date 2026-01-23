@@ -26,10 +26,12 @@ import os
 import re
 import traceback
 import sqlite3
+import json
 import yaml
 from datetime import datetime
 
-
+# Define BASE_DIR for consistent path resolution
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Initialize logging system BEFORE app initialization
 setup_logging()
@@ -45,6 +47,14 @@ async def lifespan(app: FastAPI):
     
     # Startup
     logger.info("🚀 Starting Apex Sovereign OS...")
+    
+    # Ensure usage_ledger table exists before dashboard queries
+    try:
+        memory.create_usage_table_if_not_exists()
+        logger.info("✅ Usage ledger table initialized")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize usage ledger table: {e}", exc_info=True)
+        # Don't fail startup, but log the error
     
     # Initialize scheduler
     try:
@@ -170,6 +180,159 @@ def health_check_endpoint():
         "version": "1.0",
         "loaded_agents": list(kernel.agents.keys())
     }
+
+@app.get("/api/health")
+def api_health_check():
+    """Enhanced health check endpoint with component status."""
+    health_status = {
+        "status": "online",
+        "system": "Apex Kernel",
+        "version": "1.0",
+        "loaded_agents": list(kernel.agents.keys()),
+        "redis_ok": False,
+        "database_ok": False,
+        "twilio_ok": False
+    }
+    
+    # Check Redis
+    try:
+        if context_manager.enabled and context_manager.redis_client:
+            context_manager.redis_client.ping()
+            health_status["redis_ok"] = True
+    except Exception as e:
+        logger.debug(f"Redis check failed: {e}")
+        health_status["redis_ok"] = False
+    
+    # Check Database
+    try:
+        conn = sqlite3.connect(memory.db_path)
+        cursor = conn.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        health_status["database_ok"] = True
+    except Exception as e:
+        logger.debug(f"Database check failed: {e}")
+        health_status["database_ok"] = False
+    
+    # Check Twilio (check if credentials are configured)
+    try:
+        twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+        health_status["twilio_ok"] = bool(twilio_sid and twilio_token)
+    except Exception as e:
+        logger.debug(f"Twilio check failed: {e}")
+        health_status["twilio_ok"] = False
+    
+    return health_status
+
+@app.get("/api/logs")
+async def get_logs(
+    lines: int = 50,
+    user_id: str = Depends(get_current_user)
+):
+    """Get the last N lines from the system log file."""
+    try:
+        log_file_path = os.path.join(BASE_DIR, "logs", "apex.log")
+        
+        if not os.path.exists(log_file_path):
+            return {
+                "logs": [],
+                "total_lines": 0,
+                "message": "Log file not found"
+            }
+        
+        # Read last N lines from file
+        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        
+        # Remove trailing newlines and return
+        cleaned_lines = [line.rstrip('\n\r') for line in last_lines]
+        
+        return {
+            "logs": cleaned_lines,
+            "total_lines": len(cleaned_lines)
+        }
+    except Exception as e:
+        logger.error(f"Error reading logs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read logs")
+
+@app.get("/api/usage")
+async def get_usage(
+    project_id: Optional[str] = None,
+    limit: int = 100,
+    user_id: str = Depends(get_current_user)
+):
+    """Get usage records from the usage_ledger table."""
+    try:
+        conn = None
+        try:
+            # If project_id provided, verify ownership
+            if project_id:
+                if not memory.verify_project_ownership(user_id, project_id):
+                    raise HTTPException(status_code=403, detail="Project not found or access denied")
+                
+                # Query for specific project
+                conn = sqlite3.connect(memory.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                    FROM usage_ledger
+                    WHERE project_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (project_id, limit))
+            else:
+                # Get all projects for user and query their usage
+                projects = memory.get_projects(user_id=user_id)
+                project_ids = [p.get('project_id') for p in projects] if projects else []
+                
+                if not project_ids:
+                    return {"usage": [], "total": 0}
+                
+                # Create placeholders for IN clause
+                placeholders = ','.join(['?'] * len(project_ids))
+                conn = sqlite3.connect(memory.db_path)
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                    FROM usage_ledger
+                    WHERE project_id IN ({placeholders})
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (*project_ids, limit))
+            
+            rows = cursor.fetchall()
+            
+            # Convert to list of dicts
+            usage_records = []
+            for row in rows:
+                usage_records.append({
+                    "id": row[0],
+                    "project_id": row[1],
+                    "resource_type": row[2],
+                    "quantity": row[3],
+                    "cost_usd": row[4],
+                    "timestamp": row[5]
+                })
+            
+            return {
+                "usage": usage_records,
+                "total": len(usage_records)
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching usage records: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to fetch usage records")
+        finally:
+            if conn:
+                conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Usage endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch usage")
 
 @app.get("/api/context/{context_id}")
 async def get_context(context_id: str, user_id: str = Depends(get_current_user)):
@@ -508,12 +671,32 @@ async def update_entity_endpoint(
 ):
     """Update an existing entity (RLS enforced)."""
     try:
-        # Verify entity belongs to user
-        entities = memory.get_entities(tenant_id=user_id)
-        entity = next((e for e in entities if e.get("id") == entity_id), None)
-        
-        if not entity:
-            raise HTTPException(status_code=404, detail="Entity not found or access denied")
+        # Verify entity belongs to user using direct SQL check
+        conn = None
+        try:
+            conn = sqlite3.connect(memory.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM entities WHERE id = ? AND tenant_id = ?",
+                (entity_id, user_id)
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Entity not found or access denied")
+            entity = dict(row)
+            try:
+                entity['metadata'] = json.loads(entity['metadata'])
+            except (json.JSONDecodeError, TypeError):
+                entity['metadata'] = {}
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying entity ownership: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to verify entity ownership")
+        finally:
+            if conn:
+                conn.close()
         
         # Build update metadata - combine all fields into metadata for update_entity
         update_metadata = {}
@@ -826,6 +1009,116 @@ async def update_dna_config(
     except Exception as e:
         logger.error(f"Update DNA config error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update DNA configuration")
+
+# System monitoring endpoints
+@app.get("/api/logs")
+async def get_logs(
+    lines: int = 50,
+    user_id: str = Depends(get_current_user)
+):
+    """Get the last N lines from the system log file."""
+    try:
+        log_file_path = os.path.join(BASE_DIR, "logs", "apex.log")
+        
+        if not os.path.exists(log_file_path):
+            return {
+                "logs": [],
+                "total_lines": 0,
+                "message": "Log file not found"
+            }
+        
+        # Read last N lines from file
+        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+            last_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
+        
+        # Remove trailing newlines and return
+        cleaned_lines = [line.rstrip('\n\r') for line in last_lines]
+        
+        return {
+            "logs": cleaned_lines,
+            "total_lines": len(cleaned_lines)
+        }
+    except Exception as e:
+        logger.error(f"Error reading logs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to read logs")
+
+@app.get("/api/usage")
+async def get_usage(
+    project_id: Optional[str] = None,
+    limit: int = 100,
+    user_id: str = Depends(get_current_user)
+):
+    """Get usage records from the usage_ledger table."""
+    try:
+        conn = None
+        try:
+            # If project_id provided, verify ownership
+            if project_id:
+                if not memory.verify_project_ownership(user_id, project_id):
+                    raise HTTPException(status_code=403, detail="Project not found or access denied")
+                
+                # Query for specific project
+                conn = sqlite3.connect(memory.db_path)
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                    FROM usage_ledger
+                    WHERE project_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (project_id, limit))
+            else:
+                # Get all projects for user and query their usage
+                projects = memory.get_projects(user_id=user_id)
+                project_ids = [p.get('project_id') for p in projects] if projects else []
+                
+                if not project_ids:
+                    return {"usage": [], "total": 0}
+                
+                # Create placeholders for IN clause
+                placeholders = ','.join(['?'] * len(project_ids))
+                conn = sqlite3.connect(memory.db_path)
+                cursor = conn.cursor()
+                cursor.execute(f'''
+                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                    FROM usage_ledger
+                    WHERE project_id IN ({placeholders})
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                ''', (*project_ids, limit))
+            
+            rows = cursor.fetchall()
+            
+            # Convert to list of dicts
+            usage_records = []
+            for row in rows:
+                usage_records.append({
+                    "id": row[0],
+                    "project_id": row[1],
+                    "resource_type": row[2],
+                    "quantity": row[3],
+                    "cost_usd": row[4],
+                    "timestamp": row[5]
+                })
+            
+            return {
+                "usage": usage_records,
+                "total": len(usage_records)
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching usage records: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to fetch usage records")
+        finally:
+            if conn:
+                conn.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Usage endpoint error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch usage")
 
 # Include voice router
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])
