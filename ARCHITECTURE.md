@@ -1,6 +1,6 @@
 # Apex Vertical Operating System - Architecture Documentation
 
-**Version:** 3.1 (Titanium Kernel)  
+**Version:** 3.2 (Titanium Kernel + Database Abstraction)  
 **Target Audience:** Senior Engineers, CTOs, System Architects  
 **Purpose:** Comprehensive technical documentation for a SaaS product targeting MRR
 
@@ -62,7 +62,7 @@ This provides a single source of truth for "where is this task?" and "what was t
 | ------------------ | -------------------------------------- | ------------------------------------------------ |
 | **Backend**        | Python 3.9+, FastAPI, Uvicorn          | REST API, Agent Orchestration                    |
 | **Frontend**       | Next.js 16, TypeScript, Tailwind CSS   | Dashboard, Forms, Real-time UI                   |
-| **Database**       | SQLite (Relational), ChromaDB (Vector) | Structured data + RAG embeddings                 |
+| **Database**       | PostgreSQL/SQLite (Relational), ChromaDB (Vector) | Database-agnostic layer; PostgreSQL for production, SQLite for dev |
 | **Cache/Context**  | Redis (Optional)                       | Short-term agent context, TTL-based expiration   |
 | **AI Engine**      | Google Gemini 1.5 Flash                | Transcription, Content Generation, Lead Analysis |
 | **Communications** | Twilio (Voice, SMS)                    | Bridge calls, SMS alerts, call recording         |
@@ -93,7 +93,8 @@ graph TB
 
     subgraph "Core System"
         K[Kernel<br/>Agent Dispatcher]
-        MEM[(Memory Manager<br/>SQLite + ChromaDB)]
+        MEM[(Memory Manager<br/>PostgreSQL/SQLite + ChromaDB)]
+        DBF[Database Factory<br/>PostgreSQL/SQLite Abstraction]
         DNA[DNA Config Loader]
         REDIS[(Redis<br/>Context Manager)]
         BG[BackgroundTasks<br/>Queue]
@@ -128,6 +129,7 @@ graph TB
 
     K -->|Loads Config| DNA
     K -->|Verifies Ownership| MEM
+    MEM -->|Uses| DBF
     K -->|Creates Context| REDIS
     K -->|Dispatches| LG
     K -->|Dispatches| PSEO
@@ -396,7 +398,7 @@ Handles all Twilio webhook callbacks:
   1. Internet connectivity (Google ping)
   2. Disk space availability (warns if < 1GB free)
   3. Twilio API connectivity
-  4. Database connectivity (SQLite)
+  4. Database connectivity (PostgreSQL/SQLite via DatabaseFactory)
   5. Gemini API key configuration
 - **Output:** `SystemHealthStatus` with overall status and component health
 - **Response Format:**
@@ -782,12 +784,40 @@ const pollContext = async (contextId: string) => {
 
 ## 5. Database Design (The "Entity" Model)
 
+### Database Abstraction Layer
+
+The system uses a **database-agnostic architecture** that supports both PostgreSQL (production) and SQLite (development) through a unified `DatabaseFactory` interface.
+
+**Location:** `backend/core/db.py`
+
+**Key Features:**
+- **Automatic Detection:** Reads `DATABASE_URL` environment variable
+  - If `DATABASE_URL` is set and starts with `postgres://` or `postgresql://` → Uses PostgreSQL (psycopg2)
+  - Otherwise → Falls back to SQLite (sqlite3)
+- **Unified Interface:** All database operations use the factory, ensuring compatibility
+- **SQL Syntax Abstraction:** Automatically converts SQL syntax differences:
+  - Placeholders: `?` (SQLite) vs `%s` (PostgreSQL)
+  - `INSERT OR REPLACE` → `INSERT ... ON CONFLICT ... DO UPDATE` (PostgreSQL)
+  - Date functions: `date('now', 'start of month')` → `date_trunc('month', CURRENT_DATE)` (PostgreSQL)
+  - Row factories: `sqlite3.Row` vs `psycopg2.extras.RealDictRow`
+- **Connection Management:** Context managers ensure proper cleanup and transaction handling
+
+**Usage:**
+```python
+from backend.core.db import get_db_factory
+
+db_factory = get_db_factory(db_path="data/apex.db")  # Only used for SQLite
+with db_factory.get_cursor() as cursor:
+    cursor.execute(f"SELECT * FROM users WHERE user_id = {db_factory.get_placeholder()}", (user_id,))
+```
+
 ### Universal Entity Architecture
 
 The system uses a **flexible, schema-less entity model** that accommodates diverse data types without schema changes.
 
 #### Core Table: `entities`
 
+**SQLite:**
 ```sql
 CREATE TABLE entities (
     id TEXT PRIMARY KEY,              -- UUID
@@ -795,11 +825,27 @@ CREATE TABLE entities (
     project_id TEXT,                   -- Project ID (optional)
     entity_type TEXT NOT NULL,         -- "lead", "keyword", "page", etc.
     name TEXT NOT NULL,                -- Display name
-    primary_contact TEXT,              -- Phone, email, or URL
-    metadata JSON,                     -- Flexible JSON bucket
+    primary_contact TEXT,               -- Phone, email, or URL
+    metadata TEXT,                      -- JSON stored as TEXT
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+**PostgreSQL:**
+```sql
+CREATE TABLE entities (
+    id TEXT PRIMARY KEY,              -- UUID
+    tenant_id TEXT NOT NULL,           -- User ID (RLS)
+    project_id TEXT,                   -- Project ID (optional)
+    entity_type TEXT NOT NULL,         -- "lead", "keyword", "page", etc.
+    name TEXT NOT NULL,                -- Display name
+    primary_contact TEXT,               -- Phone, email, or URL
+    metadata JSONB,                     -- JSONB for efficient JSON operations
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Note:** The `DatabaseFactory` automatically uses the appropriate column type (`TEXT` for SQLite, `JSONB` for PostgreSQL) when creating tables.
 
 #### Why This Works
 
@@ -1010,6 +1056,10 @@ TWILIO_ACCOUNT_SID=your_twilio_sid
 TWILIO_AUTH_TOKEN=your_twilio_token
 TWILIO_PHONE_NUMBER=+6421000000
 
+# Database (Production)
+DATABASE_URL=postgresql://user:password@host:port/database  # PostgreSQL for production
+# If DATABASE_URL not set, falls back to SQLite (development)
+
 # Security
 APEX_JWT_SECRET=your_jwt_secret
 APEX_KMS_KEY=your_fernet_key  # For encrypting secrets
@@ -1203,10 +1253,25 @@ def enqueue_retry(task, max_retries=3):
 
 ### 7.4 Scaling Considerations
 
-#### When to Switch from SQLite to PostgreSQL
+#### Database Migration: SQLite → PostgreSQL
 
-**Current:** SQLite (single-file database)  
-**Trigger Points:**
+**Status:** ✅ **COMPLETED** - Database abstraction layer implemented
+
+The system now supports both SQLite (development) and PostgreSQL (production) through a unified `DatabaseFactory` interface. Migration is automatic based on the `DATABASE_URL` environment variable.
+
+**How It Works:**
+
+1. **Development (SQLite):**
+   - No `DATABASE_URL` set → Uses SQLite
+   - Database file: `data/apex.db`
+   - No additional setup required
+
+2. **Production (PostgreSQL):**
+   - Set `DATABASE_URL=postgresql://user:password@host:port/database`
+   - System automatically detects and uses PostgreSQL
+   - All SQL queries are converted to PostgreSQL syntax
+
+**Trigger Points for PostgreSQL:**
 
 1. **Concurrent Writes > 10**
    - SQLite locks on writes
@@ -1220,18 +1285,29 @@ def enqueue_retry(task, max_retries=3):
    - SQLite is file-based (single server)
    - PostgreSQL supports replication
 
-**Migration Path:**
+4. **Production Deployment**
+   - Managed databases (Supabase, Railway Postgres, Neon)
+   - Better reliability and backup options
+
+**Implementation:**
 
 ```python
-# backend/core/memory.py
-class MemoryManager:
-    def __init__(self):
-        db_type = os.getenv("DB_TYPE", "sqlite")
-        if db_type == "postgresql":
-            self.conn = psycopg2.connect(...)
+# backend/core/db.py
+class DatabaseFactory:
+    def __init__(self, db_path: Optional[str] = None):
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        if database_url.startswith(("postgres://", "postgresql://")):
+            self.db_type = "postgresql"  # Uses psycopg2
         else:
-            self.conn = sqlite3.connect(...)
+            self.db_type = "sqlite"      # Uses sqlite3
 ```
+
+**Migration Steps:**
+
+1. Set up PostgreSQL database (Supabase, Railway, etc.)
+2. Set `DATABASE_URL` environment variable
+3. Run schema creation (tables are created automatically on first connection)
+4. Migrate data if needed (use `pg_dump` / `pg_restore` or custom migration script)
 
 #### When to Add Caching
 
@@ -1348,15 +1424,17 @@ async def health_check():
 
 **Development:**
 
-- SQLite (local file)
+- SQLite (local file, `data/apex.db`)
 - Ngrok tunnel for webhooks
 - Local ChromaDB
+- No `DATABASE_URL` required
 
 **Production:**
 
-- PostgreSQL (managed database)
+- PostgreSQL (managed database via `DATABASE_URL`)
 - Public API URL
 - Persistent ChromaDB volume
+- Database abstraction layer handles SQL syntax differences automatically
 
 ---
 
@@ -1372,14 +1450,14 @@ This section defines the **production deployment architecture** and **CI/CD pipe
 | -------------------- | ------------------------------------ | ------------------------------------------------------------------------------- |
 | **Frontend**         | Vercel (Next.js Edge Network)        | Serverless, global CDN, automatic HTTPS                                         |
 | **Backend**          | Railway or Render (Python container) | FastAPI + Uvicorn; horizontal scaling                                           |
-| **Database**         | PostgreSQL                           | Migrating from SQLite; managed instance (e.g. Railway Postgres, Supabase, Neon) |
+| **Database**         | PostgreSQL (Production) / SQLite (Dev) | Database-agnostic layer; auto-detects via `DATABASE_URL`; managed instance (e.g. Railway Postgres, Supabase, Neon) |
 | **Memory / Context** | Cloud Redis                          | Migrating from local Redis; managed Redis (e.g. Upstash, Railway Redis)         |
 
 **Data flow**
 
 - **Frontend:** Next.js app on Vercel. Calls backend via `NEXT_PUBLIC_API_URL`. No direct DB access.
 - **Backend:** Python container on Railway/Render. Connects to PostgreSQL and Redis via env vars. Exposes `/api/*`, `/health`, webhooks.
-- **Database:** PostgreSQL holds users, projects, entities, `usage_ledger`, etc. SQLite is deprecated for production.
+- **Database:** PostgreSQL (production) or SQLite (development) holds users, projects, entities, `usage_ledger`, etc. The `DatabaseFactory` automatically selects the appropriate database based on `DATABASE_URL`.
 - **Redis:** Stores Titanium context (Tickets). Replaces in-memory fallback for multi-worker and production reliability.
 
 **Environment variables (production)**
@@ -1439,7 +1517,11 @@ flowchart LR
 
 ### Migration Notes (SQLite → PostgreSQL, Local Redis → Cloud Redis)
 
-- **Database:** Use a migration tool (e.g. Alembic) or one-off scripts to move schema and data. Update `MemoryManager` (or equivalent) to use `DATABASE_URL` and a PostgreSQL driver.
+- **Database:** ✅ **COMPLETED** - Database abstraction layer implemented in `backend/core/db.py`. The system automatically detects PostgreSQL via `DATABASE_URL` and handles SQL syntax differences. To migrate:
+  1. Set up PostgreSQL database (Supabase, Railway Postgres, Neon, etc.)
+  2. Set `DATABASE_URL=postgresql://user:password@host:port/database` environment variable
+  3. Tables are created automatically on first connection via `MemoryManager._init_database()`
+  4. For data migration, use `pg_dump` / `pg_restore` or custom migration scripts
 - **Redis:** Point `REDIS_URL` to the managed Redis instance. Ensure encryption (TLS) and authentication. No application logic change beyond configuration.
 
 ---
@@ -1506,6 +1588,12 @@ The Apex Vertical Operating System is architected for **scalability, security, a
 
 ---
 
-**Document Version:** 3.1  
-**Last Updated:** 2025  
+**Document Version:** 3.2  
+**Last Updated:** January 2026  
 **Maintained By:** Engineering Team
+
+**Recent Updates:**
+- ✅ Database abstraction layer implemented (`backend/core/db.py`)
+- ✅ PostgreSQL support added (auto-detects via `DATABASE_URL`)
+- ✅ SQL syntax differences automatically handled
+- ✅ All database operations now use unified `DatabaseFactory` interface

@@ -1,5 +1,4 @@
 # backend/core/memory.py
-import sqlite3
 import chromadb
 import uuid
 import json
@@ -12,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from google import genai  # <--- REQUIRED
 from backend.core.models import Entity
 from backend.core.security import security_core
+from backend.core.db import get_db_factory, DatabaseError
 
 # --- Google Embedding Wrapper using LLM Gateway ---
 class GoogleEmbeddingFunction:
@@ -79,11 +79,15 @@ class MemoryManager:
         self.db_path = os.path.abspath(db_path)
         self.vector_path = os.path.abspath(vector_path)
         
-        # Ensure directories exist with proper permissions
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        # Ensure directories exist with proper permissions (only for SQLite)
+        if not os.getenv("DATABASE_URL"):
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         os.makedirs(self.vector_path, exist_ok=True)
         
-        self._init_sqlite()
+        # Initialize database factory
+        self.db_factory = get_db_factory(db_path=self.db_path)
+        
+        self._init_database()
         
         # Initialize Vector DB with error handling
         try:
@@ -143,62 +147,60 @@ class MemoryManager:
             self.chroma_enabled = False
             self.logger.info("🧠 Memory Systems Online (SQL only)")
 
-    def _init_sqlite(self):
-        """Creates tables with Market-Ready schema."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+    def _init_database(self):
+        """Creates tables with Market-Ready schema (database-agnostic)."""
+        json_type = self.db_factory.get_json_type()
+        placeholder = self.db_factory.get_placeholder()
         
-        # 1. USERS (With Hashed Passwords)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY, 
-                password_hash TEXT NOT NULL,
-                salt TEXT NOT NULL
-            )
-        ''')
+        with self.db_factory.get_cursor() as cursor:
+            # 1. USERS (With Hashed Passwords)
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY, 
+                    password_hash TEXT NOT NULL,
+                    salt TEXT NOT NULL
+                )
+            ''')
 
-        # 2. PROJECTS
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS projects (
-                project_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                niche TEXT,
-                dna_path TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
+            # 2. PROJECTS
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS projects (
+                    project_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    niche TEXT,
+                    dna_path TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                )
+            ''')
 
-        # 3. ENTITIES
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS entities (
-                id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                project_id TEXT,
-                entity_type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                primary_contact TEXT,
-                metadata JSON,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(tenant_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id)")
+            # 3. ENTITIES
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS entities (
+                    id TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT,
+                    entity_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    primary_contact TEXT,
+                    metadata {json_type},
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(tenant_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id)")
 
-        # 4. SECRETS
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS client_secrets (
-                user_id TEXT PRIMARY KEY,
-                wp_url TEXT,
-                wp_user TEXT,
-                wp_auth_hash TEXT,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
+            # 4. SECRETS
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS client_secrets (
+                    user_id TEXT PRIMARY KEY,
+                    wp_url TEXT,
+                    wp_user TEXT,
+                    wp_auth_hash TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(user_id)
+                )
+            ''')
 
     # ====================================================
     # SECTION A: SECURITY & AUTH
@@ -216,145 +218,140 @@ class MemoryManager:
 
     def create_user(self, email, password):
         self.logger.debug(f"Creating user {email}")
-        conn = None
         try:
             pwd_hash, salt = self._hash_password(password)
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("INSERT INTO users (user_id, password_hash, salt) VALUES (?, ?, ?)", 
-                         (email, pwd_hash, salt))
-            conn.commit()
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO users (user_id, password_hash, salt) VALUES ({placeholder}, {placeholder}, {placeholder})", 
+                    (email, pwd_hash, salt)
+                )
             self.logger.info(f"Successfully created user {email}")
             return True
-        except sqlite3.IntegrityError as e:
-            self.logger.warning(f"User {email} already exists: {e}")
-            return False
-        except sqlite3.Error as e:
+        except DatabaseError as e:
+            # Check if it's an integrity error (duplicate key)
+            error_str = str(e).lower()
+            if "unique" in error_str or "duplicate" in error_str or "already exists" in error_str:
+                self.logger.warning(f"User {email} already exists: {e}")
+                return False
             self.logger.error(f"Database error creating user {email}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error creating user {email}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def _user_exists(self, user_id: str) -> bool:
         """Check if user exists (for JWT validation)."""
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-            exists = cursor.fetchone() is not None
-            return exists
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute(f"SELECT 1 FROM users WHERE user_id = {placeholder}", (user_id,))
+                exists = cursor.fetchone() is not None
+                return exists
+        except DatabaseError as e:
             self.logger.error(f"Database error checking user existence for {user_id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error checking user existence for {user_id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def verify_user(self, email, password):
         self.logger.debug(f"Verifying user credentials for {email}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.execute("SELECT password_hash, salt FROM users WHERE user_id = ?", (email,))
-            row = cursor.fetchone()
-            
-            if row:
-                stored_hash, salt = row
-                check_hash, _ = self._hash_password(password, salt)
-                is_valid = check_hash == stored_hash
-                if is_valid:
-                    self.logger.debug(f"Credentials verified for user {email}")
-                else:
-                    self.logger.debug(f"Invalid credentials for user {email}")
-                return is_valid
-            self.logger.debug(f"User {email} not found")
-            return False
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute(f"SELECT password_hash, salt FROM users WHERE user_id = {placeholder}", (email,))
+                row = cursor.fetchone()
+                
+                if row:
+                    stored_hash, salt = row[0], row[1]
+                    check_hash, _ = self._hash_password(password, salt)
+                    is_valid = check_hash == stored_hash
+                    if is_valid:
+                        self.logger.debug(f"Credentials verified for user {email}")
+                    else:
+                        self.logger.debug(f"Invalid credentials for user {email}")
+                    return is_valid
+                self.logger.debug(f"User {email} not found")
+                return False
+        except DatabaseError as e:
             self.logger.error(f"Database error verifying user {email}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error verifying user {email}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     # ====================================================
     # SECTION B: PROJECT MANAGEMENT
     # ====================================================
     def register_project(self, user_id, project_id, niche):
         self.logger.debug(f"Registering project {project_id} for user {user_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
             path = f"data/profiles/{project_id}/dna.generated.yaml"
-            conn.execute(
-                "INSERT OR REPLACE INTO projects (project_id, user_id, niche, dna_path) VALUES (?, ?, ?, ?)",
-                (project_id, user_id, niche, path)
+            sql = self.db_factory.get_insert_or_replace_sql(
+                table="projects",
+                columns=["project_id", "user_id", "niche", "dna_path"],
+                primary_key="project_id"
             )
-            conn.commit()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(sql, (project_id, user_id, niche, path))
             self.logger.info(f"Successfully registered project {project_id} for user {user_id}")
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error registering project {project_id} for user {user_id}: {e}")
             raise
         except Exception as e:
             self.logger.error(f"Unexpected error registering project {project_id} for user {user_id}: {e}")
             raise
-        finally:
-            if conn:
-                conn.close()
 
     def get_user_project(self, user_id):
         self.logger.debug(f"Fetching user project for user {user_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
-            row = cursor.fetchone()
-            result = dict(row) if row else None
-            if result:
-                self.logger.debug(f"Found project {result.get('project_id')} for user {user_id}")
-            else:
-                self.logger.debug(f"No project found for user {user_id}")
-            return result
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(f"SELECT * FROM projects WHERE user_id = {placeholder} ORDER BY created_at DESC LIMIT 1", (user_id,))
+                row = cursor.fetchone()
+                result = dict(row) if row else None
+                if result:
+                    self.logger.debug(f"Found project {result.get('project_id')} for user {user_id}")
+                else:
+                    self.logger.debug(f"No project found for user {user_id}")
+                return result
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
             self.logger.error(f"Database error fetching user project for user {user_id}: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Unexpected error fetching user project for user {user_id}: {e}")
             return None
-        finally:
-            if conn:
-                conn.close()
 
     def get_projects(self, user_id: str) -> List[Dict]:
         """Get all projects for a specific user."""
         self.logger.debug(f"Fetching all projects for user {user_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.execute("SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC", (user_id,))
-            rows = cursor.fetchall()
-            results = [dict(row) for row in rows]
-            self.logger.debug(f"Found {len(results)} projects for user {user_id}")
-            return results
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(f"SELECT * FROM projects WHERE user_id = {placeholder} ORDER BY created_at DESC", (user_id,))
+                rows = cursor.fetchall()
+                results = [dict(row) for row in rows]
+                self.logger.debug(f"Found {len(results)} projects for user {user_id}")
+                return results
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
             self.logger.error(f"Database error fetching projects for user {user_id}: {e}")
             return []
         except Exception as e:
             self.logger.error(f"Unexpected error fetching projects for user {user_id}: {e}")
             return []
-        finally:
-            if conn:
-                conn.close()
 
     def verify_project_ownership(self, user_id: str, project_id: str) -> bool:
         """
@@ -364,26 +361,23 @@ class MemoryManager:
         Future: With Supabase RLS, this check happens at database level.
         """
         self.logger.debug(f"Verifying project ownership: user={user_id}, project={project_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.execute(
-                "SELECT 1 FROM projects WHERE project_id = ? AND user_id = ?",
-                (project_id, user_id)
-            )
-            exists = cursor.fetchone() is not None
-            if not exists:
-                self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
-            return exists
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute(
+                    f"SELECT 1 FROM projects WHERE project_id = {placeholder} AND user_id = {placeholder}",
+                    (project_id, user_id)
+                )
+                exists = cursor.fetchone() is not None
+                if not exists:
+                    self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
+                return exists
+        except DatabaseError as e:
             self.logger.error(f"Database error verifying project ownership: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error verifying project ownership: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def get_project_owner(self, project_id: str) -> Optional[str]:
         """
@@ -393,29 +387,25 @@ class MemoryManager:
         Returns None if project doesn't exist.
         """
         self.logger.debug(f"Getting project owner for project {project_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id FROM projects WHERE project_id = ?", (project_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                user_id = row[0]
-                self.logger.debug(f"Found project owner: {user_id} for project {project_id}")
-                return user_id
-            else:
-                self.logger.warning(f"Project {project_id} not found in database")
-                return None
-        except sqlite3.Error as e:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute(f"SELECT user_id FROM projects WHERE project_id = {placeholder}", (project_id,))
+                row = cursor.fetchone()
+                
+                if row:
+                    user_id = row[0]
+                    self.logger.debug(f"Found project owner: {user_id} for project {project_id}")
+                    return user_id
+                else:
+                    self.logger.warning(f"Project {project_id} not found in database")
+                    return None
+        except DatabaseError as e:
             self.logger.error(f"Database error getting project owner for {project_id}: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Unexpected error getting project owner for {project_id}: {e}")
             return None
-        finally:
-            if conn:
-                conn.close()
 
     # ====================================================
     # SECTION C: SCALABLE ENTITY STORAGE
@@ -430,10 +420,7 @@ class MemoryManager:
         3. Entity.metadata.get("project_id") (fallback for legacy data)
         """
         self.logger.debug(f"Saving entity {entity.id} of type {entity.entity_type} for tenant {entity.tenant_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            
             # Priority: parameter > entity attribute > metadata
             if project_id is None:
                 # Check if entity has project_id attribute (set by agents)
@@ -442,261 +429,236 @@ class MemoryManager:
                     # Fallback to metadata (for legacy data)
                     project_id = entity.metadata.get("project_id")
             
-            conn.execute('''
-                INSERT OR REPLACE INTO entities 
-                (id, tenant_id, project_id, entity_type, name, primary_contact, metadata, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                entity.id,
-                entity.tenant_id,
-                project_id,
-                entity.entity_type,
-                entity.name,
-                entity.primary_contact,
-                json.dumps(entity.metadata),
-                entity.created_at
-            ))
-            conn.commit()
+            sql = self.db_factory.get_insert_or_replace_sql(
+                table="entities",
+                columns=["id", "tenant_id", "project_id", "entity_type", "name", "primary_contact", "metadata", "created_at"],
+                primary_key="id"
+            )
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(sql, (
+                    entity.id,
+                    entity.tenant_id,
+                    project_id,
+                    entity.entity_type,
+                    entity.name,
+                    entity.primary_contact,
+                    json.dumps(entity.metadata),
+                    entity.created_at
+                ))
             self.logger.info(f"Successfully saved entity {entity.id} of type {entity.entity_type}")
             return True
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error saving entity {entity.id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error saving entity {entity.id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, 
                      project_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
         self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            query = "SELECT * FROM entities WHERE tenant_id = ?"
-            params = [tenant_id]
-            
-            if entity_type:
-                query += " AND entity_type = ?"
-                params.append(entity_type)
-            
-            if project_id:
-                query += " AND project_id = ?"
-                params.append(project_id)
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 
-            query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            
-            results = []
-            for row in rows:
-                item = dict(row)
-                try:
-                    item['metadata'] = json.loads(item['metadata'])
-                except (json.JSONDecodeError, TypeError) as e:
-                    self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
-                    item['metadata'] = {}
-                results.append(item)
-            
-            self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
-            return results
-        except sqlite3.Error as e:
+                query = f"SELECT * FROM entities WHERE tenant_id = {placeholder}"
+                params = [tenant_id]
+                
+                if entity_type:
+                    query += f" AND entity_type = {placeholder}"
+                    params.append(entity_type)
+                
+                if project_id:
+                    query += f" AND project_id = {placeholder}"
+                    params.append(project_id)
+                    
+                query += f" ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}"
+                params.extend([limit, offset])
+                
+                cursor.execute(query, params)
+                rows = cursor.fetchall()
+                
+                results = []
+                for row in rows:
+                    item = dict(row)
+                    try:
+                        item['metadata'] = json.loads(item['metadata'])
+                    except (json.JSONDecodeError, TypeError) as e:
+                        self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
+                        item['metadata'] = {}
+                    results.append(item)
+                
+                self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
+                return results
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
             self.logger.error(f"Database error fetching entities for tenant {tenant_id}: {e}")
             return []
         except Exception as e:
             self.logger.error(f"Unexpected error fetching entities for tenant {tenant_id}: {e}")
             return []
-        finally:
-            if conn:
-                conn.close()
 
     def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
         """Updates the metadata of an existing entity."""
         self.logger.debug(f"Updating entity {entity_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                # 1. Fetch existing metadata
+                cursor.execute(f"SELECT metadata FROM entities WHERE id = {placeholder}", (entity_id,))
+                row = cursor.fetchone()
+                
+                if not row:
+                    self.logger.warning(f"Entity {entity_id} not found for update")
+                    return False
+                
+                # 2. Merge new data with old data
+                try:
+                    current_meta = json.loads(row[0])
+                except (json.JSONDecodeError, TypeError) as e:
+                    self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
+                    current_meta = {}
+                current_meta.update(new_metadata)
+                
+                # 3. Save back
+                cursor.execute(
+                    f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder}", 
+                    (json.dumps(current_meta), entity_id)
+                )
             
-            # 1. Fetch existing metadata
-            cursor.execute("SELECT metadata FROM entities WHERE id = ?", (entity_id,))
-            row = cursor.fetchone()
-            
-            if not row:
-                self.logger.warning(f"Entity {entity_id} not found for update")
-                return False
-            
-            # 2. Merge new data with old data
-            try:
-                current_meta = json.loads(row[0])
-            except (json.JSONDecodeError, TypeError) as e:
-                self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
-                current_meta = {}
-            current_meta.update(new_metadata)
-            
-            # 3. Save back
-            cursor.execute(
-                "UPDATE entities SET metadata = ? WHERE id = ?", 
-                (json.dumps(current_meta), entity_id)
-            )
-            
-            conn.commit()
             self.logger.info(f"Successfully updated entity {entity_id}")
             return True
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error updating entity {entity_id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error updating entity {entity_id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def delete_entity(self, entity_id: str, tenant_id: str) -> bool:
         """Deletes an entity with RLS check."""
         self.logger.debug(f"Deleting entity {entity_id} for tenant {tenant_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                # Verify entity belongs to tenant (RLS)
+                cursor.execute(f"SELECT id FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}", (entity_id, tenant_id))
+                row = cursor.fetchone()
+                
+                if not row:
+                    self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
+                    return False
+                
+                # Delete the entity
+                cursor.execute(f"DELETE FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}", (entity_id, tenant_id))
             
-            # Verify entity belongs to tenant (RLS)
-            cursor.execute("SELECT id FROM entities WHERE id = ? AND tenant_id = ?", (entity_id, tenant_id))
-            row = cursor.fetchone()
-            
-            if not row:
-                self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
-                return False
-            
-            # Delete the entity
-            cursor.execute("DELETE FROM entities WHERE id = ? AND tenant_id = ?", (entity_id, tenant_id))
-            conn.commit()
             self.logger.info(f"Successfully deleted entity {entity_id} for tenant {tenant_id}")
             return True
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error deleting entity {entity_id} for tenant {tenant_id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error deleting entity {entity_id} for tenant {tenant_id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
             
     def get_client_secrets(self, user_id: str) -> Optional[Dict[str, str]]:
         self.logger.debug(f"Fetching client secrets for user {user_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT wp_url, wp_user, wp_auth_hash FROM client_secrets WHERE user_id = ?", (user_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                self.logger.debug(f"Found client secrets for user {user_id}")
-                decrypted_password = None
-                if row["wp_auth_hash"]:
-                    try:
-                        decrypted_password = security_core.decrypt(row["wp_auth_hash"])
-                    except Exception as e:
-                        self.logger.error(f"Failed to decrypt wp_auth_hash for {user_id}: {e}")
-                        decrypted_password = None
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(f"SELECT wp_url, wp_user, wp_auth_hash FROM client_secrets WHERE user_id = {placeholder}", (user_id,))
+                row = cursor.fetchone()
+                
+                if row:
+                    self.logger.debug(f"Found client secrets for user {user_id}")
+                    decrypted_password = None
+                    if row["wp_auth_hash"]:
+                        try:
+                            decrypted_password = security_core.decrypt(row["wp_auth_hash"])
+                        except Exception as e:
+                            self.logger.error(f"Failed to decrypt wp_auth_hash for {user_id}: {e}")
+                            decrypted_password = None
 
-                return {
-                    "wp_url": row["wp_url"],
-                    "wp_user": row["wp_user"],
-                    "wp_password": decrypted_password
-                }
-            self.logger.debug(f"No client secrets found for user {user_id}")
-            return None
-        except sqlite3.Error as e:
+                    return {
+                        "wp_url": row["wp_url"],
+                        "wp_user": row["wp_user"],
+                        "wp_password": decrypted_password
+                    }
+                self.logger.debug(f"No client secrets found for user {user_id}")
+                return None
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
             self.logger.error(f"Database error retrieving client secrets for user {user_id}: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Unexpected error retrieving client secrets for user {user_id}: {e}")
             return None
-        finally:
-            if conn:
-                conn.close()
 
     def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
         """Save or update WordPress credentials for a user."""
         self.logger.debug(f"Saving client secrets for user {user_id}")
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-
             try:
                 encrypted_password = security_core.encrypt(wp_password)
             except Exception as e:
                 self.logger.error(f"Encryption failed for wp_password for user {user_id}: {e}")
                 return False
             
-            # Use INSERT OR REPLACE to update if exists
-            cursor.execute('''
-                INSERT OR REPLACE INTO client_secrets (user_id, wp_url, wp_user, wp_auth_hash)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, wp_url, wp_user, encrypted_password))
+            sql = self.db_factory.get_insert_or_replace_sql(
+                table="client_secrets",
+                columns=["user_id", "wp_url", "wp_user", "wp_auth_hash"],
+                primary_key="user_id"
+            )
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(sql, (user_id, wp_url, wp_user, encrypted_password))
             
-            conn.commit()
             self.logger.info(f"Successfully saved client secrets for user {user_id}")
             return True
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error saving client secrets for user {user_id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error saving client secrets for user {user_id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     # ====================================================
     # SECTION C.5: USAGE TRACKING & BILLING
     # ====================================================
     def create_usage_table_if_not_exists(self):
         """Creates the usage_ledger table if it doesn't exist."""
-        conn = None
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS usage_ledger (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL,
+                        resource_type TEXT NOT NULL,
+                        quantity REAL NOT NULL,
+                        cost_usd REAL NOT NULL,
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                
+                # Create index for faster monthly spend queries
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_project_timestamp ON usage_ledger(project_id, timestamp)")
             
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS usage_ledger (
-                    id TEXT PRIMARY KEY,
-                    project_id TEXT NOT NULL,
-                    resource_type TEXT NOT NULL,
-                    quantity REAL NOT NULL,
-                    cost_usd REAL NOT NULL,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Create index for faster monthly spend queries
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_usage_project_timestamp ON usage_ledger(project_id, timestamp)")
-            
-            conn.commit()
             self.logger.debug("Usage ledger table ready")
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error creating usage_ledger table: {e}")
             raise
         except Exception as e:
             self.logger.error(f"Unexpected error creating usage_ledger table: {e}")
             raise
-        finally:
-            if conn:
-                conn.close()
 
     def log_usage(self, project_id: str, resource_type: str, quantity: float, cost_usd: float) -> bool:
         """
@@ -712,35 +674,28 @@ class MemoryManager:
             True on success, False on error
         """
         self.logger.debug(f"Logging usage: {resource_type} x {quantity} = ${cost_usd:.4f} for project {project_id}")
-        conn = None
         try:
             # Ensure table exists
             self.create_usage_table_if_not_exists()
             
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
             # Generate ID
-            import uuid
             usage_id = str(uuid.uuid4())
+            placeholder = self.db_factory.get_placeholder()
             
-            cursor.execute('''
-                INSERT INTO usage_ledger (id, project_id, resource_type, quantity, cost_usd, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (usage_id, project_id, resource_type, quantity, cost_usd, datetime.now()))
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    INSERT INTO usage_ledger (id, project_id, resource_type, quantity, cost_usd, timestamp)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                ''', (usage_id, project_id, resource_type, quantity, cost_usd, datetime.now()))
             
-            conn.commit()
             self.logger.debug(f"Successfully logged usage record {usage_id}")
             return True
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error logging usage for project {project_id}: {e}")
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error logging usage for project {project_id}: {e}")
             return False
-        finally:
-            if conn:
-                conn.close()
 
     def get_monthly_spend(self, project_id: str) -> float:
         """
@@ -753,36 +708,33 @@ class MemoryManager:
             Total spend in USD for the current month (0.0 if no records)
         """
         self.logger.debug(f"Getting monthly spend for project {project_id}")
-        conn = None
         try:
             # Ensure table exists
             self.create_usage_table_if_not_exists()
             
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            placeholder = self.db_factory.get_placeholder()
+            date_expr = self.db_factory.get_date_start_of_month()
             
-            # Query for current month's spend
-            cursor.execute('''
-                SELECT SUM(cost_usd) 
-                FROM usage_ledger 
-                WHERE project_id = ? 
-                AND timestamp >= date('now', 'start of month')
-            ''', (project_id,))
-            
-            row = cursor.fetchone()
-            total_spend = float(row[0]) if row and row[0] is not None else 0.0
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                # Query for current month's spend
+                cursor.execute(f'''
+                    SELECT SUM(cost_usd) 
+                    FROM usage_ledger 
+                    WHERE project_id = {placeholder} 
+                    AND timestamp >= {date_expr}
+                ''', (project_id,))
+                
+                row = cursor.fetchone()
+                total_spend = float(row[0]) if row and row[0] is not None else 0.0
             
             self.logger.debug(f"Monthly spend for project {project_id}: ${total_spend:.2f}")
             return total_spend
-        except sqlite3.Error as e:
+        except DatabaseError as e:
             self.logger.error(f"Database error getting monthly spend for project {project_id}: {e}")
             return 0.0
         except Exception as e:
             self.logger.error(f"Unexpected error getting monthly spend for project {project_id}: {e}")
             return 0.0
-        finally:
-            if conn:
-                conn.close()
 
     # ====================================================
     # SECTION D: SEMANTIC MEMORY (RAG)

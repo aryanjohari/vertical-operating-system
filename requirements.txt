@@ -17,6 +17,7 @@ sqlalchemy>=2.0.25
 chromadb>=0.4.22
 # For generic SQL support (SQLite is built-in, but this helps)
 aiosqlite>=0.19.0
+psycopg2-binary>=2.9.9  # PostgreSQL support for Supabase
 redis>=5.0.0  # For short-term memory (Context/RAM)
 
 # AGENT TOOLS (The Hands)

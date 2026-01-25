@@ -25,10 +25,10 @@ import uvicorn
 import os
 import re
 import traceback
-import sqlite3
 import json
 import yaml
 from datetime import datetime
+from backend.core.db import get_db_factory
 
 # Define BASE_DIR for consistent path resolution
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -205,10 +205,10 @@ def api_health_check():
     
     # Check Database
     try:
-        conn = sqlite3.connect(memory.db_path)
-        cursor = conn.execute("SELECT 1")
-        cursor.fetchone()
-        conn.close()
+        db_factory = get_db_factory(db_path=memory.db_path)
+        with db_factory.get_cursor(commit=False) as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
         health_status["database_ok"] = True
     except Exception as e:
         logger.debug(f"Database check failed: {e}")
@@ -265,74 +265,65 @@ async def get_usage(
 ):
     """Get usage records from the usage_ledger table."""
     try:
-        conn = None
-        try:
-            # If project_id provided, verify ownership
-            if project_id:
-                if not memory.verify_project_ownership(user_id, project_id):
-                    raise HTTPException(status_code=403, detail="Project not found or access denied")
-                
-                # Query for specific project
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.cursor()
-                cursor.execute('''
+        db_factory = get_db_factory(db_path=memory.db_path)
+        placeholder = db_factory.get_placeholder()
+        
+        # If project_id provided, verify ownership
+        if project_id:
+            if not memory.verify_project_ownership(user_id, project_id):
+                raise HTTPException(status_code=403, detail="Project not found or access denied")
+            
+            # Query for specific project
+            with db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute(f'''
                     SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
                     FROM usage_ledger
-                    WHERE project_id = ?
+                    WHERE project_id = {placeholder}
                     ORDER BY timestamp DESC
-                    LIMIT ?
+                    LIMIT {placeholder}
                 ''', (project_id, limit))
-            else:
-                # Get all projects for user and query their usage
-                projects = memory.get_projects(user_id=user_id)
-                project_ids = [p.get('project_id') for p in projects] if projects else []
-                
-                if not project_ids:
-                    return {"usage": [], "total": 0}
-                
-                # Create placeholders for IN clause
-                placeholders = ','.join(['?'] * len(project_ids))
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.cursor()
+                rows = cursor.fetchall()
+        else:
+            # Get all projects for user and query their usage
+            projects = memory.get_projects(user_id=user_id)
+            project_ids = [p.get('project_id') for p in projects] if projects else []
+            
+            if not project_ids:
+                return {"usage": [], "total": 0}
+            
+            # Create placeholders for IN clause
+            placeholders = ','.join([placeholder] * len(project_ids))
+            with db_factory.get_cursor(commit=False) as cursor:
                 cursor.execute(f'''
                     SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
                     FROM usage_ledger
                     WHERE project_id IN ({placeholders})
                     ORDER BY timestamp DESC
-                    LIMIT ?
+                    LIMIT {placeholder}
                 ''', (*project_ids, limit))
-            
-            rows = cursor.fetchall()
-            
-            # Convert to list of dicts
-            usage_records = []
-            for row in rows:
-                usage_records.append({
-                    "id": row[0],
-                    "project_id": row[1],
-                    "resource_type": row[2],
-                    "quantity": row[3],
-                    "cost_usd": row[4],
-                    "timestamp": row[5]
-                })
-            
-            return {
-                "usage": usage_records,
-                "total": len(usage_records)
-            }
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching usage records: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to fetch usage records")
-        finally:
-            if conn:
-                conn.close()
+                rows = cursor.fetchall()
+        
+        # Convert to list of dicts
+        usage_records = []
+        for row in rows:
+            usage_records.append({
+                "id": row[0],
+                "project_id": row[1],
+                "resource_type": row[2],
+                "quantity": row[3],
+                "cost_usd": row[4],
+                "timestamp": row[5]
+            })
+        
+        return {
+            "usage": usage_records,
+            "total": len(usage_records)
+        }
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Usage endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch usage")
+        logger.error(f"Error fetching usage records: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch usage records")
 
 @app.get("/api/context/{context_id}")
 async def get_context(context_id: str, user_id: str = Depends(get_current_user)):
@@ -672,31 +663,33 @@ async def update_entity_endpoint(
     """Update an existing entity (RLS enforced)."""
     try:
         # Verify entity belongs to user using direct SQL check
-        conn = None
         try:
-            conn = sqlite3.connect(memory.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM entities WHERE id = ? AND tenant_id = ?",
-                (entity_id, user_id)
-            )
-            row = cursor.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Entity not found or access denied")
-            entity = dict(row)
+            db_factory = get_db_factory(db_path=memory.db_path)
+            placeholder = db_factory.get_placeholder()
+            conn = db_factory.get_connection()
+            db_factory.set_row_factory(conn)
             try:
-                entity['metadata'] = json.loads(entity['metadata'])
-            except (json.JSONDecodeError, TypeError):
-                entity['metadata'] = {}
+                cursor = db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(
+                    f"SELECT * FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (entity_id, user_id)
+                )
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Entity not found or access denied")
+                entity = dict(row)
+                try:
+                    entity['metadata'] = json.loads(entity['metadata'])
+                except (json.JSONDecodeError, TypeError):
+                    entity['metadata'] = {}
+            finally:
+                cursor.close()
+                conn.close()
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"Error verifying entity ownership: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to verify entity ownership")
-        finally:
-            if conn:
-                conn.close()
         
         # Build update metadata - combine all fields into metadata for update_entity
         update_metadata = {}
@@ -709,37 +702,30 @@ async def update_entity_endpoint(
         
         # Update name and primary_contact directly via SQL if provided
         if request.name is not None or request.primary_contact is not None:
-            conn = None
             try:
                 logger.debug(f"Updating entity {entity_id} name/contact via direct SQL for user {user_id}")
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.cursor()
-                if request.name is not None and request.primary_contact is not None:
-                    cursor.execute(
-                        "UPDATE entities SET name = ?, primary_contact = ? WHERE id = ? AND tenant_id = ?",
-                        (request.name, request.primary_contact, entity_id, user_id)
-                    )
-                elif request.name is not None:
-                    cursor.execute(
-                        "UPDATE entities SET name = ? WHERE id = ? AND tenant_id = ?",
-                        (request.name, entity_id, user_id)
-                    )
-                elif request.primary_contact is not None:
-                    cursor.execute(
-                        "UPDATE entities SET primary_contact = ? WHERE id = ? AND tenant_id = ?",
-                        (request.primary_contact, entity_id, user_id)
-                    )
-                conn.commit()
+                db_factory = get_db_factory(db_path=memory.db_path)
+                placeholder = db_factory.get_placeholder()
+                with db_factory.get_cursor() as cursor:
+                    if request.name is not None and request.primary_contact is not None:
+                        cursor.execute(
+                            f"UPDATE entities SET name = {placeholder}, primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                            (request.name, request.primary_contact, entity_id, user_id)
+                        )
+                    elif request.name is not None:
+                        cursor.execute(
+                            f"UPDATE entities SET name = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                            (request.name, entity_id, user_id)
+                        )
+                    elif request.primary_contact is not None:
+                        cursor.execute(
+                            f"UPDATE entities SET primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                            (request.primary_contact, entity_id, user_id)
+                        )
                 logger.debug(f"Successfully updated entity {entity_id} name/contact via direct SQL")
-            except sqlite3.Error as e:
-                logger.error(f"Database error updating entity {entity_id} name/contact: {e}")
-                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
             except Exception as e:
-                logger.error(f"Unexpected error updating entity {entity_id} name/contact: {e}", exc_info=True)
-                raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
-            finally:
-                if conn:
-                    conn.close()
+                logger.error(f"Database error updating entity {entity_id} name/contact: {e}", exc_info=True)
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
         
         # Update metadata if provided
         if request.metadata:
@@ -1042,83 +1028,6 @@ async def get_logs(
     except Exception as e:
         logger.error(f"Error reading logs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to read logs")
-
-@app.get("/api/usage")
-async def get_usage(
-    project_id: Optional[str] = None,
-    limit: int = 100,
-    user_id: str = Depends(get_current_user)
-):
-    """Get usage records from the usage_ledger table."""
-    try:
-        conn = None
-        try:
-            # If project_id provided, verify ownership
-            if project_id:
-                if not memory.verify_project_ownership(user_id, project_id):
-                    raise HTTPException(status_code=403, detail="Project not found or access denied")
-                
-                # Query for specific project
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
-                    FROM usage_ledger
-                    WHERE project_id = ?
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ''', (project_id, limit))
-            else:
-                # Get all projects for user and query their usage
-                projects = memory.get_projects(user_id=user_id)
-                project_ids = [p.get('project_id') for p in projects] if projects else []
-                
-                if not project_ids:
-                    return {"usage": [], "total": 0}
-                
-                # Create placeholders for IN clause
-                placeholders = ','.join(['?'] * len(project_ids))
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.cursor()
-                cursor.execute(f'''
-                    SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
-                    FROM usage_ledger
-                    WHERE project_id IN ({placeholders})
-                    ORDER BY timestamp DESC
-                    LIMIT ?
-                ''', (*project_ids, limit))
-            
-            rows = cursor.fetchall()
-            
-            # Convert to list of dicts
-            usage_records = []
-            for row in rows:
-                usage_records.append({
-                    "id": row[0],
-                    "project_id": row[1],
-                    "resource_type": row[2],
-                    "quantity": row[3],
-                    "cost_usd": row[4],
-                    "timestamp": row[5]
-                })
-            
-            return {
-                "usage": usage_records,
-                "total": len(usage_records)
-            }
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching usage records: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Failed to fetch usage records")
-        finally:
-            if conn:
-                conn.close()
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Usage endpoint error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to fetch usage")
 
 # Include voice router
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])

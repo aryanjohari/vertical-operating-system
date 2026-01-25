@@ -5,6 +5,7 @@ import shutil
 import httpx
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
+from backend.core.db import get_db_factory
 from backend.modules.system_ops.models import SystemHealthStatus
 
 class SentinelAgent(BaseAgent):
@@ -83,17 +84,12 @@ class SentinelAgent(BaseAgent):
         # 4. Check Database
         try:
             # Try a simple read operation
-            conn = None
-            try:
-                import sqlite3
-                conn = sqlite3.connect(memory.db_path)
-                cursor = conn.execute("SELECT 1")
+            db_factory = get_db_factory(db_path=memory.db_path)
+            with db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute("SELECT 1")
                 cursor.fetchone()
-                self.logger.debug("✅ Database: OK")
-                health_status.database_ok = True
-            finally:
-                if conn:
-                    conn.close()
+            self.logger.debug("✅ Database: OK")
+            health_status.database_ok = True
         except Exception as e:
             self.logger.error(f"❌ Database check failed: {e}")
             health_status.status = "critical"
