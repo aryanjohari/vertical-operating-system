@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
         # Add jobs
         scheduler.add_job(
             run_health_check,
-            trigger=IntervalTrigger(minutes=5),
+            trigger=IntervalTrigger(minutes=1440),
             id="health_check",
             replace_existing=True
         )
