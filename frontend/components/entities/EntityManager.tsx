@@ -82,7 +82,7 @@ export default function EntityManager({ projectId }: EntityManagerProps) {
   };
 
   const entities = entitiesData || [];
-  const entityTypes = Array.from(new Set(entities.map((e: Entity) => e.entity_type)));
+  const entityTypes: string[] = Array.from(new Set(entities.map((e: Entity) => e.entity_type)));
 
   if (isLoading) {
     return <div className="text-center py-8">Loading entities...</div>;
