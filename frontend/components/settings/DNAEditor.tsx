@@ -34,6 +34,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     reset,
     getValues,
     setValue,
+    watch,
     formState: { errors, isDirty },
   } = useForm<DNAConfig>({
     defaultValues: dnaData,
@@ -45,7 +46,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeDifferentiator,
   } = useFieldArray({
     control,
-    name: 'brand_brain.key_differentiators',
+    name: 'brand_brain.key_differentiators' as any,
   });
 
   const {
@@ -54,7 +55,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeTip,
   } = useFieldArray({
     control,
-    name: 'brand_brain.insider_tips',
+    name: 'brand_brain.insider_tips' as any,
   });
 
   const {
@@ -63,7 +64,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeObjection,
   } = useFieldArray({
     control,
-    name: 'brand_brain.common_objections',
+    name: 'brand_brain.common_objections' as any,
   });
 
   const {
@@ -72,7 +73,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeForbiddenTopic,
   } = useFieldArray({
     control,
-    name: 'brand_brain.forbidden_topics',
+    name: 'brand_brain.forbidden_topics' as any,
   });
 
   const {
@@ -81,7 +82,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeAnchorEntity,
   } = useFieldArray({
     control,
-    name: 'modules.local_seo.scout_settings.anchor_entities',
+    name: 'modules.local_seo.scout_settings.anchor_entities' as any,
   });
 
   const {
@@ -90,7 +91,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeCity,
   } = useFieldArray({
     control,
-    name: 'modules.local_seo.scout_settings.geo_scope.cities',
+    name: 'modules.local_seo.scout_settings.geo_scope.cities' as any,
   });
 
   const {
@@ -99,7 +100,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeLeadMagnet,
   } = useFieldArray({
     control,
-    name: 'modules.lead_gen.tools.lead_magnets',
+    name: 'modules.lead_gen.tools.lead_magnets' as any,
   });
 
   const {
@@ -108,8 +109,10 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
     remove: removeService,
   } = useFieldArray({
     control,
-    name: 'identity.services',
+    name: 'identity.services' as any,
   });
+
+  const watchedServices = watch('identity.services');
 
   useEffect(() => {
     if (dnaData) {
@@ -373,7 +376,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
                       (Money terms - used in page titles)
                     </span>
                   </label>
-                  {(service.primary_keywords || []).map((_, kwIndex) => (
+                  {((watchedServices?.[serviceIndex]?.primary_keywords as string[]) || []).map((_, kwIndex) => (
                     <div key={kwIndex} className="flex gap-2 mb-2">
                       <input
                         {...register(`identity.services.${serviceIndex}.primary_keywords.${kwIndex}`)}
@@ -411,7 +414,7 @@ export default function DNAEditor({ projectId }: DNAEditorProps) {
                       (Semantic safety terms - used in content sections)
                     </span>
                   </label>
-                  {(service.context_keywords || []).map((_, kwIndex) => (
+                  {((watchedServices?.[serviceIndex]?.context_keywords as string[]) || []).map((_, kwIndex) => (
                     <div key={kwIndex} className="flex gap-2 mb-2">
                       <input
                         {...register(`identity.services.${serviceIndex}.context_keywords.${kwIndex}`)}

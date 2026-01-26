@@ -64,11 +64,18 @@ export interface DNAConfig {
     business_name: string;
     niche: string;
     website: string;
+    schema_type?: string;
     contact: {
       phone: string;
       email: string;
       address: string;
     };
+    services?: Array<{
+      name: string;
+      slug: string;
+      primary_keywords: string[];
+      context_keywords: string[];
+    }>;
   };
   brand_brain: {
     voice_tone: string;
@@ -90,6 +97,13 @@ export interface DNAConfig {
         cms: string;
         url: string;
         username: string;
+      };
+      seo_rules?: {
+        force_schema_injection?: boolean;
+        force_meta_description?: boolean;
+        structure?: {
+          title_format?: string;
+        };
       };
     };
     lead_gen?: {
