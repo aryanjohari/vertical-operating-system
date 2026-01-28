@@ -1,4 +1,5 @@
 # backend/modules/lead_gen/agents/utility.py
+import html
 import json
 from typing import List, Dict, Any
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
@@ -59,15 +60,29 @@ class UtilityAgent(BaseAgent):
         # 4. INJECT CONVERSION ASSETS (If Lead Gen Enabled)
         final_html = html_content
         form_injected = False
+        keyword_safe = (draft_meta.get("keyword") or "").strip() or "Support"
+        anchor_used = (draft_meta.get("anchor_used") or "").strip()
+
         if lead_gen_enabled:
             conversion_code = config.get("conversion_asset", {}).get("html_code")
             if not conversion_code:
                 conversion_code = '<a href="/contact" class="btn btn-primary">Get Immediate Help</a>'
+            # Dynamic headline: "Immediate {keyword} Support near {anchor_used}" or "Immediate {keyword} Support" when no anchor
+            if anchor_used:
+                headline = f"Immediate {html.escape(keyword_safe)} Support near {html.escape(anchor_used)}"
+            else:
+                headline = f"Immediate {html.escape(keyword_safe)} Support in Your Area"
+            conversion_block = (
+                f'<div class="conversion-block">'
+                f'<h3 class="conversion-headline">{headline}</h3>'
+                f'<div class="conversion-inner">{conversion_code}</div>'
+                f'</div>'
+            )
             if "{{form_capture}}" in final_html:
-                final_html = final_html.replace("{{form_capture}}", conversion_code)
+                final_html = final_html.replace("{{form_capture}}", conversion_block)
                 form_injected = True
             else:
-                final_html += f"\n<div class='conversion-section'>{conversion_code}</div>"
+                final_html += f"\n<div class='conversion-section'>{conversion_block}</div>"
                 form_injected = True
         else:
             final_html = final_html.replace("{{form_capture}}", "")

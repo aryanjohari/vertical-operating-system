@@ -1,6 +1,6 @@
 # backend/modules/pseo/manager.py
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
 
@@ -314,7 +314,7 @@ class ManagerAgent(BaseAgent):
         user_id: str,
         existing_config: Dict[str, Any],
         params: Dict[str, Any],
-    ) -> Dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """
         Update PSEO settings on the campaign config via memory helper.
         """

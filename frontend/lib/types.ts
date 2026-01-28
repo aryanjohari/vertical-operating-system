@@ -150,6 +150,14 @@ export interface NextStep {
   reason: string;
 }
 
+export interface PulseStats {
+  anchors: number;
+  keywords: number;
+  drafts: number;
+  needs_review: number;
+  published: number;
+}
+
 export interface LeadGenStats {
   total_leads: number;
   avg_lead_score: number;

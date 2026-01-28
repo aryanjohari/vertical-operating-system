@@ -2,6 +2,7 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import StrategyWorkbench from "@/components/pseo/StrategyWorkbench";
+import PseoTabs from "@/components/pseo/PseoTabs";
 
 export default function PseoStrategyPage() {
   const params = useParams();
@@ -21,6 +22,11 @@ export default function PseoStrategyPage() {
 
   return (
     <div className="p-8">
+      <PseoTabs
+        projectId={projectId}
+        campaignId={campaignId}
+        current="strategy"
+      />
       <StrategyWorkbench projectId={projectId} campaignId={campaignId} />
     </div>
   );

@@ -157,7 +157,22 @@ class WriterAgent(BaseAgent):
            - Placeholders: Insert {{{{image_main}}}} after H1, {{{{form_capture}}}} at end.
            - FORMAT: Pure HTML body tags (<p>, <h2>, <ul>). NO <html> or <body> tags.
 
-        2. **Meta Data:**
+        2. **HARD FACTS (Anti-Hallucination — CRITICAL):**
+           Search the KNOWLEDGE BANK snippets ONLY for these "Hard Facts":
+           - **Costs/Fees:** dollar amounts, filing fees, callout fees, price ranges (e.g. "$150", "from $X").
+           - **Processing Times:** durations, deadlines (e.g. "5–7 days", "within 24 hours").
+           - **Required Documents:** lists of forms, IDs, certificates (e.g. "proof of address, ID").
+           - **Opening Hours:** business/court hours (e.g. "Mon–Fri 9–5", "24/7").
+           **IF you find one or more such facts** (explicitly stated in the snippets):
+           - You MUST add a structured HTML block *inside* the body (e.g. after the regulatory paragraph).
+           - Use either <div class="fact-box"> with an inner <table>, or <table class="fact-box">.
+           - Include one row per fact (e.g. "Filing fee" | "$X", "Processing" | "Y days", "Documents required" | "A, B, C").
+           - Add a brief caption/source if the snippet mentions it (e.g. "Source: [name]").
+           **IF you find NO such facts** in the KNOWLEDGE BANK:
+           - Do NOT add any fact-box or table. Do NOT guess, estimate, or invent prices or figures.
+           - Omit the block entirely. Never hallucinate data.
+
+        3. **Meta Data:**
            - Meta Title: Catchy, includes keyword, max 60 chars.
            - Meta Description: Persuasive ad copy, includes keyword, max 160 chars.
 
@@ -174,7 +189,7 @@ class WriterAgent(BaseAgent):
         try:
             response_text = await asyncio.to_thread(
                 llm_gateway.generate_content,
-                system_prompt="You are a content writer. Return only valid JSON with keys html_content, meta_title, meta_description.",
+                system_prompt="You are a content writer. Return only valid JSON with keys html_content, meta_title, meta_description. Never invent costs, fees, processing times, documents, or opening hours—only use facts explicitly present in the provided KNOWLEDGE BANK; if none exist, omit any fact-box/table.",
                 user_prompt=prompt,
                 model="gemini-2.5-flash",
                 temperature=0.7,

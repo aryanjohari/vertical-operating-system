@@ -2,6 +2,7 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import QualityWorkbench from "@/components/pseo/QualityWorkbench";
+import PseoTabs from "@/components/pseo/PseoTabs";
 
 export default function PseoQualityPage() {
   const params = useParams();
@@ -21,6 +22,11 @@ export default function PseoQualityPage() {
 
   return (
     <div className="p-8">
+      <PseoTabs
+        projectId={projectId}
+        campaignId={campaignId}
+        current="quality"
+      />
       <QualityWorkbench projectId={projectId} campaignId={campaignId} />
     </div>
   );

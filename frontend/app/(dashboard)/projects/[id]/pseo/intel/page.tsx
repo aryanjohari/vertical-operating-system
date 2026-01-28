@@ -2,6 +2,7 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import IntelWorkbench from "@/components/pseo/IntelWorkbench";
+import PseoTabs from "@/components/pseo/PseoTabs";
 
 export default function PseoIntelPage() {
   const params = useParams();
@@ -21,6 +22,11 @@ export default function PseoIntelPage() {
 
   return (
     <div className="p-8">
+      <PseoTabs
+        projectId={projectId}
+        campaignId={campaignId}
+        current="intel"
+      />
       <IntelWorkbench projectId={projectId} campaignId={campaignId} />
     </div>
   );
