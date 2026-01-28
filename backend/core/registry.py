@@ -21,7 +21,7 @@ class AgentRegistry:
         # The Workers (Task names match Manager's _execute_task calls)
         "scout_anchors": ("backend.modules.pseo.agents.scout", "ScoutAgent"),
         "strategist_run": ("backend.modules.pseo.agents.strategist", "StrategistAgent"),
-        "write_pages": ("backend.modules.pseo.agents.writer", "SeoWriterAgent"),
+        "write_pages": ("backend.modules.pseo.agents.writer", "WriterAgent"),
         "critic_review": ("backend.modules.pseo.agents.critic", "CriticAgent"),
         "librarian_link": ("backend.modules.pseo.agents.librarian", "LibrarianAgent"),
         "enhance_media": ("backend.modules.pseo.agents.media", "MediaAgent"),

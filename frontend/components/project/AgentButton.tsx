@@ -1,15 +1,16 @@
 // components/project/AgentButton.tsx
-'use client';
+"use client";
 
-import { useState } from 'react';
-import api, { isHeavyTask, pollContextUntilComplete } from '@/lib/api';
-import { useAgentStore } from '@/lib/store';
-import Button from '@/components/ui/Button';
+import { useState } from "react";
+import api, { isHeavyTask, pollContextUntilComplete } from "@/lib/api";
+import { useAgentStore } from "@/lib/store";
+import Button from "@/components/ui/Button";
 
 interface AgentButtonProps {
   agentKey: string;
   label: string;
   projectId: string;
+  campaignId?: string;
   onComplete?: () => void;
   disabled?: boolean;
 }
@@ -18,10 +19,12 @@ export default function AgentButton({
   agentKey,
   label,
   projectId,
+  campaignId,
   onComplete,
   disabled = false,
 }: AgentButtonProps) {
-  const { isRunning, runningAgent, setRunning, updateLastRunTime } = useAgentStore();
+  const { isRunning, runningAgent, setRunning, updateLastRunTime } =
+    useAgentStore();
   const [isLoading, setIsLoading] = useState(false);
 
   const isDisabled = disabled || isRunning || isLoading;
@@ -34,41 +37,51 @@ export default function AgentButton({
     setRunning(true, agentKey);
 
     try {
-      const response = await api.post('/api/run', {
+      const response = await api.post("/api/run", {
         task: agentKey,
-        user_id: '', // Will be set by backend
+        user_id: "", // Will be set by backend
         params: {
           project_id: projectId,
+          campaign_id: campaignId,
         },
       });
 
       // Handle async response (processing status)
-      if (response.data.status === 'processing') {
+      if (response.data.status === "processing") {
         const contextId = response.data.data?.context_id;
         if (contextId) {
           try {
             // Poll for completion
             const result = await pollContextUntilComplete(contextId);
-            if (result && (result.status === 'success' || result.status === 'complete')) {
+            if (
+              result &&
+              (result.status === "success" || result.status === "complete")
+            ) {
               updateLastRunTime(agentKey);
               // Add small delay to ensure DB writes are committed
-              await new Promise(resolve => setTimeout(resolve, 500));
+              await new Promise((resolve) => setTimeout(resolve, 500));
               if (onComplete) {
                 onComplete();
               }
             } else {
-              console.error(`Task ${agentKey} completed with status:`, result?.status);
+              console.error(
+                `Task ${agentKey} completed with status:`,
+                result?.status,
+              );
             }
           } catch (error) {
             console.error(`Error polling context for ${agentKey}:`, error);
             // Show error to user - task may have failed or timed out
           }
         }
-      } else if (response.data.status === 'success' || response.data.status === 'complete') {
+      } else if (
+        response.data.status === "success" ||
+        response.data.status === "complete"
+      ) {
         // Sync task completed immediately
         updateLastRunTime(agentKey);
         // Add small delay to ensure DB writes are committed
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         if (onComplete) {
           onComplete();
         }
@@ -86,10 +99,10 @@ export default function AgentButton({
       onClick={handleClick}
       disabled={isDisabled}
       isLoading={isLoading || isCurrentlyRunning}
-      variant={isCurrentlyRunning ? 'primary' : 'secondary'}
+      variant={isCurrentlyRunning ? "primary" : "secondary"}
       className="w-full"
     >
-      {isCurrentlyRunning ? 'Running...' : `Run ${label}`}
+      {isCurrentlyRunning ? "Running..." : `Run ${label}`}
     </Button>
   );
 }

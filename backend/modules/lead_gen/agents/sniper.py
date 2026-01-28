@@ -31,6 +31,9 @@ class SniperAgent(BaseAgent):
         project_id = self.project_id
         user_id = self.user_id
         
+        # Get campaign_id from injected context or params
+        campaign_id = self.campaign_id or input_data.params.get("campaign_id")
+        
         # Verify project ownership (security: defense-in-depth)
         if not memory.verify_project_ownership(user_id, project_id):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
@@ -183,7 +186,8 @@ class SniperAgent(BaseAgent):
                     "urgency": item.get('urgency'),
                     "description": item.get('description'),
                     "status": "new",
-                    "project_id": project_id
+                    "project_id": project_id,
+                    "campaign_id": campaign_id  # Campaign scoping
                 },
                 created_at=datetime.now()
             )

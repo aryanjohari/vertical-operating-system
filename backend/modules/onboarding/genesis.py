@@ -17,6 +17,7 @@ class OnboardingAgent(BaseAgent):
         self.template_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "core",
+            "templates",
             "profile_template.yaml"
         )
         # Model selection for onboarding tasks (fast and cost-effective)
@@ -25,12 +26,14 @@ class OnboardingAgent(BaseAgent):
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
         Single-shot compiler: Takes form data and generates DNA profile.
-        Action: 'compile_profile'
+        Actions: 'compile_profile', 'create_campaign'
         """
         action = input_data.params.get("action", "compile_profile")
         
         if action == "compile_profile":
             return await self._compile_profile(input_data)
+        elif action == "create_campaign":
+            return await self._create_campaign(input_data)
         else:
             return AgentOutput(status="error", message=f"Unknown action: {action}")
 
@@ -125,6 +128,13 @@ class OnboardingAgent(BaseAgent):
             compilation_prompt = f"""
 You are Genesis, the Apex Profile Compiler. Your task is to fill the YAML template with the provided business data.
 
+IMPORTANT: This is the simplified DNA template. It only contains:
+- identity: Business information
+- brand_brain: Voice, differentiators, knowledge nuggets, objections, forbidden topics
+- modules: Simple toggles (enabled: true/false) - NO module-specific configuration
+
+Module-specific configurations will be created separately as campaigns.
+
 INPUT DATA:
 - Business Name: {identity.get('business_name')}
 - Niche: {identity.get('niche')}
@@ -147,14 +157,14 @@ INSTRUCTIONS:
 3. Fill 'brand_brain' section based on the niche and context:
    - Set appropriate 'voice_tone' for the niche
    - Generate 3-5 'key_differentiators' relevant to the business
-   - Generate 3-5 'insider_tips' based on the niche and context
+   - Generate 3-5 'knowledge_nuggets' (insider secrets) based on the niche and context
    - Generate 2-3 'common_objections' customers might have
    - Set appropriate 'forbidden_topics' for the niche
-4. Module Configuration:
+4. Module Toggles Only:
 {chr(10).join(enable_instructions)}
    - For modules NOT in the selected list, set enabled: false
-5. If 'local_seo' is enabled, set reasonable default anchor_entities and geo_scope based on niche.
-6. If 'lead_gen' is enabled, leave sales_bridge settings as template defaults (user will configure later).
+   - DO NOT add any module-specific configuration (no scout_settings, sniper, sales_bridge, etc.)
+   - Module-specific configs will be created later as campaigns
 
 OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not include any other text.
 """
@@ -353,3 +363,271 @@ OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not incl
         except Exception as e:
             self.logger.error(f"Unexpected error in _save_profile: {e}", exc_info=True)
             return False
+
+    async def _create_campaign(self, input_data: AgentInput) -> AgentOutput:
+        """
+        Creates a campaign for a module (pseo or lead_gen) with interview flow.
+        Steps: interview_start → interview_loop → finalize (create campaign)
+        """
+        try:
+            # Extract input data
+            project_id = input_data.params.get("project_id")
+            module = input_data.params.get("module")  # "pseo" or "lead_gen"
+            name = input_data.params.get("name", "")  # Friendly campaign name
+            step = input_data.params.get("step", "finalize")  # interview_start, interview_loop, finalize
+            form_data = input_data.params.get("form_data", {})  # Optional form data
+            history = input_data.params.get("history", "")  # Chat history for iterative filling
+            context = input_data.params.get("context", {})  # Context from previous steps
+            
+            # Validate required fields
+            if not project_id:
+                return AgentOutput(status="error", message="project_id is required.")
+            
+            if not module or module not in ["pseo", "lead_gen"]:
+                return AgentOutput(status="error", message="module must be 'pseo' or 'lead_gen'.")
+            
+            # Verify project ownership
+            if not memory.verify_project_ownership(input_data.user_id, project_id):
+                return AgentOutput(status="error", message="Project not found or access denied.")
+            
+            # Load DNA for context (needed for all steps)
+            from backend.core.config import ConfigLoader
+            config_loader = ConfigLoader()
+            dna = config_loader.load_dna(project_id)
+            if dna.get("error"):
+                return AgentOutput(status="error", message=f"Failed to load DNA: {dna.get('error')}")
+            
+            identity = dna.get('identity', {})
+            brand_brain = dna.get('brand_brain', {})
+            
+            # ===== INTERVIEW FLOW =====
+            if step == "interview_start":
+                # Start interview - ask first question
+                if module == "pseo":
+                    question = f"Great! Let's set up your pSEO campaign. First, which service or area should this campaign focus on? (e.g., 'Emergency Bail', 'Criminal Defense', 'Hot Water Cylinder')"
+                else:  # lead_gen
+                    question = f"Great! Let's set up your Lead Gen campaign. What type of leads are you looking for? (e.g., 'Emergency Bail Clients', 'Criminal Defense Cases')"
+                
+                return AgentOutput(
+                    status="continue",
+                    message=question,
+                    data={
+                        "reply": question,
+                        "question": question,
+                        "context": {"step": 0, "module": module, "answers": {}}
+                    }
+                )
+            
+            elif step == "interview_loop":
+                # Continue interview - collect answers and ask next question
+                if not isinstance(context, dict):
+                    context = {}
+                
+                answers = context.get("answers", {})
+                current_step = context.get("step", 0)
+                
+                # Parse user's latest answer from history
+                user_answer = ""
+                if history:
+                    lines = history.split("\n")
+                    for line in reversed(lines):
+                        if line.startswith("User:"):
+                            user_answer = line.replace("User:", "").strip()
+                            break
+                
+                # Store answer and ask next question
+                if module == "pseo":
+                    if current_step == 0:
+                        answers["service_focus"] = user_answer
+                        current_step = 1
+                        question = "Which geographic areas should we target? (e.g., 'Auckland', 'Manukau, Henderson, Albany', or 'All of New Zealand')"
+                    elif current_step == 1:
+                        answers["geo_targets"] = user_answer
+                        current_step = 2
+                        question = "What specific keywords or search terms should we prioritize? (e.g., 'emergency bail lawyer', '24/7 criminal defense', or leave blank for auto-generation)"
+                    elif current_step == 2:
+                        answers["keywords"] = user_answer
+                        # Ready to finalize
+                        question = "Perfect! I have all the information I need. Should I create the campaign now? (yes/no)"
+                    else:
+                        question = "Ready to create your campaign? (yes/no)"
+                else:  # lead_gen
+                    if current_step == 0:
+                        answers["lead_type"] = user_answer
+                        current_step = 1
+                        question = "What geographic areas should we target for leads? (e.g., 'Auckland', 'Manukau, North Shore')"
+                    elif current_step == 1:
+                        answers["geo_targets"] = user_answer
+                        current_step = 2
+                        question = "What search terms or keywords should the sniper use to find leads? (e.g., 'need bail lawyer', 'arrested need help', or leave blank for auto-generation)"
+                    elif current_step == 2:
+                        answers["search_terms"] = user_answer
+                        question = "Perfect! I have all the information I need. Should I create the campaign now? (yes/no)"
+                    else:
+                        question = "Ready to create your campaign? (yes/no)"
+                
+                # Check if user confirmed creation
+                if "yes" in user_answer.lower() and current_step >= 2:
+                    # User confirmed - update context and proceed to finalize
+                    context["answers"] = answers
+                    context["step"] = current_step
+                    # Set step to finalize so the finalize block executes
+                    step = "finalize"
+                else:
+                    # Continue interview
+                    context["answers"] = answers
+                    context["step"] = current_step
+                    return AgentOutput(
+                        status="continue",
+                        message=question,
+                        data={
+                            "reply": question,
+                            "question": question,
+                            "context": context
+                        }
+                    )
+            
+            # ===== FINALIZE: CREATE CAMPAIGN =====
+            if step == "finalize":
+                # Load appropriate template
+                template_name = f"{module}_default.yaml"
+                template_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    "core",
+                    "templates",
+                    template_name
+                )
+                
+                if not os.path.exists(template_path):
+                    return AgentOutput(status="error", message=f"Template not found: {template_name}")
+                
+                with open(template_path, 'r') as f:
+                    template = f.read()
+                
+                # Get answers from context
+                if isinstance(context, dict):
+                    answers = context.get("answers", {})
+                else:
+                    answers = {}
+                
+                # Build compilation prompt with interview answers
+                compilation_prompt = f"""
+You are Genesis, the Apex Campaign Creator. Fill the campaign YAML template based on the project DNA and user interview answers.
+
+PROJECT DNA (Context):
+- Business Name: {identity.get('business_name', '')}
+- Niche: {identity.get('niche', '')}
+- Voice Tone: {brand_brain.get('voice_tone', '')}
+- Key Differentiators: {', '.join(brand_brain.get('key_differentiators', []))}
+
+CAMPAIGN MODULE: {module.upper()}
+CAMPAIGN NAME: {name}
+
+USER INTERVIEW ANSWERS:
+{json.dumps(answers, indent=2) if answers else 'No specific answers provided - use DNA context and reasonable defaults.'}
+
+CONVERSATION HISTORY:
+{history if history else 'No conversation history.'}
+
+TEMPLATE TO FILL:
+{template}
+
+INSTRUCTIONS:
+1. Fill all REQUIRED fields in the template.
+2. Use the interview answers to populate:
+   - For pseo: targeting.service_focus (from answers.service_focus), targeting.geo_targets (parse cities/suburbs from answers.geo_targets), mining_requirements.queries (use answers.keywords or generate based on service_focus)
+   - For lead_gen: sniper.search_terms (from answers.search_terms or generate from answers.lead_type), sniper.geo_filter (parse from answers.geo_targets)
+3. Use project DNA context to inform other choices.
+4. For lead_gen: Use identity.phone for bridge.destination_phone if available.
+5. Make the configuration practical and actionable.
+
+OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not include any other text.
+"""
+                
+                try:
+                    response_text = llm_gateway.generate_content(
+                        system_prompt="You are Genesis, the Apex Campaign Creator. Generate valid YAML configuration files for campaigns.",
+                        user_prompt=compilation_prompt,
+                        model=self.model,
+                        temperature=0.5,
+                        max_retries=3
+                    )
+                except Exception as e:
+                    self.logger.error(f"LLM generation failed: {e}", exc_info=True)
+                    return AgentOutput(status="error", message="Failed to generate campaign config. Please try again.")
+                
+                # Extract YAML from response
+                if "```yaml" in response_text:
+                    yaml_content = response_text.split("```yaml")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    parts = response_text.split("```")
+                    if len(parts) >= 2:
+                        yaml_content = parts[1].strip()
+                        if yaml_content.startswith("yaml"):
+                            yaml_content = yaml_content[4:].strip()
+                    else:
+                        yaml_content = response_text.strip()
+                else:
+                    yaml_content = response_text.strip()
+                
+                # Validate YAML can be parsed
+                try:
+                    parsed_yaml = yaml.safe_load(yaml_content)
+                    if not parsed_yaml:
+                        raise ValueError("YAML is empty or invalid")
+                except yaml.YAMLError as e:
+                    self.logger.error(f"Generated YAML is invalid: {e}\nYAML preview: {yaml_content[:500]}")
+                    return AgentOutput(status="error", message="Generated campaign configuration is invalid. Please try again.")
+                
+                # Generate campaign name if not provided
+                if not name:
+                    service_focus = answers.get("service_focus") or parsed_yaml.get('targeting', {}).get('service_focus', '') if module == 'pseo' else answers.get("lead_type") or parsed_yaml.get('sniper', {}).get('search_terms', [''])[0] if parsed_yaml.get('sniper') else ''
+                    name = f"{service_focus} - {identity.get('business_name', 'Campaign')}" if service_focus else f"{module.upper()} Campaign - {identity.get('business_name', 'Project')}"
+                
+                # Create campaign in database
+                self.log("Creating campaign in database...")
+                try:
+                    campaign_id = memory.create_campaign(
+                        user_id=input_data.user_id,
+                        project_id=project_id,
+                        name=name,
+                        module=module,
+                        config=parsed_yaml
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to create campaign in database: {e}", exc_info=True)
+                    return AgentOutput(status="error", message="Failed to create campaign. Please try again.")
+                
+                # Save campaign YAML to disk (backup)
+                self.log("Saving campaign config to disk...")
+                try:
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+                    campaign_dir = os.path.join(base_dir, "data", "profiles", project_id, "campaigns")
+                    os.makedirs(campaign_dir, exist_ok=True)
+                    
+                    campaign_file = os.path.join(campaign_dir, f"{campaign_id}.yaml")
+                    with open(campaign_file, "w", encoding="utf-8") as f:
+                        yaml.dump(parsed_yaml, f, default_flow_style=False, allow_unicode=True)
+                    self.logger.info(f"Saved campaign config to: {campaign_file}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save campaign config to disk: {e}")
+                    # Continue anyway - DB is the source of truth
+                
+                self.logger.info(f"Successfully created campaign {campaign_id} for project: {project_id}, module: {module}")
+                
+                return AgentOutput(
+                    status="complete",
+                    message="Campaign Created",
+                    data={
+                        "campaign_id": campaign_id,
+                        "complete": True,
+                        "project_id": project_id,
+                        "module": module,
+                        "name": name,
+                        "config": parsed_yaml
+                    }
+                )
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected error in _create_campaign: {e}", exc_info=True)
+            return AgentOutput(status="error", message=f"Failed to create campaign: {str(e)}")

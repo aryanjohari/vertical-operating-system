@@ -384,7 +384,7 @@ async def run_command(
         payload.user_id = user_id
         
         # Define heavy tasks that should run in background
-        HEAVY_TASKS = ["sniper_agent", "sales_agent", "reactivator_agent", "onboarding"]
+        HEAVY_TASKS = ["sniper_agent", "sales_agent", "reactivator_agent", "scout_anchors", "strategist_run"]
         
         # Map manager actions to heavy tasks (for async execution)
         MANAGER_HEAVY_ACTIONS = {
@@ -995,6 +995,25 @@ async def update_dna_config(
     except Exception as e:
         logger.error(f"Update DNA config error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update DNA configuration")
+
+@app.get("/api/projects/{project_id}/campaigns")
+async def get_campaigns(
+    project_id: str,
+    module: Optional[str] = None,  # Query param: ?module=pseo
+    user_id: str = Depends(get_current_user)
+):
+    """Get campaigns for a project, optionally filtered by module."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        
+        campaigns = memory.get_campaigns_by_project(user_id, project_id, module=module)
+        return {"campaigns": campaigns}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching campaigns: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch campaigns")
 
 # System monitoring endpoints
 @app.get("/api/logs")

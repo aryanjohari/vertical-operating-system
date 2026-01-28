@@ -1,4 +1,4 @@
-# backend/scrapers/maps_sync.py
+# backend/core/services/maps_sync.py
 import time
 import random
 import re
@@ -176,7 +176,7 @@ def run_scout_sync(queries: list, allow_kws: list = None, block_kws: list = None
         }
 
 def extract_details(page, source_query, name, source_url):
-    data = {"name": name, "source_query": source_query, "google_maps_url": source_url, "address": None, "phone": None, "website": None}
+    data = {"name": name, "source_query": source_query, "google_maps_url": source_url, "address": None, "phone": None, "website": None, "working_hours": None}
     
     try:
         if page.locator('button[data-item-id="address"]').count() > 0:
@@ -185,6 +185,40 @@ def extract_details(page, source_query, name, source_url):
             data["phone"] = page.locator('button[data-item-id*="phone"]').first.get_attribute("aria-label").replace("Phone: ", "").strip()
         if page.locator('a[data-item-id="authority"]').count() > 0:
             data["website"] = page.locator('a[data-item-id="authority"]').first.get_attribute("href")
+        
+        # Extract working hours if available
+        try:
+            # Try multiple selectors for working hours
+            working_hours_text = None
+            
+            # Method 1: Look for button with working hours data-item-id
+            if page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').count() > 0:
+                hours_button = page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').first
+                working_hours_text = hours_button.get_attribute("aria-label")
+                if working_hours_text:
+                    working_hours_text = working_hours_text.replace("Hours: ", "").replace("Opening hours: ", "").strip()
+            
+            # Method 2: Look for text content with common patterns
+            if not working_hours_text:
+                # Try to find div/span with hours information
+                hours_selectors = [
+                    'div[data-value*="hours"]',
+                    'div:has-text("Open")',
+                    'div:has-text("Closed")',
+                    'span:has-text("AM")',
+                    'span:has-text("PM")'
+                ]
+                for selector in hours_selectors:
+                    if page.locator(selector).count() > 0:
+                        working_hours_text = page.locator(selector).first.inner_text()
+                        if working_hours_text and len(working_hours_text) < 200:  # Reasonable length
+                            break
+            
+            if working_hours_text:
+                data["working_hours"] = working_hours_text
+        except Exception as hours_e:
+            logger.debug(f"Could not extract working hours for {name}: {hours_e}")
+            
     except Exception as e:
         logger.debug(f"Error extracting details for {name}: {e}")
     

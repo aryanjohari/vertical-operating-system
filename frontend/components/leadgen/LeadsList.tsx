@@ -1,42 +1,63 @@
 // components/leadgen/LeadsList.tsx
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { Entity } from '@/lib/types';
-import Button from '@/components/ui/Button';
-import Card from '@/components/ui/Card';
-import Input from '@/components/ui/Input';
-import Modal from '@/components/ui/Modal';
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import api from "@/lib/api";
+import { Entity } from "@/lib/types";
+import Button from "@/components/ui/Button";
+import Card from "@/components/ui/Card";
+import Input from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
 
 interface LeadsListProps {
   projectId: string;
+  campaignId?: string;
   onTestCall?: (leadId: string) => void;
 }
 
-export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
-  const [priorityFilter, setPriorityFilter] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+export default function LeadsList({
+  projectId,
+  campaignId,
+  onTestCall,
+}: LeadsListProps) {
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [searchTerm, setSearchTerm] = useState("");
   const [selectedLead, setSelectedLead] = useState<Entity | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
-  const { data: leadsData, isLoading, refetch } = useQuery({
-    queryKey: ['leads', projectId],
+  const {
+    data: leadsData,
+    isLoading,
+    refetch,
+  } = useQuery({
+    queryKey: ["leads", projectId, campaignId],
     queryFn: async () => {
-      const response = await api.get(`/api/entities?entity_type=lead&project_id=${projectId}`);
-      return response.data.entities || [];
+      const response = await api.get(
+        `/api/entities?entity_type=lead&project_id=${projectId}`,
+      );
+      const allLeads = response.data.entities || [];
+      // Filter by campaign_id if provided
+      if (campaignId) {
+        return allLeads.filter(
+          (lead: Entity) => lead.metadata?.campaign_id === campaignId,
+        );
+      }
+      return allLeads;
     },
   });
 
   const leads: Entity[] = leadsData || [];
 
   const filteredLeads = leads.filter((lead) => {
-    const matchesSource = sourceFilter === 'all' || lead.metadata?.source === sourceFilter;
-    const matchesPriority = priorityFilter === 'all' || lead.metadata?.priority === priorityFilter;
-    const matchesStatus = statusFilter === 'all' || lead.metadata?.status === statusFilter;
+    const matchesSource =
+      sourceFilter === "all" || lead.metadata?.source === sourceFilter;
+    const matchesPriority =
+      priorityFilter === "all" || lead.metadata?.priority === priorityFilter;
+    const matchesStatus =
+      statusFilter === "all" || lead.metadata?.status === statusFilter;
     const matchesSearch =
       !searchTerm ||
       lead.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -46,23 +67,24 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
   });
 
   const getScoreColor = (score: number | undefined) => {
-    if (!score) return 'text-gray-500';
-    if (score >= 80) return 'text-green-600 dark:text-green-400';
-    if (score >= 60) return 'text-yellow-600 dark:text-yellow-400';
-    return 'text-red-600 dark:text-red-400';
+    if (!score) return "text-gray-500";
+    if (score >= 80) return "text-green-600 dark:text-green-400";
+    if (score >= 60) return "text-yellow-600 dark:text-yellow-400";
+    return "text-red-600 dark:text-red-400";
   };
 
   const getPriorityBadge = (priority: string | undefined) => {
     if (!priority) return null;
     const colors = {
-      High: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300',
-      Medium: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300',
-      Low: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300',
+      High: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
+      Medium:
+        "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300",
+      Low: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300",
     };
     return (
       <span
         className={`px-2 py-1 text-xs font-medium rounded-full ${
-          colors[priority as keyof typeof colors] || 'bg-gray-100 text-gray-800'
+          colors[priority as keyof typeof colors] || "bg-gray-100 text-gray-800"
         }`}
       >
         {priority}
@@ -73,11 +95,11 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
   const getSourceBadge = (source: string | undefined) => {
     if (!source) return null;
     const sourceLabels: Record<string, string> = {
-      sniper: 'Sniper',
-      web: 'Web',
-      voice_call: 'Voice',
-      google_ads: 'Google Ads',
-      wordpress_form: 'WordPress',
+      sniper: "Sniper",
+      web: "Web",
+      voice_call: "Voice",
+      google_ads: "Google Ads",
+      wordpress_form: "WordPress",
     };
     return (
       <span className="px-2 py-1 text-xs font-medium rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300">
@@ -89,7 +111,9 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
   if (isLoading) {
     return (
       <Card className="p-6">
-        <div className="text-center py-8 text-gray-600 dark:text-gray-400">Loading leads...</div>
+        <div className="text-center py-8 text-gray-600 dark:text-gray-400">
+          Loading leads...
+        </div>
       </Card>
     );
   }
@@ -97,7 +121,9 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
   return (
     <Card className="p-6">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">Leads</h2>
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
+          Leads
+        </h2>
 
         {/* Filters */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
@@ -167,7 +193,10 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
 
       {filteredLeads.length === 0 ? (
         <div className="text-center py-8 text-gray-600 dark:text-gray-400">
-          No leads found. {leads.length === 0 ? 'Start hunting to find leads!' : 'Try adjusting your filters.'}
+          No leads found.{" "}
+          {leads.length === 0
+            ? "Start hunting to find leads!"
+            : "Try adjusting your filters."}
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -202,7 +231,10 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
             </thead>
             <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
               {filteredLeads.map((lead) => (
-                <tr key={lead.id} className="hover:bg-gray-50 dark:hover:bg-gray-700">
+                <tr
+                  key={lead.id}
+                  className="hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm font-medium text-gray-900 dark:text-white">
                       {lead.name}
@@ -212,11 +244,15 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
-                    {lead.primary_contact || '-'}
+                    {lead.primary_contact || "-"}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`text-sm font-bold ${getScoreColor(lead.metadata?.score)}`}>
-                      {lead.metadata?.score !== undefined ? lead.metadata.score : '-'}
+                    <span
+                      className={`text-sm font-bold ${getScoreColor(lead.metadata?.score)}`}
+                    >
+                      {lead.metadata?.score !== undefined
+                        ? lead.metadata.score
+                        : "-"}
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
@@ -227,18 +263,21 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                      {lead.metadata?.status || 'new'}
+                      {lead.metadata?.status || "new"}
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     {lead.metadata?.call_status ? (
                       <div className="flex flex-col gap-1">
                         <span className="text-xs">
-                          {lead.metadata.call_status === 'completed' ? '✅ Called' : lead.metadata.call_status}
+                          {lead.metadata.call_status === "completed"
+                            ? "✅ Called"
+                            : lead.metadata.call_status}
                         </span>
                         {lead.metadata.call_duration && (
                           <span className="text-xs text-gray-400">
-                            {Math.floor(lead.metadata.call_duration / 60)}m {lead.metadata.call_duration % 60}s
+                            {Math.floor(lead.metadata.call_duration / 60)}m{" "}
+                            {lead.metadata.call_duration % 60}s
                           </span>
                         )}
                       </div>
@@ -283,60 +322,88 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
           setIsModalOpen(false);
           setSelectedLead(null);
         }}
-        title={selectedLead ? `Lead Details: ${selectedLead.name}` : 'Lead Details'}
+        title={
+          selectedLead ? `Lead Details: ${selectedLead.name}` : "Lead Details"
+        }
       >
         {selectedLead && (
           <div className="space-y-6">
             {/* Basic Information */}
             <div>
-              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Basic Information</h3>
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                Basic Information
+              </h3>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Name</label>
-                  <p className="text-sm text-gray-900 dark:text-white mt-1">{selectedLead.name}</p>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Name
+                  </label>
+                  <p className="text-sm text-gray-900 dark:text-white mt-1">
+                    {selectedLead.name}
+                  </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Contact</label>
-                  <p className="text-sm text-gray-900 dark:text-white mt-1">{selectedLead.primary_contact || '-'}</p>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Contact
+                  </label>
+                  <p className="text-sm text-gray-900 dark:text-white mt-1">
+                    {selectedLead.primary_contact || "-"}
+                  </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Lead ID</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Lead ID
+                  </label>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono break-all">
                     {selectedLead.id}
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Score</label>
-                  <p className={`text-sm font-bold mt-1 ${getScoreColor(selectedLead.metadata?.score)}`}>
-                    {selectedLead.metadata?.score !== undefined ? selectedLead.metadata.score : '-'}
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Score
+                  </label>
+                  <p
+                    className={`text-sm font-bold mt-1 ${getScoreColor(selectedLead.metadata?.score)}`}
+                  >
+                    {selectedLead.metadata?.score !== undefined
+                      ? selectedLead.metadata.score
+                      : "-"}
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Source</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Source
+                  </label>
                   <p className="text-sm text-gray-900 dark:text-white mt-1">
                     {getSourceBadge(selectedLead.metadata?.source)}
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Priority</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Priority
+                  </label>
                   <p className="text-sm text-gray-900 dark:text-white mt-1">
                     {getPriorityBadge(selectedLead.metadata?.priority)}
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Status
+                  </label>
                   <p className="text-sm text-gray-900 dark:text-white mt-1">
                     <span className="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300">
-                      {selectedLead.metadata?.status || 'new'}
+                      {selectedLead.metadata?.status || "new"}
                     </span>
                   </p>
                 </div>
                 <div>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Created At</label>
+                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Created At
+                  </label>
                   <p className="text-sm text-gray-900 dark:text-white mt-1">
                     {selectedLead.created_at
                       ? new Date(selectedLead.created_at).toLocaleString()
-                      : '-'}
+                      : "-"}
                   </p>
                 </div>
               </div>
@@ -345,10 +412,14 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
             {/* Call Information */}
             {selectedLead.metadata?.call_status && (
               <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Call Information</h3>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                  Call Information
+                </h3>
                 <div className="grid grid-cols-2 gap-4 mb-4">
                   <div>
-                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Call Status</label>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Call Status
+                    </label>
                     <p className="text-sm text-gray-900 dark:text-white mt-1">
                       <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300">
                         {selectedLead.metadata.call_status}
@@ -356,25 +427,33 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                     </p>
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Call Duration</label>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Call Duration
+                    </label>
                     <p className="text-sm text-gray-900 dark:text-white mt-1">
                       {selectedLead.metadata.call_duration
                         ? `${Math.floor(selectedLead.metadata.call_duration / 60)}m ${selectedLead.metadata.call_duration % 60}s`
-                        : '-'}
+                        : "-"}
                     </p>
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Called At</label>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Called At
+                    </label>
                     <p className="text-sm text-gray-900 dark:text-white mt-1">
                       {selectedLead.metadata.called_at
-                        ? new Date(selectedLead.metadata.called_at).toLocaleString()
-                        : '-'}
+                        ? new Date(
+                            selectedLead.metadata.called_at,
+                          ).toLocaleString()
+                        : "-"}
                     </p>
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Call SID</label>
+                    <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      Call SID
+                    </label>
                     <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 font-mono text-xs">
-                      {selectedLead.metadata.call_sid || '-'}
+                      {selectedLead.metadata.call_sid || "-"}
                     </p>
                   </div>
                 </div>
@@ -382,7 +461,9 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                 {/* Call Analysis (Gemini structured data) */}
                 {selectedLead.metadata.call_analysis && (
                   <div className="mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Call Analysis</h3>
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                      Call Analysis
+                    </h3>
                     <div className="space-y-4">
                       {/* Summary */}
                       {selectedLead.metadata.call_analysis.summary && (
@@ -406,15 +487,25 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                           </label>
                           <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
                             <ul className="list-disc list-inside space-y-1">
-                              {Array.isArray(selectedLead.metadata.call_analysis.key_points) ? (
-                                selectedLead.metadata.call_analysis.key_points.map((point: string, idx: number) => (
-                                  <li key={idx} className="text-sm text-gray-900 dark:text-white">
-                                    {point}
-                                  </li>
-                                ))
+                              {Array.isArray(
+                                selectedLead.metadata.call_analysis.key_points,
+                              ) ? (
+                                selectedLead.metadata.call_analysis.key_points.map(
+                                  (point: string, idx: number) => (
+                                    <li
+                                      key={idx}
+                                      className="text-sm text-gray-900 dark:text-white"
+                                    >
+                                      {point}
+                                    </li>
+                                  ),
+                                )
                               ) : (
                                 <li className="text-sm text-gray-900 dark:text-white">
-                                  {selectedLead.metadata.call_analysis.key_points}
+                                  {
+                                    selectedLead.metadata.call_analysis
+                                      .key_points
+                                  }
                                 </li>
                               )}
                             </ul>
@@ -424,14 +515,18 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
 
                       {/* Customer Intent & Next Steps */}
                       <div className="grid grid-cols-2 gap-4">
-                        {selectedLead.metadata.call_analysis.customer_intent && (
+                        {selectedLead.metadata.call_analysis
+                          .customer_intent && (
                           <div>
                             <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
                               Customer Intent
                             </label>
                             <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-3">
                               <p className="text-sm text-gray-900 dark:text-white">
-                                {selectedLead.metadata.call_analysis.customer_intent}
+                                {
+                                  selectedLead.metadata.call_analysis
+                                    .customer_intent
+                                }
                               </p>
                             </div>
                           </div>
@@ -444,9 +539,15 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                             </label>
                             <div className="bg-yellow-50 dark:bg-yellow-900/20 rounded-lg p-3">
                               <p className="text-sm text-gray-900 dark:text-white">
-                                {Array.isArray(selectedLead.metadata.call_analysis.next_steps) 
-                                  ? selectedLead.metadata.call_analysis.next_steps.join(', ')
-                                  : selectedLead.metadata.call_analysis.next_steps}
+                                {Array.isArray(
+                                  selectedLead.metadata.call_analysis
+                                    .next_steps,
+                                )
+                                  ? selectedLead.metadata.call_analysis.next_steps.join(
+                                      ", ",
+                                    )
+                                  : selectedLead.metadata.call_analysis
+                                      .next_steps}
                               </p>
                             </div>
                           </div>
@@ -460,13 +561,17 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                             <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
                               Sentiment
                             </label>
-                            <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-                              selectedLead.metadata.call_analysis.sentiment === 'positive' 
-                                ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300'
-                                : selectedLead.metadata.call_analysis.sentiment === 'negative'
-                                ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300'
-                                : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
-                            }`}>
+                            <span
+                              className={`px-3 py-1 text-xs font-medium rounded-full ${
+                                selectedLead.metadata.call_analysis
+                                  .sentiment === "positive"
+                                  ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300"
+                                  : selectedLead.metadata.call_analysis
+                                        .sentiment === "negative"
+                                    ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
+                                    : "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300"
+                              }`}
+                            >
                               {selectedLead.metadata.call_analysis.sentiment}
                             </span>
                           </div>
@@ -477,13 +582,17 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
                             <label className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 block">
                               Urgency
                             </label>
-                            <span className={`px-3 py-1 text-xs font-medium rounded-full ${
-                              selectedLead.metadata.call_analysis.urgency === 'high' 
-                                ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300'
-                                : selectedLead.metadata.call_analysis.urgency === 'medium'
-                                ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300'
-                                : 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300'
-                            }`}>
+                            <span
+                              className={`px-3 py-1 text-xs font-medium rounded-full ${
+                                selectedLead.metadata.call_analysis.urgency ===
+                                "high"
+                                  ? "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300"
+                                  : selectedLead.metadata.call_analysis
+                                        .urgency === "medium"
+                                    ? "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-300"
+                                    : "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-300"
+                              }`}
+                            >
                               {selectedLead.metadata.call_analysis.urgency}
                             </span>
                           </div>
@@ -529,7 +638,9 @@ export default function LeadsList({ projectId, onTestCall }: LeadsListProps) {
             {/* Additional Metadata */}
             {selectedLead.metadata?.message && (
               <div>
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Message</h3>
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">
+                  Message
+                </h3>
                 <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
                   <p className="text-sm text-gray-900 dark:text-white whitespace-pre-wrap">
                     {selectedLead.metadata.message}

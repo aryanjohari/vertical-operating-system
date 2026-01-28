@@ -28,7 +28,8 @@ def dump_entities():
     print("--- 📦 DUMPING ENTITIES (JSON DB) ---")
     
     # UPDATED: Added 'seo_keyword' because that is what Strategist uses
-    entity_types = ["project", "anchor_location", "seo_keyword", "page_draft", "lead"]
+    # Added 'knowledge_fragment' for intel entities (competitors/facts)
+    entity_types = ["project", "anchor_location", "seo_keyword", "page_draft", "lead", "knowledge_fragment"]
     
     for e_type in entity_types:
         filename = f"{OUTPUT_DIR}/entities_{e_type}.csv"
@@ -83,6 +84,15 @@ def dump_entities():
                         print(f"      - Tool Type: {p.get('metadata', {}).get('tool_type')}")
                         print(f"      - Has Tool: {p.get('metadata', {}).get('has_tool')}")
                         print(f"      - Slug: {p.get('metadata', {}).get('slug')}")
+            
+            # SPECIAL CHECK: If this is Knowledge Fragments, print summary by type
+            if e_type == "knowledge_fragment":
+                competitor_count = sum(1 for e in entities if e.get("metadata", {}).get("type") == "competitor")
+                fact_count = sum(1 for e in entities if e.get("metadata", {}).get("type") == "fact")
+                print(f"\n   📊 Knowledge Fragment Summary:")
+                print(f"      - Competitors: {competitor_count}")
+                print(f"      - Facts: {fact_count}")
+                print(f"      - Total: {len(entities)}")
                         
         except Exception as e:
             print(f"❌ Error dumping {e_type}: {e}")

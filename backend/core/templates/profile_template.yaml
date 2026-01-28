@@ -1,0 +1,51 @@
+# =========================================================
+# APEX IDENTITY DNA v4.0 (The Immutable Core)
+# =========================================================
+
+identity:
+  project_id: "REQUIRED"          # System ID (e.g., 'apex_bail_akl')
+  business_name: "REQUIRED"       # Legal Trading Name
+  niche: "REQUIRED"               # e.g., 'Criminal Defense', 'Emergency Plumbing'
+  website: ""                     # Primary URL
+  schema_type: "LocalBusiness"    # Options: LegalService, Dentist, HVACBusiness
+  
+  contact:
+    phone: ""                     # Public Office Number
+    email: ""                     # Public Enquiry Email
+    address: ""                   # Physical HQ Address
+    
+  socials:
+    facebook: ""
+    linkedin: ""
+    google_maps_cid: ""           # Critical for Local SEO verification
+
+brand_brain:
+  # The Voice: Controls the AI Writer's personality
+  voice_tone: "Professional, Authoritative, Empathetic" 
+  
+  # The Pitch: Why a customer should buy TODAY
+  key_differentiators: []         
+  # e.g., ["Available 24/7", "Fixed Fee Pricing", "Former Police Prosecutor"]
+
+  # The Wisdom: "Insider Secrets" that build instant trust
+  # (Injected into RAG for the Writer)
+  knowledge_nuggets: []                
+  # e.g., ["Police cannot force you to unlock your phone", "Turn off mains water immediately"]
+
+  # The Defense: How to answer "Why are you so expensive?"
+  # (Used by Sales Agents)
+  common_objections: []           
+  # e.g., ["Good lawyers aren't cheap", "We use copper, not plastic"]
+
+  # The Law: What the AI must NEVER promise
+  forbidden_topics: []            
+  # e.g., ["Guaranteed acquittal", "Unconsented gas work"]
+
+modules:
+  # High-level toggles only. Specific configs live in Campaigns.
+  local_seo:
+    enabled: false
+  lead_gen:
+    enabled: false
+  admin:
+    enabled: false

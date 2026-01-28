@@ -191,7 +191,27 @@ class MemoryManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(tenant_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id)")
 
-            # 4. SECRETS
+            # 4. CAMPAIGNS
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    module TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'DRAFT',
+                    config {json_type} NOT NULL,
+                    stats {json_type},
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(project_id) REFERENCES projects(project_id)
+                )
+            ''')
+            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_project ON campaigns(project_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_module ON campaigns(module)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status)")
+
+            # 5. SECRETS
             cursor.execute(f'''
                 CREATE TABLE IF NOT EXISTS client_secrets (
                     user_id TEXT PRIMARY KEY,
@@ -406,6 +426,249 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Unexpected error getting project owner for {project_id}: {e}")
             return None
+
+    # ====================================================
+    # SECTION B.5: CAMPAIGN MANAGEMENT
+    # ====================================================
+    def create_campaign(self, user_id: str, project_id: str, name: str, module: str, config: Dict[str, Any]) -> str:
+        """
+        Create a new campaign for a project.
+        Returns campaign_id (UUID format: cmp_xxxxx).
+        """
+        self.logger.debug(f"Creating campaign for project {project_id}, module {module}")
+        try:
+            # Verify project ownership
+            if not self.verify_project_ownership(user_id, project_id):
+                raise ValueError(f"User {user_id} does not own project {project_id}")
+            
+            # Generate campaign_id (format: cmp_xxxxx)
+            import uuid
+            campaign_id = f"cmp_{uuid.uuid4().hex[:10]}"
+            
+            # Insert campaign
+            json_type = self.db_factory.get_json_type()
+            placeholder = self.db_factory.get_placeholder()
+            
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    INSERT INTO campaigns (id, project_id, name, module, status, config, stats)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                ''', (
+                    campaign_id,
+                    project_id,
+                    name,
+                    module,
+                    'DRAFT',
+                    json.dumps(config),
+                    json.dumps({})
+                ))
+            
+            self.logger.info(f"Successfully created campaign {campaign_id} for project {project_id}")
+            return campaign_id
+        except DatabaseError as e:
+            self.logger.error(f"Database error creating campaign: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error creating campaign: {e}")
+            raise
+
+    def get_campaign(self, campaign_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a campaign by ID with RLS check (via project ownership).
+        Returns None if not found or access denied.
+        """
+        self.logger.debug(f"Fetching campaign {campaign_id} for user {user_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                # Join with projects to verify ownership
+                cursor.execute(f'''
+                    SELECT c.*, p.user_id 
+                    FROM campaigns c
+                    JOIN projects p ON c.project_id = p.project_id
+                    WHERE c.id = {placeholder} AND p.user_id = {placeholder}
+                ''', (campaign_id, user_id))
+                row = cursor.fetchone()
+                
+                if row:
+                    result = dict(row)
+                    # Parse JSON fields
+                    if result.get('config'):
+                        result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
+                    if result.get('stats'):
+                        result['stats'] = json.loads(result['stats']) if isinstance(result['stats'], str) else result['stats']
+                    # Remove user_id from result (it's from join)
+                    result.pop('user_id', None)
+                    self.logger.debug(f"Found campaign {campaign_id}")
+                    return result
+                else:
+                    self.logger.debug(f"Campaign {campaign_id} not found or access denied")
+                    return None
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching campaign {campaign_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching campaign {campaign_id}: {e}")
+            return None
+
+    def get_campaigns_by_project(self, user_id: str, project_id: str, module: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all campaigns for a project, optionally filtered by module.
+        Returns empty list if project not found or access denied.
+        """
+        self.logger.debug(f"Fetching campaigns for project {project_id}, module={module}")
+        try:
+            # Verify project ownership
+            if not self.verify_project_ownership(user_id, project_id):
+                self.logger.warning(f"Access denied: user {user_id} does not own project {project_id}")
+                return []
+            
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                
+                if module:
+                    cursor.execute(f'''
+                        SELECT * FROM campaigns 
+                        WHERE project_id = {placeholder} AND module = {placeholder}
+                        ORDER BY created_at DESC
+                    ''', (project_id, module))
+                else:
+                    cursor.execute(f'''
+                        SELECT * FROM campaigns 
+                        WHERE project_id = {placeholder}
+                        ORDER BY created_at DESC
+                    ''', (project_id,))
+                
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    result = dict(row)
+                    # Parse JSON fields
+                    if result.get('config'):
+                        result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
+                    if result.get('stats'):
+                        result['stats'] = json.loads(result['stats']) if isinstance(result['stats'], str) else result['stats']
+                    results.append(result)
+                
+                self.logger.debug(f"Found {len(results)} campaigns for project {project_id}")
+                return results
+            finally:
+                cursor.close()
+                conn.close()
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching campaigns: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching campaigns: {e}")
+            return []
+
+    def update_campaign_status(self, campaign_id: str, user_id: str, status: str) -> bool:
+        """
+        Update campaign status. Validates ownership via project.
+        Returns True on success, False on failure.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} status to {status}")
+        try:
+            # Verify ownership by checking if campaign exists and user owns the project
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+            
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    UPDATE campaigns 
+                    SET status = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                ''', (status, campaign_id))
+            
+            self.logger.info(f"Successfully updated campaign {campaign_id} status to {status}")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign status: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign status: {e}")
+            return False
+
+    def update_campaign_stats(self, campaign_id: str, user_id: str, stats: Dict[str, Any]) -> bool:
+        """
+        Update campaign stats. Validates ownership via project.
+        Merges with existing stats (doesn't overwrite).
+        Returns True on success, False on failure.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} stats")
+        try:
+            # Verify ownership
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+            
+            # Merge with existing stats
+            existing_stats = campaign.get('stats', {}) or {}
+            merged_stats = {**existing_stats, **stats}
+            
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    UPDATE campaigns 
+                    SET stats = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                ''', (json.dumps(merged_stats), campaign_id))
+            
+            self.logger.info(f"Successfully updated campaign {campaign_id} stats")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign stats: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign stats: {e}")
+            return False
+
+    def update_campaign_config(self, campaign_id: str, user_id: str, new_config: Dict[str, Any]) -> bool:
+        """
+        Update campaign config. Validates ownership via project.
+
+        Overwrites the existing config with the provided dictionary.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} config")
+        try:
+            # Verify ownership
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE campaigns
+                    SET config = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                    """,
+                    (json.dumps(new_config), campaign_id),
+                )
+
+            self.logger.info(f"Successfully updated campaign {campaign_id} config")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign config: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign config: {e}")
+            return False
 
     # ====================================================
     # SECTION C: SCALABLE ENTITY STORAGE
@@ -739,8 +1002,8 @@ class MemoryManager:
     # ====================================================
     # SECTION D: SEMANTIC MEMORY (RAG)
     # ====================================================
-    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None):
-        """Saves embeddings with Project Context."""
+    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None, campaign_id: str = None):
+        """Saves embeddings with Project and Campaign Context."""
         if not self.chroma_enabled or not self.vector_collection:
             self.logger.debug("ChromaDB not available, skipping context save")
             return
@@ -749,6 +1012,8 @@ class MemoryManager:
             metadata['tenant_id'] = tenant_id
             if project_id:
                 metadata['project_id'] = project_id
+            if campaign_id:
+                metadata['campaign_id'] = campaign_id
             
             # Manually embed using our Google embedding function to ensure consistency
             embeddings = self.embedding_fn([text])
@@ -762,21 +1027,38 @@ class MemoryManager:
         except Exception as e:
             self.logger.warning(f"Failed to save context to ChromaDB: {e}")
 
-    def query_context(self, tenant_id: str, query: str, n_results: int = 3, project_id: str = None):
-        """Retrieves embeddings filtered by Project."""
+    def query_context(self, tenant_id: str, query: str, n_results: int = 3, project_id: str = None, campaign_id: str = None, return_metadata: bool = False):
+        """Retrieves embeddings filtered by Project and Campaign.
+        
+        Args:
+            tenant_id: User ID for RLS
+            query: Search query text
+            n_results: Number of results to return
+            project_id: Optional project filter
+            campaign_id: Optional campaign filter
+            return_metadata: If True, returns list of dicts with 'text' and 'metadata'. If False, returns list of text strings.
+        
+        Returns:
+            List of text strings (if return_metadata=False) or list of dicts with 'text' and 'metadata' (if return_metadata=True)
+        """
         if not self.chroma_enabled or not self.vector_collection:
             self.logger.debug("ChromaDB not available, returning empty results")
             return []
             
         try:
-            where_clause = {"tenant_id": tenant_id}
+            # Build where clause with tenant_id, project_id, and campaign_id filters
+            where_conditions = [{"tenant_id": tenant_id}]
+            
             if project_id:
-                where_clause = {
-                    "$and": [
-                        {"tenant_id": tenant_id},
-                        {"project_id": project_id}
-                    ]
-                }
+                where_conditions.append({"project_id": project_id})
+            
+            if campaign_id:
+                where_conditions.append({"campaign_id": campaign_id})
+            
+            if len(where_conditions) > 1:
+                where_clause = {"$and": where_conditions}
+            else:
+                where_clause = where_conditions[0]
             
             # Manually embed query using our Google embedding function to ensure consistency
             query_embedding = self.embedding_fn.embed_query(query)
@@ -786,7 +1068,18 @@ class MemoryManager:
                 n_results=n_results,
                 where=where_clause
             )
-            return results['documents'][0] if results['documents'] else []
+            
+            if return_metadata:
+                # Return list of dicts with text and metadata
+                documents = results.get('documents', [[]])[0] if results.get('documents') else []
+                metadatas = results.get('metadatas', [[]])[0] if results.get('metadatas') else []
+                return [
+                    {"text": doc, "metadata": meta}
+                    for doc, meta in zip(documents, metadatas)
+                ]
+            else:
+                # Return list of text strings (backward compatible)
+                return results['documents'][0] if results['documents'] else []
         except Exception as e:
             self.logger.warning(f"Failed to query context from ChromaDB: {e}")
             return []

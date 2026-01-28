@@ -30,17 +30,34 @@ class LeadGenManager(BaseAgent):
         project_id = self.project_id
         user_id = self.user_id
         
+        # Get campaign_id from params or injected context
+        campaign_id = input_data.params.get("campaign_id") or self.campaign_id
+        
+        if not campaign_id:
+            return AgentOutput(
+                status="error", 
+                message="campaign_id is required. Please create a campaign first or provide campaign_id in params."
+            )
+        
         # Verify project ownership (security: defense-in-depth)
         if not memory.verify_project_ownership(user_id, project_id):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
         
+        # Verify campaign ownership
+        campaign = memory.get_campaign(campaign_id, user_id)
+        if not campaign:
+            return AgentOutput(status="error", message="Campaign not found or access denied.")
+        
+        if campaign.get('module') != 'lead_gen':
+            return AgentOutput(status="error", message=f"Campaign {campaign_id} is not a Lead Gen campaign.")
+        
         action = input_data.params.get("action", "dashboard_stats")
 
-        # 1. Use injected config (loaded by kernel)
+        # 1. Use injected config (loaded by kernel - already merged DNA + campaign)
         config = self.config
         if not config.get('modules', {}).get('lead_gen', {}).get('enabled', False):
-            return AgentOutput(status="error", message="Lead Gen module is disabled in DNA.")
+            return AgentOutput(status="error", message="Lead Gen module is not enabled in project DNA.")
 
         self.logger.info(f"💼 Manager executing action: {action} for {project_id}")
 
@@ -59,7 +76,7 @@ class LeadGenManager(BaseAgent):
                             AgentInput(
                                 task="sniper_agent",
                                 user_id=user_id,
-                                params={"mode": "aggressive", "project_id": project_id} # Scrape everything
+                                params={"mode": "aggressive", "project_id": project_id, "campaign_id": campaign_id} # Scrape everything
                             )
                         ),
                         timeout=300  # 5 minutes max per task
@@ -80,10 +97,11 @@ class LeadGenManager(BaseAgent):
                             limit=100
                         )
                         
-                        # Filter leads that don't have a score yet
+                        # Filter leads by campaign_id and that don't have a score yet
                         unscored_leads = [
                             lead for lead in all_leads 
-                            if lead.get('metadata', {}).get('score') is None
+                            if lead.get('metadata', {}).get('campaign_id') == campaign_id
+                            and lead.get('metadata', {}).get('score') is None
                         ]
                         
                         # Batch process (limit to 10 at a time to avoid timeout)
@@ -131,7 +149,7 @@ class LeadGenManager(BaseAgent):
                             AgentInput(
                                 task="reactivator_agent",
                                 user_id=user_id,
-                                params={"limit": 50, "project_id": project_id} # Safety limit: 50 SMS at a time
+                                params={"limit": 50, "project_id": project_id, "campaign_id": campaign_id} # Safety limit: 50 SMS at a time
                             )
                         ),
                         timeout=300  # 5 minutes max per task
@@ -157,7 +175,7 @@ class LeadGenManager(BaseAgent):
                             AgentInput(
                                 task="sales_agent",
                                 user_id=user_id,
-                                params={"action": "instant_call", "lead_id": lead_id, "project_id": project_id}
+                                params={"action": "instant_call", "lead_id": lead_id, "project_id": project_id, "campaign_id": campaign_id}
                             )
                         ),
                         timeout=60  # 1 minute max for call setup
@@ -298,19 +316,21 @@ Return only valid JSON, no markdown formatting."""
             # --- ACTION 5: DASHBOARD STATS (Default) ---
             # Returns data for the Frontend Graphs
             else:
-                stats = self._get_stats(project_id, user_id)
+                stats = self._get_stats(project_id, user_id, campaign_id)
                 return AgentOutput(status="success", data=stats, message="Stats retrieved.")
 
         except Exception as e:
             self.logger.error(f"❌ Manager Failed: {e}", exc_info=True)
             return AgentOutput(status="error", message=str(e))
 
-    def _get_stats(self, project_id, user_id):
+    def _get_stats(self, project_id, user_id, campaign_id):
         """
         Helper to count leads for the dashboard with enhanced analytics.
         """
         # Fetch all leads for this project (use user_id, not hardcoded "admin")
-        leads = memory.get_entities(tenant_id=user_id, entity_type="lead", project_id=project_id, limit=1000)
+        all_leads = memory.get_entities(tenant_id=user_id, entity_type="lead", project_id=project_id, limit=1000)
+        # Filter by campaign_id
+        leads = [l for l in all_leads if l.get('metadata', {}).get('campaign_id') == campaign_id]
         
         if not leads:
             return {

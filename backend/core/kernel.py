@@ -319,11 +319,14 @@ class Kernel:
                     message="Failed to verify project ownership."
                 )
 
-            # Load DNA Profile
+            # Extract campaign_id from params if present
+            campaign_id = packet.params.get("campaign_id")
+            
+            # Load DNA Profile (and campaign config if campaign_id provided)
             from backend.core.config import ConfigLoader
             try:
                 config_loader = ConfigLoader()
-                user_config = config_loader.load(niche)
+                user_config = config_loader.load(niche, campaign_id=campaign_id)
                 
                 # Check for config errors
                 if not isinstance(user_config, dict):
@@ -352,6 +355,7 @@ class Kernel:
             agent.config = user_config
             agent.project_id = niche
             agent.user_id = packet.user_id
+            agent.campaign_id = campaign_id  # Inject campaign_id if present
             
             # Validate injected context
             if not agent.config or not isinstance(agent.config, dict):

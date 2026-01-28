@@ -14,6 +14,7 @@ class BaseAgent(ABC):
         self.config = config or {}
         self.project_id: Optional[str] = None  # Injected by kernel
         self.user_id: Optional[str] = None  # Injected by kernel
+        self.campaign_id: Optional[str] = None  # Injected by kernel (if campaign-scoped)
         self.logger = logging.getLogger(f"Apex.{name}")
         
     def log(self, message: str):

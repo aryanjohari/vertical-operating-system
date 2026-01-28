@@ -1,0 +1,49 @@
+# =========================================================
+# APEX pSEO CAMPAIGN v4.0 (The Content Engine)
+# =========================================================
+
+# 1. TARGETING (The Scope)
+targeting:
+  service_focus: "REQUIRED"       # e.g., "Emergency Bail" or "Hot Water Cylinder"
+  geo_targets:                    # The Fence
+    cities: ["Auckland"]
+    suburbs: ["Manukau", "Henderson", "Albany"]
+
+# 2. INTEL MINING (The "Anti-Hallucination" Layer)
+# The Miner must fill these variables before writing starts.
+mining_requirements:
+  
+  # A. OFFICIAL DATA (Builds Authority)
+  regulatory:
+    enabled: true
+    queries: 
+      - "official filing fee for {service} in {city}"
+      - "council permit rules for {service} {city}"
+    extraction_goals: ["cost", "processing_time", "official_source_url"]
+
+  # B. COMPETITOR PRICING (Builds Value)
+  competitor:
+    enabled: true
+    queries:
+      - "average cost of {service} {city}"
+      - "{service} price list {city}"
+    extraction_goals: ["price_range", "callout_fee"]
+
+  # C. LOCAL PROOF (Builds Trust)
+  geo_context:
+    enabled: true
+    target_anchors: ["Court", "Police Station", "Hardware Store", "Council Building"]
+
+# 3. ASSET FABRICATION (The Conversion Elements)
+assets:
+  - type: "comparison_table"
+    title: "Us vs. Average {City} Rates"
+    data_source: "competitor_mining"
+  
+  - type: "regulatory_alert"
+    title: "⚠️ Important {City} Council Rule"
+    data_source: "regulatory_mining"
+
+  - type: "lead_magnet"
+    style: "urgent"
+    text: "Get a Free Quote in 60 Seconds"

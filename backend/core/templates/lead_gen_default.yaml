@@ -1,0 +1,40 @@
+# =========================================================
+# APEX LEAD GEN CAMPAIGN v4.0 (The Hunter)
+# =========================================================
+
+# 1. THE SNIPER (Targeting Logic)
+sniper:
+  enabled: true
+  platforms: ["facebook_groups", "trademe_jobs", "neighborly"]
+  
+  # Keywords to watch for in real-time
+  search_terms: 
+    - "looking for {service}"
+    - "recommend a {service}"
+    - "urgent help needed {service}"
+  
+  # Geographic filtering to prevent false positives
+  geo_filter: ["Auckland", "Manukau", "North Shore"]
+  
+  # Negative keywords to ignore (spam/competitors)
+  exclusions: ["cheap", "student", "DIY", "hiring"]
+
+# 2. THE ENGAGEMENT (The Hook)
+outreach:
+  mode: "auto_comment"            # Options: auto_comment, dm_request, notify_only
+  
+  # The AI rotates these templates to avoid spam detection
+  response_templates:
+    - "Hi [Name], we specialize in {service} in [Location]. We can be there in 1 hr. Call: [Phone]"
+    - "[Name], check out our 5-star reviews for {service}. We have a slot open today."
+
+# 3. THE SALES BRIDGE (Speed-to-Lead)
+bridge:
+  enabled: true
+  destination_phone: "REQUIRED"   # The Client's Mobile
+  
+  # "Whisper" text played to the Client when they pick up
+  whisper_text: "Apex Lead Alert. Potential customer [Name] found on [Platform]. Press 1 to connect."
+  
+  # SMS sent to Client if they miss the call
+  sms_alert: "🔥 HOT LEAD: [Name] asked for {service}. Click to call: [Link]"
