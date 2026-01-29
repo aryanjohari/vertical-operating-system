@@ -4,6 +4,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
+from backend.core.exceptions import ProjectAccessDenied
 
 class JanitorAgent(BaseAgent):
     def __init__(self):
@@ -18,6 +19,8 @@ class JanitorAgent(BaseAgent):
         - Scans data/logs/ and deletes files older than 30 days
         - Scans downloads/ and deletes files older than 24 hours
         """
+        if self.user_id != "system":
+            raise ProjectAccessDenied("Janitor is a system-only agent.")
         self.logger.info("🧹 Starting cleanup operation...")
         
         deleted_files = []

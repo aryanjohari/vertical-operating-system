@@ -275,6 +275,23 @@ class MemoryManager:
             self.logger.error(f"Unexpected error checking user existence for {user_id}: {e}")
             return False
 
+    def health_check(self) -> bool:
+        """
+        Runs a simple query to verify database connectivity.
+        Returns True if the database is reachable, False otherwise.
+        """
+        try:
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database health check failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Database health check failed: {e}")
+            return False
+
     def verify_user(self, email, password):
         self.logger.debug(f"Verifying user credentials for {email}")
         try:

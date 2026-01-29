@@ -120,7 +120,7 @@ async def update_dna_config(
             raise HTTPException(status_code=403, detail="Project not found or access denied")
 
         config_loader = ConfigLoader()
-        config_loader.save_dna(project_id, config)
+        config_loader.save_dna_custom(project_id, config)
 
         logger.info(f"Updated DNA config for project {project_id} by user {user_id}")
         return {"success": True, "message": "DNA configuration updated successfully"}

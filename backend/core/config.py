@@ -32,13 +32,30 @@ class Settings(BaseSettings):
     Uses Pydantic BaseSettings for automatic .env file loading.
     """
     SERPER_API_KEY: str = ""
-    
+    # Billing: prices (USD) and default project limit; overridable via .env
+    BILLING_TWILIO_VOICE: float = 0.05
+    BILLING_GEMINI_TOKEN: float = 0.001
+    BILLING_DEFAULT_PROJECT_LIMIT: float = 50.0
+
     model_config = ConfigDict(
         env_file=_ENV_FILE_PATH,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore"  # Ignore extra fields from .env that aren't defined in this class
     )
+
+    @property
+    def BILLING_PRICE_LIST(self) -> Dict[str, float]:
+        """Price list for usage billing (USD per unit). Keys: twilio_voice, gemini_token."""
+        return {
+            "twilio_voice": self.BILLING_TWILIO_VOICE,
+            "gemini_token": self.BILLING_GEMINI_TOKEN,
+        }
+
+    @property
+    def DEFAULT_PROJECT_LIMIT(self) -> float:
+        """Default monthly spend limit per project (USD)."""
+        return self.BILLING_DEFAULT_PROJECT_LIMIT
 
 # Singleton settings instance
 settings = Settings()
@@ -196,7 +213,7 @@ class ConfigLoader:
         self.logger.debug(f"DNA loaded successfully for project: {project_id}")
         return config
 
-    def save_dna(self, project_id: str, config: Dict[str, Any]) -> None:
+    def save_dna_custom(self, project_id: str, config: Dict[str, Any]) -> None:
         """
         Saves DNA overrides to dna.custom.yaml for the project. Creates profile dir if needed.
         Invalidates cache for (project_id, None).
@@ -210,6 +227,33 @@ class ConfigLoader:
         if k in ConfigLoader._cache:
             del ConfigLoader._cache[k]
         self.logger.debug(f"Saved DNA custom config for project {project_id}")
+
+    def save_dna(self, project_id: str, dna: Dict[str, Any]) -> None:
+        """
+        Saves generated DNA to dna.generated.yaml for the project. Creates profile dir if needed.
+        Invalidates cache for (project_id, None).
+        """
+        profile_path = os.path.join(self.profiles_dir, project_id)
+        os.makedirs(profile_path, exist_ok=True)
+        gen_path = os.path.join(profile_path, "dna.generated.yaml")
+        with open(gen_path, "w", encoding="utf-8") as f:
+            yaml.dump(dna, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        k = (project_id, None)
+        if k in ConfigLoader._cache:
+            del ConfigLoader._cache[k]
+        self.logger.debug(f"Saved DNA generated config for project {project_id}")
+
+    def save_campaign(self, project_id: str, campaign_id: str, config: Dict[str, Any]) -> None:
+        """
+        Saves campaign config to profiles_dir/project_id/campaigns/{campaign_id}.yaml.
+        Creates campaign dir if needed.
+        """
+        campaign_dir = os.path.join(self.profiles_dir, project_id, "campaigns")
+        os.makedirs(campaign_dir, exist_ok=True)
+        campaign_path = os.path.join(campaign_dir, f"{campaign_id}.yaml")
+        with open(campaign_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        self.logger.debug(f"Saved campaign config for {campaign_id} in project {project_id}")
 
     def load_campaign_config(self, campaign_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """

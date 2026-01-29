@@ -282,28 +282,16 @@ OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not incl
             
             # Ensure project_id in DNA matches provided project_id
             parsed['identity']['project_id'] = project_id
-            
-            # 1. Save File to Disk
-            # Use absolute path from project root
-            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-            path = os.path.join(base_dir, "data", "profiles", project_id)
-            
+
+            # 1. Save DNA to disk via ConfigLoader (no direct file I/O in agent)
             try:
-                os.makedirs(path, exist_ok=True)
-            except OSError as e:
-                self.logger.error(f"Failed to create profile directory {path}: {e}")
+                from backend.core.config import ConfigLoader
+                ConfigLoader().save_dna(project_id, parsed)
+                self.logger.info(f"Saved DNA for project: {project_id}")
+            except (IOError, OSError) as e:
+                self.logger.error(f"Failed to save DNA for project {project_id}: {e}")
                 return False
-            
-            file_path = os.path.join(path, "dna.generated.yaml")
-            try:
-                with open(file_path, "w", encoding="utf-8") as f:
-                    # Write validated/updated YAML
-                    yaml.dump(parsed, f, default_flow_style=False, allow_unicode=True)
-                self.logger.info(f"Saved DNA file: {file_path}")
-            except IOError as e:
-                self.logger.error(f"Failed to write DNA file {file_path}: {e}")
-                return False
-            
+
             # 2. Register in SQLite
             niche = parsed.get('identity', {}).get('niche', 'General')
             try:
@@ -598,17 +586,10 @@ OUTPUT: Return ONLY the complete, valid YAML inside ```yaml``` tags. Do not incl
                     self.logger.error(f"Failed to create campaign in database: {e}", exc_info=True)
                     return AgentOutput(status="error", message="Failed to create campaign. Please try again.")
                 
-                # Save campaign YAML to disk (backup)
-                self.log("Saving campaign config to disk...")
+                # Save campaign YAML to disk via ConfigLoader (no direct file I/O in agent)
                 try:
-                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-                    campaign_dir = os.path.join(base_dir, "data", "profiles", project_id, "campaigns")
-                    os.makedirs(campaign_dir, exist_ok=True)
-                    
-                    campaign_file = os.path.join(campaign_dir, f"{campaign_id}.yaml")
-                    with open(campaign_file, "w", encoding="utf-8") as f:
-                        yaml.dump(parsed_yaml, f, default_flow_style=False, allow_unicode=True)
-                    self.logger.info(f"Saved campaign config to: {campaign_file}")
+                    config_loader.save_campaign(project_id, campaign_id, parsed_yaml)
+                    self.logger.info(f"Saved campaign config for {campaign_id}")
                 except Exception as e:
                     self.logger.warning(f"Failed to save campaign config to disk: {e}")
                     # Continue anyway - DB is the source of truth
