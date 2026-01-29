@@ -1,14 +1,15 @@
 from dotenv import load_dotenv
-load_dotenv() # backend/main.py
+load_dotenv() 
 
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from typing import Optional, Dict, Any, List
 from backend.core.models import AgentInput, AgentOutput, Entity
 from backend.core.kernel import kernel
 from backend.core.memory import memory
+from backend.core.schemas import TASK_SCHEMA_MAP
 from backend.core.logger import setup_logging
 from backend.core.auth import (
     get_current_user,
@@ -30,14 +31,11 @@ import yaml
 from datetime import datetime
 from backend.core.db import get_db_factory
 
-# Define BASE_DIR for consistent path resolution
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Initialize logging system BEFORE app initialization
 setup_logging()
 logger = logging.getLogger("Apex.Main")
 
-# Scheduler for background jobs
 scheduler = None
 
 @asynccontextmanager
@@ -45,7 +43,6 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for startup and shutdown events."""
     global scheduler
     
-    # Startup
     logger.info("🚀 Starting Apex Sovereign OS...")
     
     # Ensure usage_ledger table exists before dashboard queries
@@ -383,6 +380,17 @@ async def run_command(
         # Override user_id from token (security: never trust client-supplied user_id)
         payload.user_id = user_id
         
+        # Validate params against task schema (return 400 before sync or async path)
+        agent_key = kernel._resolve_agent(payload.task)
+        if agent_key:
+            schema_class = TASK_SCHEMA_MAP.get(agent_key)
+            if schema_class is not None:
+                try:
+                    schema_class.model_validate(payload.params or {})
+                except ValidationError as e:
+                    logger.warning(f"Params validation failed for task {payload.task}: {e}")
+                    raise HTTPException(status_code=400, detail=e.errors())
+        
         # Define heavy tasks that should run in background
         HEAVY_TASKS = ["sniper_agent", "sales_agent", "reactivator_agent", "scout_anchors", "strategist_run"]
         
@@ -497,6 +505,9 @@ async def run_command(
             "timestamp": result.timestamp.isoformat() if hasattr(result.timestamp, 'isoformat') else str(result.timestamp),
             "error_details": None
         }
+    except ValidationError as e:
+        logger.warning(f"Params validation failed in /api/run: {e}")
+        raise HTTPException(status_code=400, detail=e.errors())
     except ImportError as e:
         # Catch missing dependencies (e.g., ChromaDB not installed)
         error_trace = traceback.format_exc()

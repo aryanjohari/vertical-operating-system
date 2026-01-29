@@ -2,8 +2,10 @@
 import logging
 import importlib
 from typing import Dict, Optional
+from pydantic import ValidationError
 from backend.core.models import AgentInput, AgentOutput
 from backend.core.registry import AgentRegistry
+from backend.core.schemas import TASK_SCHEMA_MAP
 from backend.core.memory import memory
 
 class Kernel:
@@ -183,6 +185,15 @@ class Kernel:
                     status="error",
                     message=f"Agent '{agent_key}' is not available. Registration may have failed."
                 )
+
+            # --- 1b. VALIDATE PARAMS (strict Pydantic) ---
+            schema_class = TASK_SCHEMA_MAP.get(agent_key)
+            if schema_class is not None:
+                try:
+                    schema_class.model_validate(packet.params or {})
+                except ValidationError as e:
+                    self.logger.warning(f"Params validation failed for task {packet.task}: {e}")
+                    raise
 
             # --- 2. BYPASS RULE: System Agents (No DNA Needed) ---
             # System agents bypass config loading because they don't need project context.
