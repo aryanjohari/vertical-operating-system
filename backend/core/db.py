@@ -6,10 +6,12 @@ Automatically detects database type from DATABASE_URL environment variable.
 If DATABASE_URL is set and starts with postgres:// or postgresql://, uses PostgreSQL.
 Otherwise, falls back to SQLite for local development.
 """
-import os
+import asyncio
 import logging
+import os
+import sys
+from contextlib import asynccontextmanager, contextmanager
 from typing import Optional, Any, Dict
-from contextlib import contextmanager
 
 logger = logging.getLogger("ApexDB")
 
@@ -34,13 +36,27 @@ class DatabaseFactory:
         self.db_type = self._detect_db_type()
         self.logger = logging.getLogger("ApexDB")
         
+        self.pool = None  # PostgreSQL connection pool; None for SQLite or fallback
         if self.db_type == "postgresql":
             try:
                 import psycopg2
                 import psycopg2.extras
                 self.psycopg2 = psycopg2
                 self.psycopg2_extras = psycopg2.extras
-                self.logger.info("✅ Database: PostgreSQL (via psycopg2)")
+                database_url = os.getenv("DATABASE_URL")
+                if database_url:
+                    try:
+                        self.pool = psycopg2.pool.SimpleConnectionPool(
+                            minconn=1, maxconn=10, dsn=database_url
+                        )
+                        self.logger.info("✅ Database: PostgreSQL (via psycopg2, connection pool)")
+                    except Exception as e:
+                        self.logger.warning(f"Pool creation failed, using non-pooled: {e}")
+                        self.pool = None
+                else:
+                    self.logger.info("✅ Database: PostgreSQL (via psycopg2, no pool: DATABASE_URL not set)")
+                if not self.pool and database_url:
+                    self.logger.info("✅ Database: PostgreSQL (via psycopg2, non-pooled fallback)")
             except ImportError:
                 self.logger.error("❌ psycopg2 not installed. Install with: pip install psycopg2-binary")
                 raise ImportError("psycopg2 is required for PostgreSQL support")
@@ -60,19 +76,20 @@ class DatabaseFactory:
     
     def get_connection(self):
         """
-        Get a database connection.
+        Get a database connection (from pool for PostgreSQL when pool is used).
         
         Returns:
             Connection object (sqlite3.Connection or psycopg2.connection)
         """
         if self.db_type == "postgresql":
-            database_url = os.getenv("DATABASE_URL")
-            conn = self.psycopg2.connect(database_url)
-            # Enable autocommit for PostgreSQL (similar to SQLite behavior)
+            if self.pool:
+                conn = self.pool.getconn()
+            else:
+                database_url = os.getenv("DATABASE_URL")
+                conn = self.psycopg2.connect(database_url)
             conn.autocommit = False
             return conn
         else:
-            # SQLite
             if not self.db_path:
                 raise ValueError("db_path must be provided for SQLite")
             return self.sqlite3.connect(self.db_path)
@@ -113,8 +130,53 @@ class DatabaseFactory:
             if cursor:
                 cursor.close()
             if conn:
-                conn.close()
-    
+                if self.db_type == "postgresql" and self.pool:
+                    self.pool.putconn(conn)
+                else:
+                    conn.close()
+
+    def close_pool(self):
+        """Close the connection pool (PostgreSQL only). No-op for SQLite."""
+        if getattr(self, "pool", None):
+            try:
+                self.pool.closeall()
+                self.logger.debug("Connection pool closed")
+            except Exception as e:
+                self.logger.warning(f"Error closing pool: {e}")
+            self.pool = None
+
+    def return_connection(self, conn):
+        """Return a connection to the pool (PostgreSQL with pool) or close it (SQLite / non-pooled)."""
+        if conn is None:
+            return
+        if self.db_type == "postgresql" and self.pool:
+            self.pool.putconn(conn)
+        else:
+            conn.close()
+
+    @asynccontextmanager
+    async def get_session(self, commit: bool = True):
+        """
+        Async context manager for a DB cursor. Runs sync get_cursor in a thread pool
+        so that on exit (including async cancellation) the connection is always
+        returned to the pool. Use when you need cancellation-safe session handling.
+        """
+        ctx = self.get_cursor(commit=commit)
+        cursor = None
+        try:
+            cursor = await asyncio.to_thread(ctx.__enter__)
+        except Exception:
+            try:
+                ctx.__exit__(*sys.exc_info())
+            except Exception:
+                pass
+            raise
+        try:
+            yield cursor
+        finally:
+            exc_type, exc_val, exc_tb = sys.exc_info()
+            await asyncio.to_thread(ctx.__exit__, exc_type, exc_val, exc_tb)
+
     def get_placeholder(self) -> str:
         """Get SQL placeholder for parameterized queries."""
         return "%s" if self.db_type == "postgresql" else "?"

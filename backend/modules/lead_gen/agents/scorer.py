@@ -82,7 +82,7 @@ class LeadScorerAgent(BaseAgent):
             metadata['priority'] = priority
             
             # Save updated metadata
-            success = memory.update_entity(lead_id, metadata)
+            success = memory.update_entity(lead_id, metadata, self.user_id)
             
             if not success:
                 return AgentOutput(status="error", message="Failed to update lead score.")

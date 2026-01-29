@@ -1,81 +1,70 @@
 # backend/core/registry.py
+from typing import Any, Dict, List
 
 # --- 1. THE CODE REGISTRY (For the Kernel) ---
+def _entry(module_path: str, class_name: str, *, is_system_agent: bool = False, is_heavy: bool = False, is_system_agent_needs_context: bool = False) -> Dict[str, Any]:
+    """Build a registry entry with metadata."""
+    return {
+        "module_path": module_path,
+        "class_name": class_name,
+        "is_system_agent": is_system_agent,
+        "is_heavy": is_heavy,
+        "is_system_agent_needs_context": is_system_agent_needs_context,
+    }
+
+
 class AgentRegistry:
     """
-    Defines WHERE the code lives for each agent.
-    Format: "key": ("module_path", "ClassName")
-    
-    CRITICAL NOTE: 
-    The 'key' should match the task name exactly for clarity.
-    System agents (like onboarding) bypass DNA loading because they create the config.
+    Defines WHERE the code lives for each agent and metadata (system/heavy).
+    Format: "key": {"module_path", "class_name", "is_system_agent", "is_heavy", "is_system_agent_needs_context"}
     """
     DIRECTORY = {
-        # --- MODULE: ONBOARDING (System Agent - Creates DNA) ---
-        "onboarding": ("backend.modules.onboarding.genesis", "OnboardingAgent"),
-
-        # --- MODULE: APEX GROWTH (pSEO) ---
-        # The Manager (Orchestrator)
-        "manager": ("backend.modules.pseo.manager", "ManagerAgent"),
-        
-        # The Workers (Task names match Manager's _execute_task calls)
-        "scout_anchors": ("backend.modules.pseo.agents.scout", "ScoutAgent"),
-        "strategist_run": ("backend.modules.pseo.agents.strategist", "StrategistAgent"),
-        "write_pages": ("backend.modules.pseo.agents.writer", "WriterAgent"),
-        "critic_review": ("backend.modules.pseo.agents.critic", "CriticAgent"),
-        "librarian_link": ("backend.modules.pseo.agents.librarian", "LibrarianAgent"),
-        "enhance_media": ("backend.modules.pseo.agents.media", "MediaAgent"),
-        "enhance_utility": ("backend.modules.lead_gen.agents.utility", "UtilityAgent"),
-        "publish": ("backend.modules.pseo.agents.publisher", "PublisherAgent"),
-        "analytics_audit": ("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),
-
-        # --- MODULE: APEX CONNECT (Lead Gen) ---
-        # The Manager (Orchestrator)
-        "lead_gen_manager": ("backend.modules.lead_gen.manager", "LeadGenManager"),
-        
-        # The Workers
-        "sniper_agent": ("backend.modules.lead_gen.agents.sniper", "SniperAgent"),
-        "sales_agent": ("backend.modules.lead_gen.agents.sales", "SalesAgent"),
-        "reactivator_agent": ("backend.modules.lead_gen.agents.reactivator", "ReactivatorAgent"),
-        "lead_scorer": ("backend.modules.lead_gen.agents.scorer", "LeadScorerAgent"),
-        # "twilio": ("backend.modules.lead_gen.agents.twilio", "TwilioAgent"),
-
-        # --- MODULE: SYSTEM OPERATIONS (Supervisor) ---
-        # The Manager (Orchestrator)
-        "system_ops_manager": ("backend.modules.system_ops.manager", "SystemOpsManager"),
-        
-        # The Workers
-        "health_check": ("backend.modules.system_ops.agents.sentinel", "SentinelAgent"),
-        "log_usage": ("backend.modules.system_ops.agents.accountant", "AccountantAgent"),
-        "cleanup": ("backend.modules.system_ops.agents.janitor", "JanitorAgent"),
+        "onboarding": _entry("backend.modules.onboarding.genesis", "OnboardingAgent", is_system_agent=True),
+        "manager": _entry("backend.modules.pseo.manager", "ManagerAgent"),
+        "scout_anchors": _entry("backend.modules.pseo.agents.scout", "ScoutAgent", is_heavy=True),
+        "strategist_run": _entry("backend.modules.pseo.agents.strategist", "StrategistAgent", is_heavy=True),
+        "write_pages": _entry("backend.modules.pseo.agents.writer", "WriterAgent"),
+        "critic_review": _entry("backend.modules.pseo.agents.critic", "CriticAgent"),
+        "librarian_link": _entry("backend.modules.pseo.agents.librarian", "LibrarianAgent"),
+        "enhance_media": _entry("backend.modules.pseo.agents.media", "MediaAgent"),
+        "enhance_utility": _entry("backend.modules.lead_gen.agents.utility", "UtilityAgent"),
+        "publish": _entry("backend.modules.pseo.agents.publisher", "PublisherAgent"),
+        "analytics_audit": _entry("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),
+        "lead_gen_manager": _entry("backend.modules.lead_gen.manager", "LeadGenManager"),
+        "sniper_agent": _entry("backend.modules.lead_gen.agents.sniper", "SniperAgent", is_heavy=True),
+        "sales_agent": _entry("backend.modules.lead_gen.agents.sales", "SalesAgent", is_heavy=True),
+        "reactivator_agent": _entry("backend.modules.lead_gen.agents.reactivator", "ReactivatorAgent", is_heavy=True),
+        "lead_scorer": _entry("backend.modules.lead_gen.agents.scorer", "LeadScorerAgent"),
+        "system_ops_manager": _entry("backend.modules.system_ops.manager", "SystemOpsManager"),
+        "health_check": _entry("backend.modules.system_ops.agents.sentinel", "SentinelAgent", is_system_agent=True),
+        "log_usage": _entry("backend.modules.system_ops.agents.accountant", "AccountantAgent", is_system_agent=True, is_system_agent_needs_context=True),
+        "cleanup": _entry("backend.modules.system_ops.agents.janitor", "JanitorAgent", is_system_agent=True),
     }
+
+    # Manager actions that should run as heavy (background); key = task name, value = list of action strings
+    HEAVY_ACTIONS_BY_TASK: Dict[str, List[str]] = {
+        "lead_gen_manager": ["hunt_sniper", "ignite_reactivation", "instant_call"],
+    }
+
 
 # --- 2. THE FEATURE REGISTRY (For the Frontend) ---
 class ModuleManifest:
-    """
-    The App Store Catalog.
-    """
+    """The App Store Catalog."""
     CATALOG = {
         "local_seo": {
             "name": "Apex Growth (pSEO)",
             "description": "Dominate Google Maps with auto-generated location pages.",
-            # Updated Agent List
-            "agents": ["scout", "strategist", "writer", "critic", "librarian", "media", "publisher", "analytics"], 
-            "config_required": [
-                "anchor_entities",       
-                "geo_scope"
-            ]
+            "agents": ["scout", "strategist", "writer", "critic", "librarian", "media", "publisher", "analytics"],
+            "config_required": ["anchor_entities", "geo_scope"],
         },
         "lead_gen": {
             "name": "Apex Connect (Lead Gen)",
             "description": "24/7 Lead Capture & Voice Routing.",
             "agents": ["utility", "twilio"],
-            "config_required": [
-                "operations.voice_agent.forwarding_number"          
-            ]
-        }
+            "config_required": ["operations.voice_agent.forwarding_number"],
+        },
     }
 
     @staticmethod
     def get_user_menu():
-        return {key: data['name'] for key, data in ModuleManifest.CATALOG.items()}
+        return {key: data["name"] for key, data in ModuleManifest.CATALOG.items()}

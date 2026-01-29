@@ -7,9 +7,9 @@ from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
 
-# Import both tools
-from backend.core.services.maps_sync import run_scout_sync
-from backend.core.services.search_sync import run_search_sync
+# Import async entrypoints to avoid blocking the thread pool
+from backend.core.services.maps_sync import run_scout_async
+from backend.core.services.search_sync import run_search_async
 
 class ScoutAgent(BaseAgent):
     def __init__(self):
@@ -212,8 +212,7 @@ class ScoutAgent(BaseAgent):
                     self.logger.info(f"📍 STEP 1/2: Running map_sync for {len(map_queries)} anchor queries...")
                     self.logger.info(f"📍 Map queries: {map_queries[:3]}{'...' if len(map_queries) > 3 else ''}")
                     try:
-                        task_maps = asyncio.to_thread(run_scout_sync, map_queries)
-                        map_results_raw = await task_maps
+                        map_results_raw = await run_scout_async(map_queries)
                         self.logger.info(f"✅ Map sync completed: {map_results_raw.get('message', 'Unknown status')}")
                     except Exception as e:
                         map_error = str(e)
@@ -232,8 +231,7 @@ class ScoutAgent(BaseAgent):
                     sample_queries = [q.get("query", q) if isinstance(q, dict) else q for q in search_queries[:3]]
                     self.logger.info(f"🔎 Sample queries: {sample_queries}{'...' if len(search_queries) > 3 else ''}")
                     try:
-                        task_search = asyncio.to_thread(run_search_sync, search_queries)
-                        search_results_raw = await task_search
+                        search_results_raw = await run_search_async(search_queries)
                         self.logger.info(f"📊 Search sync completed - received {len(search_results_raw) if isinstance(search_results_raw, list) else 0} results")
                         if not isinstance(search_results_raw, list):
                             self.logger.warning(f"⚠️ Search sync returned non-list result: {type(search_results_raw)}")

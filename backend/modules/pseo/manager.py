@@ -382,7 +382,7 @@ class ManagerAgent(BaseAgent):
                 else:
                     # Default to non-destructive exclusion flag
                     if memory.update_entity(
-                        entity_id=entity_id, new_metadata={"excluded": True}
+                        entity_id=entity_id, new_metadata={"excluded": True}, tenant_id=user_id
                     ):
                         excluded += 1
             except Exception as e:
@@ -417,7 +417,7 @@ class ManagerAgent(BaseAgent):
         for entity_id in ids:
             try:
                 if memory.update_entity(
-                    entity_id=entity_id, new_metadata={"status": target_status}
+                    entity_id=entity_id, new_metadata={"status": target_status}, tenant_id=user_id
                 ):
                     updated += 1
             except Exception as e:

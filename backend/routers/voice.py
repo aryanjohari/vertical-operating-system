@@ -388,7 +388,8 @@ Return only valid JSON, no markdown formatting."""
                     else:
                         logger.warning(f"⚠️ No transcription available for call {call_sid}")
                     
-                    success = memory.update_entity(lead_id, updated_meta)
+                    lead_tenant_id = lead.get("tenant_id") or tenant_id
+                    success = memory.update_entity(lead_id, updated_meta, lead_tenant_id)
                     if success:
                         logger.info(f"💾 Updated lead {lead_id} with call data (status: called, duration: {call_duration}s, recording: {'yes' if recording_url else 'no'}, transcription: {'yes' if transcription_text else 'no'})")
                     else:
@@ -556,7 +557,7 @@ async def handle_transcription(request: Request):
                 if lead:
                     updated_meta = lead['metadata'].copy()
                     updated_meta['call_transcription'] = transcription_text
-                    memory.update_entity(lead['id'], updated_meta)
+                    memory.update_entity(lead['id'], updated_meta, tenant_id)
                     logger.info(f"✅ Updated lead {lead['id']} with transcription")
                 else:
                     logger.warning(f"⚠️ Lead not found for call_sid {call_sid}")

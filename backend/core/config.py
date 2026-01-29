@@ -1,8 +1,9 @@
 # backend/core/config.py
+import time
 import yaml
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
 from dotenv import load_dotenv
@@ -88,6 +89,9 @@ else:
     logger.warning(f"⚠️ Settings: SERPER_API_KEY is empty! .env path: {_ENV_FILE_PATH}, exists: {os.path.exists(_ENV_FILE_PATH)}")
 
 class ConfigLoader:
+    _cache: Dict[Tuple[str, Optional[str]], Dict[str, Any]] = {}
+    _cache_ttl: int = 300
+
     def __init__(self, profiles_dir="data/profiles"):
         self.profiles_dir = profiles_dir
         self.logger = logging.getLogger("Apex.Config")
@@ -95,6 +99,7 @@ class ConfigLoader:
     def load(self, project_id: str, campaign_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Loads DNA + campaign config (if campaign_id provided) and merges them.
+        Caches result in RAM for _cache_ttl seconds (300s).
         Merges: Defaults -> Generated DNA -> Custom Overrides -> Campaign Config
         
         Args:
@@ -104,11 +109,17 @@ class ConfigLoader:
         Returns:
             Merged configuration dictionary
         """
+        k = (project_id, campaign_id)
+        if k in ConfigLoader._cache and time.time() < ConfigLoader._cache[k]["expires_at"]:
+            self.logger.debug(f"Config cache hit for project {project_id}, campaign {campaign_id}")
+            return ConfigLoader._cache[k]["data"]
+
         self.logger.debug(f"Loading config for project {project_id}, campaign {campaign_id}")
         
         # 1. Load DNA (base configuration)
         dna = self.load_dna(project_id)
         if dna.get("error"):
+            ConfigLoader._cache[k] = {"data": dna, "expires_at": time.time() + ConfigLoader._cache_ttl}
             return dna
         
         # 2. If campaign_id provided, load and merge campaign config
@@ -117,10 +128,12 @@ class ConfigLoader:
             if campaign_config:
                 merged = self.merge_config(dna, campaign_config)
                 self.logger.debug(f"Successfully merged DNA + campaign config for campaign {campaign_id}")
+                ConfigLoader._cache[k] = {"data": merged, "expires_at": time.time() + ConfigLoader._cache_ttl}
                 return merged
             else:
                 self.logger.warning(f"Campaign {campaign_id} not found, returning DNA only")
         
+        ConfigLoader._cache[k] = {"data": dna, "expires_at": time.time() + ConfigLoader._cache_ttl}
         return dna
 
     def load_dna(self, project_id: str) -> Dict[str, Any]:
@@ -182,6 +195,21 @@ class ConfigLoader:
         
         self.logger.debug(f"DNA loaded successfully for project: {project_id}")
         return config
+
+    def save_dna(self, project_id: str, config: Dict[str, Any]) -> None:
+        """
+        Saves DNA overrides to dna.custom.yaml for the project. Creates profile dir if needed.
+        Invalidates cache for (project_id, None).
+        """
+        profile_path = os.path.join(self.profiles_dir, project_id)
+        os.makedirs(profile_path, exist_ok=True)
+        custom_path = os.path.join(profile_path, "dna.custom.yaml")
+        with open(custom_path, "w") as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        k = (project_id, None)
+        if k in ConfigLoader._cache:
+            del ConfigLoader._cache[k]
+        self.logger.debug(f"Saved DNA custom config for project {project_id}")
 
     def load_campaign_config(self, campaign_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """

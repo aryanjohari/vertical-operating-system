@@ -163,4 +163,4 @@ class SalesAgent(BaseAgent):
         if ref_id and status == "calling":
             new_meta['call_sid'] = ref_id
             self.logger.debug(f"Stored call_sid {ref_id} in lead {lead_id} metadata")
-        memory.update_entity(lead_id, new_meta)
+        memory.update_entity(lead_id, new_meta, self.user_id)

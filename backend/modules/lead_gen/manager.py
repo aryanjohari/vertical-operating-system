@@ -292,7 +292,7 @@ Return only valid JSON, no markdown formatting."""
                         except Exception as e:
                             self.logger.warning(f"⚠️ Failed to analyze transcription with Gemini: {e}", exc_info=True)
                         
-                        memory.update_entity(lead_id, updated_meta)
+                        memory.update_entity(lead_id, updated_meta, self.user_id)
                         return AgentOutput(
                             status="success",
                             data={

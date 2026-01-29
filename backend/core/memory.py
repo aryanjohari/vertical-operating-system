@@ -341,7 +341,7 @@ class MemoryManager:
                 return result
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching user project for user {user_id}: {e}")
             return None
@@ -365,7 +365,7 @@ class MemoryManager:
                 return results
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching projects for user {user_id}: {e}")
             return []
@@ -509,7 +509,7 @@ class MemoryManager:
                     return None
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching campaign {campaign_id}: {e}")
             return None
@@ -563,7 +563,7 @@ class MemoryManager:
                 return results
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching campaigns: {e}")
             return []
@@ -758,7 +758,7 @@ class MemoryManager:
                 return results
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching entities for tenant {tenant_id}: {e}")
             return []
@@ -766,34 +766,102 @@ class MemoryManager:
             self.logger.error(f"Unexpected error fetching entities for tenant {tenant_id}: {e}")
             return []
 
-    def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
-        """Updates the metadata of an existing entity."""
-        self.logger.debug(f"Updating entity {entity_id}")
+    def get_entity(self, entity_id: str, tenant_id: str) -> Optional[Dict]:
+        """
+        Get a single entity by id with RLS (tenant_id). Returns None if not found or access denied.
+        """
+        self.logger.debug(f"Fetching entity {entity_id} for tenant {tenant_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(
+                    f"SELECT * FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (entity_id, tenant_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                entity = dict(row)
+                try:
+                    entity["metadata"] = json.loads(entity["metadata"]) if entity.get("metadata") else {}
+                except (json.JSONDecodeError, TypeError):
+                    entity["metadata"] = {}
+                return entity
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching entity {entity_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching entity {entity_id}: {e}")
+            return None
+
+    def update_entity_name_contact(
+        self, entity_id: str, tenant_id: str, name: Optional[str] = None, primary_contact: Optional[str] = None
+    ) -> bool:
+        """
+        Update name and/or primary_contact for an entity. RLS: WHERE id AND tenant_id.
+        At least one of name or primary_contact must be provided.
+        Returns True on success, False if entity not found or access denied.
+        """
+        if name is None and primary_contact is None:
+            return True
+        self.logger.debug(f"Updating entity {entity_id} name/contact for tenant {tenant_id}")
         try:
             placeholder = self.db_factory.get_placeholder()
             with self.db_factory.get_cursor() as cursor:
-                # 1. Fetch existing metadata
-                cursor.execute(f"SELECT metadata FROM entities WHERE id = {placeholder}", (entity_id,))
+                if name is not None and primary_contact is not None:
+                    cursor.execute(
+                        f"UPDATE entities SET name = {placeholder}, primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (name, primary_contact, entity_id, tenant_id),
+                    )
+                elif name is not None:
+                    cursor.execute(
+                        f"UPDATE entities SET name = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (name, entity_id, tenant_id),
+                    )
+                else:
+                    cursor.execute(
+                        f"UPDATE entities SET primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (primary_contact, entity_id, tenant_id),
+                    )
+            self.logger.info(f"Successfully updated entity {entity_id} name/contact")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating entity {entity_id} name/contact: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating entity {entity_id} name/contact: {e}")
+            return False
+
+    def update_entity(self, entity_id: str, new_metadata: dict, tenant_id: str) -> bool:
+        """Updates the metadata of an existing entity. RLS: WHERE id AND tenant_id."""
+        self.logger.debug(f"Updating entity {entity_id} for tenant {tenant_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"SELECT metadata FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (entity_id, tenant_id),
+                )
                 row = cursor.fetchone()
-                
                 if not row:
-                    self.logger.warning(f"Entity {entity_id} not found for update")
+                    self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
                     return False
-                
-                # 2. Merge new data with old data
                 try:
                     current_meta = json.loads(row[0])
                 except (json.JSONDecodeError, TypeError) as e:
                     self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
                     current_meta = {}
                 current_meta.update(new_metadata)
-                
-                # 3. Save back
                 cursor.execute(
-                    f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder}", 
-                    (json.dumps(current_meta), entity_id)
+                    f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (json.dumps(current_meta), entity_id, tenant_id),
                 )
-            
             self.logger.info(f"Successfully updated entity {entity_id}")
             return True
         except DatabaseError as e:
@@ -859,7 +927,7 @@ class MemoryManager:
                 return None
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error retrieving client secrets for user {user_id}: {e}")
             return None
@@ -959,6 +1027,71 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Unexpected error logging usage for project {project_id}: {e}")
             return False
+
+    def get_usage_ledger(
+        self, user_id: str, project_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get usage records from usage_ledger. If project_id is set, verifies ownership and returns
+        records for that project. Otherwise returns records for all projects owned by user_id.
+        Creates usage_ledger table if it doesn't exist.
+        """
+        self.logger.debug(f"Fetching usage ledger for user {user_id}, project_id={project_id}")
+        try:
+            self.create_usage_table_if_not_exists()
+            placeholder = self.db_factory.get_placeholder()
+
+            if project_id:
+                if not self.verify_project_ownership(user_id, project_id):
+                    return []
+                with self.db_factory.get_cursor(commit=False) as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                        FROM usage_ledger
+                        WHERE project_id = {placeholder}
+                        ORDER BY timestamp DESC
+                        LIMIT {placeholder}
+                        """,
+                        (project_id, limit),
+                    )
+                    rows = cursor.fetchall()
+            else:
+                projects = self.get_projects(user_id=user_id)
+                project_ids = [p.get("project_id") for p in projects] if projects else []
+                if not project_ids:
+                    return []
+                placeholders = ",".join([placeholder] * len(project_ids))
+                with self.db_factory.get_cursor(commit=False) as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                        FROM usage_ledger
+                        WHERE project_id IN ({placeholders})
+                        ORDER BY timestamp DESC
+                        LIMIT {placeholder}
+                        """,
+                        (*project_ids, limit),
+                    )
+                    rows = cursor.fetchall()
+
+            return [
+                {
+                    "id": row[0],
+                    "project_id": row[1],
+                    "resource_type": row[2],
+                    "quantity": row[3],
+                    "cost_usd": row[4],
+                    "timestamp": row[5],
+                }
+                for row in rows
+            ]
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching usage ledger: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching usage ledger: {e}")
+            return []
 
     def get_monthly_spend(self, project_id: str) -> float:
         """

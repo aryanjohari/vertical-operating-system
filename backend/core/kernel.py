@@ -12,15 +12,30 @@ class Kernel:
     def __init__(self):
         self.logger = logging.getLogger("ApexKernel")
         self.agents: Dict[str, any] = {}
-        
-        # Dynamic Registration from Registry
-        self.logger.info("⚡ Booting Apex Sovereign OS...")
+        self.agent_meta: Dict[str, Dict] = {}  # is_system_agent, is_heavy, is_system_agent_needs_context
+        self.logger.info("Booting Apex Sovereign OS...")
         self._boot_agents()
 
     def _boot_agents(self):
-        """Dynamically loads all agents defined in the Registry."""
-        for key, (module_path, class_name) in AgentRegistry.DIRECTORY.items():
-            self.register_agent(key, module_path, class_name)
+        """Dynamically loads all agents defined in the Registry (dict format with metadata)."""
+        for key, entry in AgentRegistry.DIRECTORY.items():
+            if isinstance(entry, dict):
+                module_path = entry.get("module_path")
+                class_name = entry.get("class_name")
+                if not module_path or not class_name:
+                    self.logger.error(f"Invalid registry entry for {key}: missing module_path or class_name")
+                    continue
+                self.register_agent(key, module_path, class_name)
+                self.agent_meta[key] = {
+                    "is_system_agent": entry.get("is_system_agent", False),
+                    "is_heavy": entry.get("is_heavy", False),
+                    "is_system_agent_needs_context": entry.get("is_system_agent_needs_context", False),
+                }
+            else:
+                # Legacy tuple format
+                module_path, class_name = entry[0], entry[1]
+                self.register_agent(key, module_path, class_name)
+                self.agent_meta[key] = {"is_system_agent": False, "is_heavy": False, "is_system_agent_needs_context": False}
 
     def register_agent(self, key: str, module_path: str, class_name: str):
         """
@@ -126,6 +141,23 @@ class Kernel:
         self.logger.debug(f"No agent match found for task: {task}")
         return None
 
+    def is_heavy(self, task: str, params: Optional[dict] = None) -> bool:
+        """
+        True if the task (or its manager action) should run in background.
+        Uses Registry metadata and HEAVY_ACTIONS_BY_TASK.
+        """
+        agent_key = self._resolve_agent(task)
+        if not agent_key:
+            return False
+        meta = self.agent_meta.get(agent_key, {})
+        if meta.get("is_heavy", False):
+            return True
+        if params and isinstance(params, dict):
+            action = params.get("action")
+            if action and action in AgentRegistry.HEAVY_ACTIONS_BY_TASK.get(task, []):
+                return True
+        return False
+
     async def dispatch(self, packet: AgentInput) -> AgentOutput:
         """
         The Kernel's dispatch method - the central routing hub.
@@ -196,20 +228,14 @@ class Kernel:
                     raise
 
             # --- 2. BYPASS RULE: System Agents (No DNA Needed) ---
-            # System agents bypass config loading because they don't need project context.
-            # - onboarding: Creates the DNA config
-            # - health_check: System-wide health monitoring (no project needed)
-            # - cleanup: System-wide maintenance (no project needed)
-            # - log_usage: System-wide usage tracking (uses hardcoded pricing, no config needed, but needs project_id/user_id)
-            system_agents = ["onboarding", "health_check", "cleanup", "log_usage"]
-            # System agents that need context injection (project_id/user_id) but not DNA config
-            system_agents_with_context = ["log_usage"]
-            
-            if agent_key in system_agents:
+            # Metadata from Registry; no hardcoded lists.
+            meta = self.agent_meta.get(agent_key, {})
+            is_system_agent = meta.get("is_system_agent", False)
+            needs_context = meta.get("is_system_agent_needs_context", False)
+
+            if is_system_agent:
                 self.logger.debug(f"System agent detected: {agent_key} - bypassing DNA loading")
-                
-                # Some system agents still need project_id/user_id injected (but not DNA config)
-                if agent_key in system_agents_with_context:
+                if needs_context:
                     # Extract project_id from params
                     niche = None
                     if packet.params:
