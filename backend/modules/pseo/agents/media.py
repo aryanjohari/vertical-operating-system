@@ -2,7 +2,7 @@
 import asyncio
 import json
 import os
-import requests
+import httpx
 import html
 from urllib.parse import urlparse
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
@@ -85,11 +85,11 @@ class MediaAgent(BaseAgent):
         except Exception as e:
             self.logger.warning(f"LLM visual generation failed, using keyword: {e}")
 
-        # 4. SEARCH UNSPLASH
+        # 4. SEARCH UNSPLASH (async; non-blocking)
         image_url = None
         credit_text = ""
         for term in search_terms:
-            found = self._search_unsplash(term)
+            found = await self._search_unsplash(term)
             if found:
                 image_url = found["url"]
                 credit_text = f"Photo by {found['photographer']} on Unsplash"
@@ -97,7 +97,7 @@ class MediaAgent(BaseAgent):
                 break
         if not image_url:
             self.logger.warning("Specific images failed, trying generic fallback.")
-            fallback = self._search_unsplash("modern office architecture")
+            fallback = await self._search_unsplash("modern office architecture")
             if fallback:
                 image_url = fallback["url"]
         if not image_url:
@@ -135,18 +135,19 @@ class MediaAgent(BaseAgent):
             },
         )
 
-    def _search_unsplash(self, query: str):
+    async def _search_unsplash(self, query: str):
         try:
             key = self.unsplash_key or UNSPLASH_ACCESS_KEY
             if not key or key == "YOUR_KEY_HERE":
                 return None
             url = f"https://api.unsplash.com/search/photos?query={query}&orientation=landscape&per_page=1"
             headers = {"Authorization": f"Client-ID {key}"}
-            resp = requests.get(url, headers=headers, timeout=5)
-            data = resp.json()
-            if data.get("results"):
-                photo = data["results"][0]
-                return {"url": photo["urls"]["regular"], "photographer": photo["user"]["name"]}
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers=headers)
+                data = resp.json()
+                if data.get("results"):
+                    photo = data["results"][0]
+                    return {"url": photo["urls"]["regular"], "photographer": photo["user"]["name"]}
         except Exception:
             pass
         return None

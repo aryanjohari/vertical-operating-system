@@ -1,6 +1,6 @@
 id,name,project_id,created_at,campaign_id,status,intent,type,score,related_terms,anchor_reference
-kw_20a82ac18fe2,emergency parole housing near Hamilton High Court,specialist_support_services,2026-01-28 11:25:48.496625,cmp_1cbf011019,pending,emergency parole housing,geo_anchor,80,[],anchor_cbd74a10e733e20b
-kw_51fd2907dbdb,emergency parole housing near Hamilton  Court,specialist_support_services,2026-01-28 11:25:48.495816,cmp_1cbf011019,pending,emergency parole housing,geo_anchor,80,[],anchor_d77d04e7358a3cfa
+kw_20a82ac18fe2,emergency parole housing near Hamilton High Court,specialist_support_services,2026-01-28 11:25:48.496625,cmp_1cbf011019,approved,emergency parole housing,geo_anchor,80,[],anchor_cbd74a10e733e20b
+kw_51fd2907dbdb,emergency parole housing near Hamilton  Court,specialist_support_services,2026-01-28 11:25:48.495816,cmp_1cbf011019,drafted,emergency parole housing,geo_anchor,80,[],anchor_d77d04e7358a3cfa
 kw_cb1d49814030,emergency parole housing near Hamilton  Police Station,specialist_support_services,2026-01-28 11:25:48.494941,cmp_1cbf011019,pending,emergency parole housing,geo_anchor,80,[],anchor_13863a68ca6d077c
 kw_02bc62a8b51e,emergency parole housing near Hamilton North Police Station,specialist_support_services,2026-01-28 11:25:48.494083,cmp_1cbf011019,pending,emergency parole housing,geo_anchor,80,[],anchor_5a1a1d43d9866c56
 kw_fbab921d5160,emergency parole housing near Hamilton Police Service,specialist_support_services,2026-01-28 11:25:48.492896,cmp_1cbf011019,pending,emergency parole housing,geo_anchor,80,[],anchor_a13f6138bfe4df0c

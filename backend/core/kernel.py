@@ -132,8 +132,8 @@ class Kernel:
             return task
         
         # 2. Prefix Match (strict: task must start with agent_key + "_")
-        # This prevents collisions like "write" matching "rewrite_pages"
-        for agent_key in sorted(self.agents.keys(), key=len, reverse=True):  # Longest first
+        # Longest-first to avoid greedy prefix matches (e.g. "write" vs "write_pages").
+        for agent_key in sorted(self.agents.keys(), key=len, reverse=True):
             if task.startswith(agent_key + "_"):
                 self.logger.debug(f"Prefix match found: {agent_key} for task {task}")
                 return agent_key

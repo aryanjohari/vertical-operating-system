@@ -2,7 +2,7 @@
 import json
 import logging
 import asyncio
-import requests
+import httpx
 import hashlib
 from typing import List, Dict, Any
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
@@ -10,24 +10,25 @@ from backend.core.models import Entity
 from backend.core.memory import memory
 from backend.core.services.llm_gateway import llm_gateway
 
-# Simple Google Autocomplete Tool (Undocumented free API)
-def get_autocomplete_suggestions(query: str) -> List[str]:
-    """
-    Queries Google's Autocomplete API to validate if a keyword has search volume.
-    Returns a list of suggestions. If list is empty, demand is low/zero.
-    """
-    try:
-        url = f"http://google.com/complete/search?client=chrome&q={query}"
-        response = requests.get(url, timeout=2)
-        if response.status_code == 200:
-            return json.loads(response.text)[1] # Format: [query, [suggestions...], ...]
-    except Exception:
-        return []
-    return []
 
 class StrategistAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Strategist")
+
+    async def _fetch_autocomplete(self, query: str) -> List[str]:
+        """
+        Queries Google's Autocomplete API (async) to validate if a keyword has search volume.
+        Returns a list of suggestions. If list is empty, demand is low/zero.
+        """
+        try:
+            url = f"http://google.com/complete/search?client=chrome&q={query}"
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    return response.json()[1]  # Format: [query, [suggestions...], ...]
+        except Exception:
+            pass
+        return []
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
@@ -188,7 +189,7 @@ class StrategistAgent(BaseAgent):
                 # Check 2: Google Autocomplete (The "Truth")
                 # Only check "City" keywords to verify the Root is valid
                 if kw_obj['type'] == 'geo_city':
-                    suggestions = await asyncio.to_thread(get_autocomplete_suggestions, term)
+                    suggestions = await self._fetch_autocomplete(term)
                     if suggestions:
                         score += 90 # High demand confirmed
                         kw_obj['suggestions'] = suggestions[:3] # Save related terms

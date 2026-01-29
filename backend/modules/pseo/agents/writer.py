@@ -46,7 +46,7 @@ class WriterAgent(BaseAgent):
         # Load Identity / Brand from injected config (DNA)
         brand_voice = self.config.get("brand_brain", {}).get("voice_tone", "Professional, Empathetic")
 
-        # 2. FETCH WORK ITEM (Find a 'pending' keyword)
+        # 2. FETCH WORK ITEM (Find a 'pending' keyword; optionally target one by keyword_id)
         all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
         pending_kws = [
             k
@@ -55,7 +55,14 @@ class WriterAgent(BaseAgent):
             and k.get("metadata", {}).get("status") == "pending"
             and not k.get("metadata", {}).get("status") == "excluded"
         ]
-
+        keyword_id_param = input_data.params.get("keyword_id")
+        if keyword_id_param is not None:
+            pending_kws = [k for k in pending_kws if k.get("id") == keyword_id_param]
+            if not pending_kws:
+                return AgentOutput(
+                    status="error",
+                    message="Keyword not found or not pending.",
+                )
         if not pending_kws:
             return AgentOutput(status="complete", message="No pending keywords to write.")
 
@@ -69,11 +76,18 @@ class WriterAgent(BaseAgent):
         anchor_ref_id = kw_meta.get("anchor_reference")
         if anchor_ref_id:
             anchor_entity = memory.get_entity(anchor_ref_id, user_id)
+            # if anchor_entity:
+            #     anchor_data = {
+            #         "name": anchor_entity.name,
+            #         "address": anchor_entity.metadata.get("address"),
+            #         "phone": anchor_entity.metadata.get("primary_contact"),
+            #     }
             if anchor_entity:
+    # Use ['key'] syntax because anchor_entity is a dict from memory.py
                 anchor_data = {
-                    "name": anchor_entity.name,
-                    "address": anchor_entity.metadata.get("address"),
-                    "phone": anchor_entity.metadata.get("primary_contact"),
+                    "name": anchor_entity.get("name"),
+                    "address": anchor_entity.get("metadata", {}).get("address"),
+                    "phone": anchor_entity.get("metadata", {}).get("primary_contact"),
                 }
 
         # Query ChromaDB for semantically relevant knowledge fragments (RAG)
@@ -137,7 +151,7 @@ class WriterAgent(BaseAgent):
         prompt = f"""
         ACT AS: Senior Content Writer & SEO Specialist for '{service_focus}' services.
         TONE: {brand_voice}.
-        GOAL: Write a high-converting, local service page + SEO Metadata.
+        GOAL: Write a high-converting, minumum 750 words(strictly), local service page + SEO Metadata.
 
         --- INPUT DATA (USE THIS, DO NOT INVENT) ---
         KEYWORD: "{kw_text}"
@@ -226,14 +240,17 @@ class WriterAgent(BaseAgent):
                 "content": html_content,
                 "meta_title": meta_title,
                 "meta_description": meta_description,
-                "anchor_used": anchor_data["name"] if anchor_data else None,
+                "anchor_used": anchor_data.get("name") if anchor_data else None,
                 "version": 1,
             },
         )
         memory.save_entity(draft, project_id=project_id)
 
-        # 7. UPDATE KEYWORD STATUS
-        target_kw["metadata"]["status"] = "drafted"
+        # 7. UPDATE KEYWORD STATUS (safe dict access; memory returns dicts)
+        meta = target_kw.get("metadata") or {}
+        meta = dict(meta)
+        meta["status"] = "drafted"
+        target_kw["metadata"] = meta
         memory.save_entity(Entity(**target_kw), project_id=project_id)
 
         return AgentOutput(

@@ -2,6 +2,7 @@
 import asyncio
 from typing import Dict, Any, Optional
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
+from backend.core.config import settings
 from backend.core.memory import memory
 
 
@@ -139,6 +140,21 @@ class ManagerAgent(BaseAgent):
 
         base_params = {"project_id": project_id, "user_id": user_id, "campaign_id": campaign_id, **input_data.params}
 
+        # Budget guard: block paid work (Scout/Strategist/Writer) if project over monthly limit
+        try:
+            spend = memory.get_monthly_spend(project_id)
+            limit = settings.DEFAULT_PROJECT_LIMIT
+            if spend >= limit:
+                self.logger.warning(f"Budget exceeded for project {project_id}: ${spend:.2f} >= ${limit:.2f}")
+                return AgentOutput(
+                    status="error",
+                    message="Budget exceeded. Monthly spend limit reached.",
+                    data={"monthly_spend": spend, "project_limit": limit},
+                )
+        except Exception as e:
+            self.logger.error(f"Budget check failed for project {project_id}: {e}")
+            return AgentOutput(status="error", message="Failed to check project budget.")
+
         # Phase 1: Scout if no anchors
         if stats["anchors"] == 0:
             self.logger.info("No Anchors found. Deploying SCOUT...")
@@ -153,7 +169,7 @@ class ManagerAgent(BaseAgent):
             if res.status == "error":
                 return AgentOutput(status="error", message=f"Strategist Failed: {res.message}")
 
-        # Phase 3: Production line (batch each agent via kernel)
+        # Phase 3: Production line (batch each agent via kernel; max 5 pages per cycle)
         for task_name, label in [
             ("write_pages", "WRITER"),
             ("critic_review", "CRITIC"),
@@ -162,7 +178,7 @@ class ManagerAgent(BaseAgent):
             ("enhance_utility", "UTILITY"),
         ]:
             self.logger.info(f"Checking {label} queue...")
-            await self._run_batch(kernel, task_name, base_params)
+            await self._run_batch(kernel, task_name, base_params, max_batch=5)
 
         # Phase 4: Publisher (single run)
         self.logger.info("Checking PUBLISHER queue...")
