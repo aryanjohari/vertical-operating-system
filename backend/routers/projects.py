@@ -131,6 +131,56 @@ async def update_dna_config(
         raise HTTPException(status_code=500, detail="Failed to update DNA configuration")
 
 
+class CampaignCreateInput(BaseModel):
+    name: str
+    module: str  # "pseo" or "lead_gen"
+    config: Dict[str, Any]
+
+
+class CampaignCreateResponse(BaseModel):
+    success: bool
+    campaign_id: str
+    message: str = "Campaign created successfully"
+
+
+@router.post("/projects/{project_id}/campaigns", response_model=CampaignCreateResponse)
+async def create_campaign(
+    project_id: str,
+    request: CampaignCreateInput,
+    user_id: str = Depends(get_current_user),
+):
+    """Create a new campaign for a project (direct config, no interview)."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        if request.module not in ("pseo", "lead_gen"):
+            raise HTTPException(status_code=400, detail="module must be 'pseo' or 'lead_gen'")
+
+        campaign_id = memory.create_campaign(
+            user_id=user_id,
+            project_id=project_id,
+            name=request.name,
+            module=request.module,
+            config=request.config,
+        )
+        try:
+            config_loader = ConfigLoader()
+            config_loader.save_campaign(project_id, campaign_id, request.config)
+        except Exception as e:
+            logger.warning(f"Failed to save campaign config to disk: {e}")
+        logger.info(f"Created campaign {campaign_id} for project {project_id} by user {user_id}")
+        return CampaignCreateResponse(
+            success=True,
+            campaign_id=campaign_id,
+            message="Campaign created successfully",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating campaign: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create campaign")
+
+
 @router.get("/projects/{project_id}/campaigns")
 async def get_campaigns(
     project_id: str,

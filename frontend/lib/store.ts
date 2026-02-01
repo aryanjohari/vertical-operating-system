@@ -7,6 +7,7 @@ interface AuthStore {
   token: string | null;
   setAuth: (user: { id: string }, token: string) => void;
   clearAuth: () => void;
+  hydrate: () => void;
 }
 
 interface ProjectStore {
@@ -30,6 +31,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
   token: null,
   setAuth: (user, token) => set({ user, token }),
   clearAuth: () => set({ user: null, token: null }),
+  hydrate: () => {
+    if (typeof window === "undefined") return;
+    const token = localStorage.getItem("apex_token");
+    const userId = localStorage.getItem("apex_user_id");
+    if (token && userId) set({ token, user: { id: userId } });
+  },
 }));
 
 export const useProjectStore = create<ProjectStore>((set) => ({
