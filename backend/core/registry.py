@@ -31,7 +31,6 @@ class AgentRegistry:
         "publish": _entry("backend.modules.pseo.agents.publisher", "PublisherAgent", is_heavy=True),
         "analytics_audit": _entry("backend.modules.pseo.agents.analytics", "AnalyticsAgent"),
         "lead_gen_manager": _entry("backend.modules.lead_gen.manager", "LeadGenManager"),
-        "sniper_agent": _entry("backend.modules.lead_gen.agents.sniper", "SniperAgent", is_heavy=True),
         "sales_agent": _entry("backend.modules.lead_gen.agents.sales", "SalesAgent", is_heavy=True),
         "reactivator_agent": _entry("backend.modules.lead_gen.agents.reactivator", "ReactivatorAgent", is_heavy=True),
         "lead_scorer": _entry("backend.modules.lead_gen.agents.scorer", "LeadScorerAgent"),
@@ -43,7 +42,7 @@ class AgentRegistry:
 
     # Manager actions that should run as heavy (background); key = task name, value = list of action strings
     HEAVY_ACTIONS_BY_TASK: Dict[str, List[str]] = {
-        "lead_gen_manager": ["hunt_sniper", "ignite_reactivation", "instant_call"],
+        "lead_gen_manager": ["lead_received", "ignite_reactivation", "instant_call"],
     }
 
 

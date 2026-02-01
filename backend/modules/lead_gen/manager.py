@@ -11,131 +11,114 @@ class LeadGenManager(BaseAgent):
         super().__init__(name="LeadGenManager")
         self.logger = logging.getLogger("Apex.LeadGenManager")
 
+    def _resolve_campaign_id(self, user_id: str, project_id: str, campaign_id_from_params: str = None) -> str:
+        """Resolve campaign_id: use params, or first lead_gen campaign for project, or None."""
+        if campaign_id_from_params:
+            return campaign_id_from_params
+        campaigns = memory.get_campaigns_by_project(user_id, project_id, module="lead_gen")
+        if campaigns:
+            return campaigns[0].get("id", "")
+        return None
+
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
-        The Orchestrator.
+        The Orchestrator (Inbound Conversion Engine).
         Input params:
-          - action: "hunt_sniper", "ignite_reactivation", "instant_call", "transcribe_call", "dashboard_stats"
-          - lead_id: (Optional) Used for instant_call and transcribe_call
+          - action: "lead_received", "ignite_reactivation", "instant_call", "transcribe_call", "dashboard_stats"
+          - lead_id: (Optional) Used for lead_received, instant_call, transcribe_call
         """
-        # Validate injected context (Titanium Standard)
         if not self.project_id or not self.user_id:
             self.logger.error("Missing injected context: project_id or user_id")
             return AgentOutput(status="error", message="Agent context not properly initialized.")
-        
+
         if not self.config:
             self.logger.error("Missing injected config")
             return AgentOutput(status="error", message="Configuration not loaded.")
-        
+
         project_id = self.project_id
         user_id = self.user_id
-        
-        # Get campaign_id from params or injected context
-        campaign_id = input_data.params.get("campaign_id") or self.campaign_id
-        
-        if not campaign_id:
-            return AgentOutput(
-                status="error", 
-                message="campaign_id is required. Please create a campaign first or provide campaign_id in params."
-            )
-        
-        # Verify project ownership (security: defense-in-depth)
+        action = input_data.params.get("action", "dashboard_stats")
+        campaign_id_param = input_data.params.get("campaign_id") or self.campaign_id
+
         if not memory.verify_project_ownership(user_id, project_id):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
-        
-        # Verify campaign ownership
-        campaign = memory.get_campaign(campaign_id, user_id)
-        if not campaign:
-            return AgentOutput(status="error", message="Campaign not found or access denied.")
-        
-        if campaign.get('module') != 'lead_gen':
-            return AgentOutput(status="error", message=f"Campaign {campaign_id} is not a Lead Gen campaign.")
-        
-        action = input_data.params.get("action", "dashboard_stats")
 
-        # 1. Use injected config (loaded by kernel - already merged DNA + campaign)
+        campaign_id = self._resolve_campaign_id(user_id, project_id, campaign_id_param)
+
+        if campaign_id:
+            campaign = memory.get_campaign(campaign_id, user_id)
+            if not campaign:
+                return AgentOutput(status="error", message="Campaign not found or access denied.")
+            if campaign.get("module") != "lead_gen":
+                return AgentOutput(status="error", message=f"Campaign {campaign_id} is not a Lead Gen campaign.")
+        elif action not in ("lead_received", "dashboard_stats"):
+            return AgentOutput(
+                status="error",
+                message="campaign_id is required for this action. Please create a campaign or provide campaign_id.",
+            )
+
         config = self.config
-        if not config.get('modules', {}).get('lead_gen', {}).get('enabled', False):
+        if not config.get("modules", {}).get("lead_gen", {}).get("enabled", False):
             return AgentOutput(status="error", message="Lead Gen module is not enabled in project DNA.")
 
-        self.logger.info(f"💼 Manager executing action: {action} for {project_id}")
+        self.logger.info(f"Manager executing action: {action} for {project_id}")
 
         try:
-            # --- ACTION 1: THE HUNTER (Sniper) ---
-            # Triggered by "HUNT NOW" button on Dashboard
-            if action == "hunt_sniper":
-                self.logger.info("🎯 Deploying Sniper Agent...")
-                # Lazy import to avoid circular dependency during kernel initialization
-                from backend.core.kernel import kernel
-                # Dispatch to Sniper Agent
-                # We use kernel.dispatch to keep agents decoupled
-                try:
-                    result = await asyncio.wait_for(
-                        kernel.dispatch(
-                            AgentInput(
-                                task="sniper_agent",
-                                user_id=user_id,
-                                params={"mode": "aggressive", "project_id": project_id, "campaign_id": campaign_id} # Scrape everything
-                            )
-                        ),
-                        timeout=300  # 5 minutes max per task
-                    )
-                except asyncio.TimeoutError:
-                    self.logger.error("❌ Sniper Agent timed out after 5 minutes")
-                    return AgentOutput(status="error", message="Sniper hunt timed out after 5 minutes.")
-                
-                # After sniper hunt, automatically score the new leads
-                if result.status == "success":
-                    self.logger.info("📊 Scoring new leads...")
-                    try:
-                        # Fetch recently created leads (within last 5 minutes would be ideal, but for simplicity, fetch all and score un-scored ones)
-                        all_leads = memory.get_entities(
-                            tenant_id=user_id,
-                            entity_type="lead",
-                            project_id=project_id,
-                            limit=100
+            from backend.core.kernel import kernel
+
+            # --- ACTION 1: LEAD RECEIVED (Inbound from Webhooks) ---
+            if action == "lead_received":
+                lead_id = input_data.params.get("lead_id")
+                if not lead_id:
+                    return AgentOutput(status="error", message="Missing lead_id for lead_received.")
+
+                self.logger.info(f"Processing inbound lead: {lead_id}")
+
+                score_result = await asyncio.wait_for(
+                    kernel.dispatch(
+                        AgentInput(
+                            task="lead_scorer",
+                            user_id=user_id,
+                            params={
+                                "lead_id": lead_id,
+                                "project_id": project_id,
+                                "campaign_id": campaign_id,
+                            },
                         )
-                        
-                        # Filter leads by campaign_id and that don't have a score yet
-                        unscored_leads = [
-                            lead for lead in all_leads 
-                            if lead.get('metadata', {}).get('campaign_id') == campaign_id
-                            and lead.get('metadata', {}).get('score') is None
-                        ]
-                        
-                        # Batch process (limit to 10 at a time to avoid timeout)
-                        scored_count = 0
-                        for lead in unscored_leads[:10]:
-                            try:
-                                score_result = await asyncio.wait_for(
-                                    kernel.dispatch(
-                                        AgentInput(
-                                            task="lead_scorer",
-                                            user_id=user_id,
-                                            params={
-                                                "lead_id": lead['id'],
-                                                "project_id": project_id
-                                            }
-                                        )
-                                    ),
-                                    timeout=60  # 1 minute max per scoring
-                                )
-                                if score_result.status == "success":
-                                    scored_count += 1
-                            except asyncio.TimeoutError:
-                                self.logger.warning(f"Scoring timed out for lead {lead.get('id')}")
-                                continue
-                            except Exception as e:
-                                self.logger.warning(f"Failed to score lead {lead.get('id')}: {e}", exc_info=True)
-                                continue
-                        
-                        self.logger.info(f"✅ Scored {scored_count} new leads")
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Lead scoring failed: {e}", exc_info=True)
-                        # Don't fail the whole operation if scoring fails
-                
-                return AgentOutput(status="success", data=result.data, message="Sniper hunt completed.")
+                    ),
+                    timeout=60,
+                )
+
+                if score_result.status != "success":
+                    self.logger.warning(f"Scorer failed for lead {lead_id}: {score_result.message}")
+                    return score_result
+
+                sales_result = await asyncio.wait_for(
+                    kernel.dispatch(
+                        AgentInput(
+                            task="sales_agent",
+                            user_id=user_id,
+                            params={
+                                "action": "instant_call",
+                                "lead_id": lead_id,
+                                "project_id": project_id,
+                                "campaign_id": campaign_id,
+                            },
+                        )
+                    ),
+                    timeout=30,
+                )
+
+                if sales_result.status != "success":
+                    self.logger.warning(f"Sales bridge failed for lead {lead_id}: {sales_result.message}")
+                    return sales_result
+
+                return AgentOutput(
+                    status="success",
+                    data={"lead_id": lead_id, "score": score_result.data, "call_sid": sales_result.data.get("call_sid")},
+                    message="Lead scored and bridge call initiated.",
+                )
 
             # --- ACTION 2: THE MINER (Reactivation) ---
             # Triggered by "BLAST LIST" button

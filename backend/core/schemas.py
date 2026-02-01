@@ -66,10 +66,6 @@ class ManagerParams(BaseAgentParams):
 
 
 # --- Lead Gen ---
-class SniperParams(BaseAgentParams):
-    pass
-
-
 class SalesParams(BaseAgentParams):
     action: str = Field(default="instant_call")
     lead_id: Optional[str] = None
@@ -135,7 +131,6 @@ TASK_SCHEMA_MAP = {
     "publish": PublisherParams,
     "analytics_audit": EmptyParams,
     "lead_gen_manager": LeadGenManagerParams,
-    "sniper_agent": SniperParams,
     "sales_agent": SalesParams,
     "reactivator_agent": ReactivatorParams,
     "lead_scorer": LeadScorerParams,
