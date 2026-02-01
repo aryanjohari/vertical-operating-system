@@ -24,7 +24,7 @@ form_settings:
 
 # Sales bridge (speed-to-lead)
 sales_bridge:
-  destination_phone: "REQUIRED"  # Client's mobile; also used for sticky Call button
+  destination_phone: "REQUIRED" # Client's mobile; also used for sticky Call button
   whisper_text: "Apex Lead Alert. Press 1 to connect."
   sms_alert_template: "New Lead: [Name]"
 

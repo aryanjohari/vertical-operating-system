@@ -26,12 +26,12 @@ flowchart TB
     Frontend["Frontend (Next.js 14)"]
     FastAPI["FastAPI Backend"]
     Kernel["Event-Driven Kernel"]
-    
+
     subgraph Managers["Module Managers (Orchestrators)"]
         PSEOManager["pSEO Manager"]
         LeadGenManager["Lead Gen Manager"]
     end
-    
+
     subgraph Agents["Specialized Agents"]
         direction LR
         Scout["Scout (Intel)"]
@@ -46,12 +46,12 @@ flowchart TB
         Sales["Sales Bridge (Twilio)"]
         Reactivator["Reactivator (SMS)"]
     end
-    
+
     subgraph Memory["Memory Layer"]
         SQLite["SQLite/PostgreSQL (Entities)"]
         ChromaDB["ChromaDB (RAG Context)"]
     end
-    
+
     subgraph External["External APIs"]
         OpenAI["OpenAI GPT-4"]
         Gemini["Google Gemini"]
@@ -59,18 +59,18 @@ flowchart TB
         Unsplash["Unsplash (Images)"]
         Maps["Google Maps API"]
     end
-    
+
     User -->|Creates Campaigns| Frontend
     Frontend -->|POST /api/run| FastAPI
     FastAPI -->|Dispatch AgentInput| Kernel
     Kernel -->|Route by task| Managers
-    
+
     PSEOManager -->|Orchestrates Pipeline| Scout
     Scout --> Strategist --> Writer --> Critic --> Librarian --> Media --> Utility --> Publisher
-    
+
     LeadGenManager -->|Orchestrates Inbound| Scorer
     Scorer --> Sales --> Reactivator
-    
+
     Agents -->|Read/Write| Memory
     Agents -->|LLM Calls| OpenAI
     Agents -->|Embeddings| Gemini
@@ -81,7 +81,7 @@ flowchart TB
     Scout -->|Scrape Intel| Maps
     Media -->|Fetch Images| Unsplash
     Publisher -->|Deploy HTML| External
-    
+
     Memory -->|Entity Lifecycle| SQLite
     Memory -->|RAG Context| ChromaDB
 ```
@@ -91,17 +91,20 @@ flowchart TB
 **Core Principle:** Everything is a row in the database. No ephemeral state. No hidden pipelines.
 
 1. **Universal Entity Model**
+
    - All system objects (leads, keywords, page drafts, campaigns) inherit from the same `Entity` schema.
    - Each entity has: `id`, `tenant_id` (RLS), `entity_type`, `name`, `primary_contact`, `metadata` (JSON), `created_at`.
    - Status transitions live in `metadata.status` and drive all workflows.
 
 2. **Event-Driven Kernel**
+
    - Single entry point: `POST /api/run` with `AgentInput { task, user_id, params }`.
    - Kernel validates, routes to the correct agent, injects context (project DNA, campaign config).
    - Agents return `AgentOutput { status, data, message, timestamp }`.
    - Heavy tasks (Scout, Writer) run in background with context polling via `GET /api/context/{context_id}`.
 
 3. **Module Managers as Orchestrators**
+
    - `PSEOManager`: Conducts the linear pipeline (Scout → Publisher).
    - `LeadGenManager`: Conducts the inbound flow (Webhook → Scorer → Bridge).
    - Managers own business logic; agents own execution.
@@ -117,14 +120,14 @@ flowchart TB
 
 ### Supported Entity Types
 
-| Entity Type | Purpose | Owner Module | Typical Lifecycle |
-|-------------|---------|--------------|-------------------|
-| `anchor_location` | Google Maps places used as content anchors | pSEO | `pending` → `validated` → `active` |
-| `seo_keyword` | Keywords derived from anchors (e.g., "bail lawyer auckland") | pSEO | `pending` → `processing` → `mapped` |
-| `page_draft` | HTML pages in various stages of completion | pSEO | `draft` → `validated` → `ready_to_publish` → `published` |
-| `knowledge_fragment` | Scraped intel (competitors, regulations) stored as RAG | pSEO | `raw` → `processed` |
-| `lead` | Inbound leads from forms/webhooks | Lead Gen | `new` → `scored` → `calling` → `won`/`lost` |
-| `campaign` | Configuration container (targeting, settings) | Both | `DRAFT` → `ACTIVE` → `PAUSED` |
+| Entity Type          | Purpose                                                      | Owner Module | Typical Lifecycle                                        |
+| -------------------- | ------------------------------------------------------------ | ------------ | -------------------------------------------------------- |
+| `anchor_location`    | Google Maps places used as content anchors                   | pSEO         | `pending` → `validated` → `active`                       |
+| `seo_keyword`        | Keywords derived from anchors (e.g., "bail lawyer auckland") | pSEO         | `pending` → `processing` → `mapped`                      |
+| `page_draft`         | HTML pages in various stages of completion                   | pSEO         | `draft` → `validated` → `ready_to_publish` → `published` |
+| `knowledge_fragment` | Scraped intel (competitors, regulations) stored as RAG       | pSEO         | `raw` → `processed`                                      |
+| `lead`               | Inbound leads from forms/webhooks                            | Lead Gen     | `new` → `scored` → `calling` → `won`/`lost`              |
+| `campaign`           | Configuration container (targeting, settings)                | Both         | `DRAFT` → `ACTIVE` → `PAUSED`                            |
 
 ### Lifecycle State Machines
 
@@ -141,6 +144,7 @@ stateDiagram-v2
 ```
 
 **Critical Fields:**
+
 - `metadata.status`: Current state
 - `metadata.campaign_id`: Scoping to campaign
 - `metadata.anchor_id`: Link back to anchor location
@@ -162,6 +166,7 @@ stateDiagram-v2
 ```
 
 **Critical Fields:**
+
 - `metadata.status`: Pipeline stage
 - `metadata.content`: HTML string
 - `metadata.keyword_id`: Link to keyword entity
@@ -191,6 +196,7 @@ stateDiagram-v2
 ```
 
 **Critical Fields:**
+
 - `metadata.status`: Current state
 - `metadata.score`: LLM Judge score (0-100)
 - `metadata.intent`: "high", "medium", "low"
@@ -216,7 +222,7 @@ stateDiagram-v2
   "has_schema": true,
   "has_form": true,
   "image_urls": ["https://..."],
-  "internal_links": [{"href": "/services", "anchor": "Services"}],
+  "internal_links": [{ "href": "/services", "anchor": "Services" }],
   "word_count": 1847,
   "rejection_reason": null
 }
@@ -267,7 +273,7 @@ flowchart LR
     Utility["Utility Agent"]
     Publisher["Publisher Agent"]
     WP["WordPress Site"]
-    
+
     Config -->|targeting.service_focus| Scout
     Scout -->|Scrapes Google Maps| AnchorDB[(Anchor Entities)]
     AnchorDB --> Strategist
@@ -289,53 +295,60 @@ flowchart LR
 #### Agent Roles (The "Assembly Line")
 
 1. **Scout Agent** (Intel Gathering)
+
    - **Input:** `{ service_focus: "Bail", geo_targets: ["Auckland", "Hamilton"] }`
    - **Action:** Scrapes Google Maps for related places (courts, police stations, legal services).
    - **Output:** Creates `anchor_location` entities with lat/lng, address, name.
    - **Critical Logic:** De-duplicates by place ID; filters by relevance (e.g., keywords in description).
 
 2. **Strategist Agent** (Keyword Expansion)
+
    - **Input:** Anchors + campaign config.
    - **Action:** Generates keyword variants (e.g., "bail lawyer auckland", "24/7 bail service manukau").
    - **Output:** Creates `seo_keyword` entities with `metadata.priority_score`.
    - **Critical Logic:** Uses LLM to expand keywords based on anchor context; ranks by search volume heuristics.
 
 3. **Writer Agent** (Content Generation)
+
    - **Input:** Batch of 10 keywords (status=`pending`).
    - **Action:** Calls GPT-4 to generate full HTML page (1500-2000 words).
    - **Output:** Creates `page_draft` entities with `metadata.content` and `status=draft`.
-   - **Critical Logic:** 
+   - **Critical Logic:**
      - Pulls RAG context from ChromaDB (competitor intel, regulations).
      - Injects brand voice from campaign DNA (`brand_brain.voice_tone`).
      - Uses keyword as H1; includes semantic variations in H2/H3.
 
 4. **Critic Agent** (Quality Assurance)
+
    - **Input:** Drafts with `status=draft`.
    - **Action:** LLM Judge validates: readability, keyword density, E-E-A-T signals, duplicate content risk.
    - **Output:** Sets `status=validated` (pass) or `status=rejected` (fail with reason).
-   - **Critical Logic:** 
+   - **Critical Logic:**
      - Rejection triggers re-write (Writer picks it up again).
      - Max 2 rejection cycles before manual review flag.
 
 5. **Librarian Agent** (Internal Linking)
+
    - **Input:** Drafts with `status=validated`.
    - **Action:** Injects 3-5 internal links to existing pages (keyword-relevant anchors).
    - **Output:** Updates `metadata.internal_links` and sets `status=ready_for_media`.
    - **Critical Logic:** Uses RAG to find semantically similar existing pages; avoids over-linking (max 1 link per 300 words).
 
 6. **Media Agent** (Image Enhancement)
+
    - **Input:** Drafts with `status=ready_for_media`.
    - **Action:** Fetches 2-4 relevant images from Unsplash API.
    - **Output:** Injects `<img>` tags with alt text, updates `metadata.image_urls`, sets `status=ready_for_utility`.
    - **Critical Logic:** Image selection based on keyword + location (e.g., "auckland courthouse", "lawyer office").
 
 7. **Utility Agent** (Forms & Schema.org)
+
    - **Input:** Drafts with `status=ready_for_utility`.
-   - **Action:** 
+   - **Action:**
      - Injects contact form HTML (reads `campaign.config.form_settings`).
      - Adds Schema.org LocalBusiness JSON-LD.
    - **Output:** Final HTML with forms/schema, sets `status=ready_to_publish`.
-   - **Critical Logic:** 
+   - **Critical Logic:**
      - Form fields configured per campaign (e.g., "Name", "Phone", "Case Type").
      - Schema includes NAP (Name, Address, Phone) from project DNA.
 
@@ -343,7 +356,7 @@ flowchart LR
    - **Input:** Drafts with `status=ready_to_publish`.
    - **Action:** Posts to WordPress via REST API (creates/updates post).
    - **Output:** Sets `status=published`, stores `metadata.wp_post_id`.
-   - **Critical Logic:** 
+   - **Critical Logic:**
      - Idempotent: checks if post already exists (by keyword ID); updates instead of duplicates.
      - Sets post status to "publish" or "draft" based on campaign settings.
 
@@ -370,20 +383,20 @@ sequenceDiagram
     participant Twilio as Twilio API
     participant Client as Client Phone
     participant Reactivator as Reactivator Agent
-    
+
     Form->>Webhook: POST /webhooks/lead (data)
     Webhook->>Scorer: Create lead entity + dispatch
-    
+
     Note over Scorer: LLM Judge evaluates intent/urgency
     Scorer->>Scorer: Score = 85/100 (high intent)
     Scorer->>Sales: Dispatch if score >= threshold (70)
-    
+
     Sales->>Twilio: Initiate call (lead phone)
     Twilio->>Form: Call lead
     Form->>Twilio: Press 1 to connect
     Twilio->>Twilio: Bridge to client phone
     Twilio->>Client: Ring client
-    
+
     alt Call Connected
         Client->>Twilio: Answer
         Twilio->>Form: Connected (lead + client)
@@ -399,13 +412,15 @@ sequenceDiagram
 #### Agent Roles (The "Conversion Engine")
 
 1. **Webhook Handler** (`/webhooks/lead`)
+
    - **Input:** Form POST data (name, phone, email, message).
    - **Action:** Creates `lead` entity with `status=new`, metadata contains raw form data.
    - **Trigger:** Dispatches `LeadGenManager` with `action=lead_received`.
 
 2. **Scorer Agent** (LLM Judge)
+
    - **Input:** Lead entity (id).
-   - **Action:** 
+   - **Action:**
      - Builds prompt: "Score this lead: Name, Phone, Message. Rules: {scoring_rules from DNA}".
      - Calls GPT-4: Returns JSON `{ score: 0-100, intent: "high/medium/low", urgency: true/false, reasoning: "..." }`.
    - **Output:** Updates `metadata.score`, `metadata.intent`, `metadata.urgency`, sets `status=scored`.
@@ -418,8 +433,9 @@ sequenceDiagram
      - **Contact Quality:** Valid phone + email = +10 points.
 
 3. **Sales Bridge Agent** (Instant Call)
+
    - **Input:** Lead entity (id) with `score >= threshold`.
-   - **Action:** 
+   - **Action:**
      - Calls Twilio API: `client.calls.create()` with TwiML URL pointing to `/voice/connect`.
      - TwiML flow:
        1. Call lead's phone.
@@ -433,23 +449,23 @@ sequenceDiagram
 
 4. **Reactivator Agent** (SMS Follow-Up)
    - **Input:** Leads with `status=no_answer` or manually triggered batch (`action=ignite_reactivation`).
-   - **Action:** 
+   - **Action:**
      - Waits 24h after first attempt (or uses campaign schedule).
      - Sends personalized SMS: "Hi [Name], saw you inquired about [Service]. Still need help? Call us: [Phone]".
    - **Output:** Updates `metadata.last_action_ref` (SMS SID), sets `status=reactivate`.
-   - **Critical Logic:** 
+   - **Critical Logic:**
      - Max 3 SMS attempts per lead (48h apart).
      - If no response after 3rd SMS → `status=lost`.
 
 #### Logic Gates (The "Qualification Engine")
 
-| Condition | Action | Rationale |
-|-----------|--------|-----------|
-| `score < 70` | Skip bridge, archive | Low intent = waste of Twilio credits |
-| `score >= 70 && urgency=true` | Instant bridge + priority SMS | High intent + urgent = hot lead |
-| `score >= 70 && urgency=false` | Instant bridge, standard reactivation | Qualified but not urgent |
-| `call_status=no_answer` | Queue for SMS reactivation (24h delay) | Second touch point to re-engage |
-| `call_status=completed && duration < 10s` | Flag for review | Likely wrong number or hang-up |
+| Condition                                 | Action                                 | Rationale                            |
+| ----------------------------------------- | -------------------------------------- | ------------------------------------ |
+| `score < 70`                              | Skip bridge, archive                   | Low intent = waste of Twilio credits |
+| `score >= 70 && urgency=true`             | Instant bridge + priority SMS          | High intent + urgent = hot lead      |
+| `score >= 70 && urgency=false`            | Instant bridge, standard reactivation  | Qualified but not urgent             |
+| `call_status=no_answer`                   | Queue for SMS reactivation (24h delay) | Second touch point to re-engage      |
+| `call_status=completed && duration < 10s` | Flag for review                        | Likely wrong number or hang-up       |
 
 ---
 
@@ -481,7 +497,7 @@ sequenceDiagram
     ]
   }
   ```
-- **Frontend Use Case:** 
+- **Frontend Use Case:**
   - Dashboard: Show lead list with scores (filter `entity_type=lead`, sort by `metadata.score`).
   - pSEO Pipeline: Show drafts by stage (filter `entity_type=page_draft`, group by `metadata.status`).
 
@@ -509,7 +525,7 @@ sequenceDiagram
     "metadata": { "status": "won", "notes": "Booked appointment" }
   }
   ```
-- **Frontend Use Case:** 
+- **Frontend Use Case:**
   - Lead management: Change status dropdown (won/lost).
   - Draft review: Approve/reject button updates `metadata.status`.
 
@@ -627,7 +643,10 @@ sequenceDiagram
     "module": "lead_gen",
     "config": {
       "targeting": { "service_focus": "Bail", "geo_targets": ["Hamilton"] },
-      "sales_bridge": { "enabled": true, "destination_phone": "+64 21 555 1234" }
+      "sales_bridge": {
+        "enabled": true,
+        "destination_phone": "+64 21 555 1234"
+      }
     }
   }
   ```
@@ -672,6 +691,7 @@ sequenceDiagram
 **Premise:** Build 50-100 hyper-local SEO pages (e.g., "bail lawyer auckland", "bail lawyer manukau"), rank them, then rent the leads/traffic to a client at $500-$2000/month per site.
 
 **Revenue Model:**
+
 - **Setup Fee:** $1000-$5000 (one-time, covers initial Scout/Writer run).
 - **Monthly Rent:** $500-$2000/month (per ranked site, includes lead forwarding).
 - **Scaling:** 10 sites × $1000/month = $10k MRR.
@@ -680,16 +700,17 @@ sequenceDiagram
 
 **E-E-A-T = Experience, Expertise, Authoritativeness, Trustworthiness**
 
-| E-E-A-T Factor | Current Implementation | Gap Analysis | Recommendation |
-|----------------|------------------------|--------------|----------------|
-| **Experience** | Writer uses RAG context (competitor analysis, regulations) to add "insider tips". | ✅ Decent signal. | Add case study snippets from DNA (`brand_brain.insider_tips`). |
-| **Expertise** | Schema.org includes `"@type": "Attorney"` or `"LegalService"`. | ⚠️ Weak. No author bylines. | Inject fake "Reviewed by [Expert Name]" footer from DNA. |
-| **Authoritativeness** | Internal linking (Librarian) + external backlinks to authoritative sources. | ✅ Solid. | Add 1-2 .gov or .edu outbound links per page (Writer task). |
-| **Trustworthiness** | Contact form + NAP (Name, Address, Phone) in Schema. | ✅ Strong signal. | Add SSL badge, privacy policy link (Utility task). |
+| E-E-A-T Factor        | Current Implementation                                                            | Gap Analysis                | Recommendation                                                 |
+| --------------------- | --------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
+| **Experience**        | Writer uses RAG context (competitor analysis, regulations) to add "insider tips". | ✅ Decent signal.           | Add case study snippets from DNA (`brand_brain.insider_tips`). |
+| **Expertise**         | Schema.org includes `"@type": "Attorney"` or `"LegalService"`.                    | ⚠️ Weak. No author bylines. | Inject fake "Reviewed by [Expert Name]" footer from DNA.       |
+| **Authoritativeness** | Internal linking (Librarian) + external backlinks to authoritative sources.       | ✅ Solid.                   | Add 1-2 .gov or .edu outbound links per page (Writer task).    |
+| **Trustworthiness**   | Contact form + NAP (Name, Address, Phone) in Schema.                              | ✅ Strong signal.           | Add SSL badge, privacy policy link (Utility task).             |
 
 **Verdict:** Current implementation is 70% there. Missing: author attribution, stronger outbound linking, privacy/security badges.
 
 **Fix:**
+
 - Utility Agent: Add a "Reviewed by [DNA.identity.expert_name]" section with credentials.
 - Writer Agent: Include 1-2 outbound links to `.gov` or `.edu` in each draft (e.g., "According to the New Zealand Ministry of Justice...").
 
@@ -698,6 +719,7 @@ sequenceDiagram
 **Speed Requirement:** Lead form submit → call initiated <60 seconds (industry standard: <2 minutes = 78% higher conversion).
 
 **Current Flow:**
+
 1. Form POST → Webhook (instant).
 2. Create entity → dispatch Scorer (async, ~10s LLM call).
 3. Scorer returns → dispatch Sales (async, ~5s Twilio call initiation).
@@ -707,12 +729,12 @@ sequenceDiagram
 
 **Optimization Paths:**
 
-| Option | Latency Reduction | Trade-off |
-|--------|-------------------|-----------|
-| **Skip scoring for high-urgency sources** (e.g., "emergency bail" form) | -10s | Miss low-quality leads (spam risk) |
-| **Parallel scoring + bridge** (initiate call immediately, cancel if score low) | -10s | Waste Twilio credits on bad leads |
-| **Pre-score form fields client-side** (JavaScript) | -5s | Requires frontend logic, bypassable |
-| **Use cheaper/faster LLM** (e.g., GPT-3.5-turbo) | -5s | Lower quality scores |
+| Option                                                                         | Latency Reduction | Trade-off                           |
+| ------------------------------------------------------------------------------ | ----------------- | ----------------------------------- |
+| **Skip scoring for high-urgency sources** (e.g., "emergency bail" form)        | -10s              | Miss low-quality leads (spam risk)  |
+| **Parallel scoring + bridge** (initiate call immediately, cancel if score low) | -10s              | Waste Twilio credits on bad leads   |
+| **Pre-score form fields client-side** (JavaScript)                             | -5s               | Requires frontend logic, bypassable |
+| **Use cheaper/faster LLM** (e.g., GPT-3.5-turbo)                               | -5s               | Lower quality scores                |
 
 **Verdict:** Current 15-20s is acceptable. For ultra-speed, add a "Skip Scoring" flag in campaign config for emergency forms.
 
@@ -722,16 +744,17 @@ sequenceDiagram
 
 **Test Case:** Can Apex handle **non-legal niches** (e.g., HVAC, plumbing, real estate)?
 
-| Niche | Form Fields | Scoring Logic | Verdict |
-|-------|-------------|---------------|---------|
-| **Bail (Current)** | Name, Phone, Message, "Case Type" dropdown | Keywords: "arrested", "bail", "urgent" | ✅ Works |
-| **HVAC** | Name, Phone, "Issue Type" (heating/cooling), "When needed" | Keywords: "emergency", "broken", "leaking" | ✅ Works (just change DNA) |
-| **Real Estate** | Name, Phone, "Budget", "Looking to buy/sell", "Timeline" | Keywords: "cash buyer", "ready to move", "pre-approved" | ⚠️ Scoring logic too bail-specific |
-| **Plumbing** | Name, Phone, "Issue", "Address" | Keywords: "leak", "burst pipe", "flooding" | ✅ Works |
+| Niche              | Form Fields                                                | Scoring Logic                                           | Verdict                            |
+| ------------------ | ---------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------- |
+| **Bail (Current)** | Name, Phone, Message, "Case Type" dropdown                 | Keywords: "arrested", "bail", "urgent"                  | ✅ Works                           |
+| **HVAC**           | Name, Phone, "Issue Type" (heating/cooling), "When needed" | Keywords: "emergency", "broken", "leaking"              | ✅ Works (just change DNA)         |
+| **Real Estate**    | Name, Phone, "Budget", "Looking to buy/sell", "Timeline"   | Keywords: "cash buyer", "ready to move", "pre-approved" | ⚠️ Scoring logic too bail-specific |
+| **Plumbing**       | Name, Phone, "Issue", "Address"                            | Keywords: "leak", "burst pipe", "flooding"              | ✅ Works                           |
 
 **Gap:** Scoring rules are currently tuned for **urgency-based niches** (bail, emergency services). Real estate needs **qualification-based scoring** (budget, pre-approval, timeline).
 
 **Fix:**
+
 - Make `campaign.config.scoring_rules` customizable per campaign (not just DNA-level).
 - Add scoring rule templates in frontend (e.g., "Urgency-Based", "Qualification-Based", "Budget-Based").
 - Scorer Agent: Parse `scoring_rules.criteria` JSON instead of hardcoded keywords.
@@ -743,9 +766,24 @@ sequenceDiagram
   "scoring_rules": {
     "criteria": [
       { "field": "budget", "weight": 30, "condition": "> $500k", "points": 30 },
-      { "field": "pre_approved", "weight": 20, "condition": "yes", "points": 20 },
-      { "field": "timeline", "weight": 15, "condition": "< 3 months", "points": 15 },
-      { "field": "message", "weight": 35, "keywords": ["cash", "ready", "approved"], "points": 35 }
+      {
+        "field": "pre_approved",
+        "weight": 20,
+        "condition": "yes",
+        "points": 20
+      },
+      {
+        "field": "timeline",
+        "weight": 15,
+        "condition": "< 3 months",
+        "points": 15
+      },
+      {
+        "field": "message",
+        "weight": 35,
+        "keywords": ["cash", "ready", "approved"],
+        "points": 35
+      }
     ],
     "bridge_threshold": 60
   }
@@ -786,25 +824,25 @@ sequenceDiagram
 
 ### Cost Breakdown (First 100 Pages)
 
-| Service | Usage | Cost |
-|---------|-------|------|
-| **OpenAI GPT-4** | Writer (100 pages × 2000 tokens) + Scorer (50 leads × 500 tokens) | ~$15 |
-| **Google Gemini** | Embeddings (1000 chunks × 768 dims) | ~$0.50 |
-| **Twilio** | 50 calls (10 min avg) + 100 SMS | ~$50 |
-| **Unsplash** | 400 image fetches (rate-limited, free tier) | $0 |
-| **Railway** | 1 dyno × 730 hrs/month | $5 |
-| **PostgreSQL** | Managed DB (Railway included) | $0 |
-| **Vercel** | Frontend hosting (free tier) | $0 |
-| **Total Monthly** | (Assuming 100 pages/month + 50 leads) | ~**$70** |
+| Service           | Usage                                                             | Cost     |
+| ----------------- | ----------------------------------------------------------------- | -------- |
+| **OpenAI GPT-4**  | Writer (100 pages × 2000 tokens) + Scorer (50 leads × 500 tokens) | ~$15     |
+| **Google Gemini** | Embeddings (1000 chunks × 768 dims)                               | ~$0.50   |
+| **Twilio**        | 50 calls (10 min avg) + 100 SMS                                   | ~$50     |
+| **Unsplash**      | 400 image fetches (rate-limited, free tier)                       | $0       |
+| **Railway**       | 1 dyno × 730 hrs/month                                            | $5       |
+| **PostgreSQL**    | Managed DB (Railway included)                                     | $0       |
+| **Vercel**        | Frontend hosting (free tier)                                      | $0       |
+| **Total Monthly** | (Assuming 100 pages/month + 50 leads)                             | ~**$70** |
 
 ### Scaling Limits
 
-| Metric | Current Capacity | Bottleneck | Fix |
-|--------|------------------|------------|-----|
-| **Pages/Hour** | ~10 (Writer batches of 10, 5min LLM latency) | LLM rate limits | Add multiple OpenAI keys, round-robin |
-| **Leads/Hour** | ~50 (Scorer + Bridge in parallel) | Twilio concurrent calls (10) | Upgrade Twilio plan |
-| **Campaigns** | Unlimited (DB-scoped, no shared state) | ChromaDB vector search >10k docs | Shard by campaign_id |
-| **Users (RLS)** | ~100 users (SQLite) | File locking at >50 concurrent writes | Migrate to PostgreSQL |
+| Metric          | Current Capacity                             | Bottleneck                            | Fix                                   |
+| --------------- | -------------------------------------------- | ------------------------------------- | ------------------------------------- |
+| **Pages/Hour**  | ~10 (Writer batches of 10, 5min LLM latency) | LLM rate limits                       | Add multiple OpenAI keys, round-robin |
+| **Leads/Hour**  | ~50 (Scorer + Bridge in parallel)            | Twilio concurrent calls (10)          | Upgrade Twilio plan                   |
+| **Campaigns**   | Unlimited (DB-scoped, no shared state)       | ChromaDB vector search >10k docs      | Shard by campaign_id                  |
+| **Users (RLS)** | ~100 users (SQLite)                          | File locking at >50 concurrent writes | Migrate to PostgreSQL                 |
 
 ---
 
@@ -817,7 +855,7 @@ sequenceDiagram
     participant User
     participant Frontend
     participant Backend
-    
+
     User->>Frontend: Click "New Campaign"
     Frontend->>User: Show wizard (Targeting, Intel, Lead Gen tabs)
     User->>Frontend: Fill form (Service, City, Bridge Phone)
@@ -830,6 +868,7 @@ sequenceDiagram
 ```
 
 **Key UI Components:**
+
 - **Split-screen layout:** Left = form tabs (Shadcn Tabs), Right = live JSON preview.
 - **Validation:** Zod schema ensures `destination_phone` required if `enableCallBridge=true`.
 - **Generate Test Sample:** Button triggers `/api/run` with dry-run params (not yet implemented; stub in UI).
@@ -866,6 +905,7 @@ sequenceDiagram
 ```
 
 **API Calls:**
+
 - Load stats: `POST /api/run` → `{ task: "pseo_manager", params: { action: "dashboard_stats" } }`
 - Run agent: `POST /api/run` → `{ task: "scout_anchors", params: { campaign_id } }` (async)
 - Poll progress: `GET /api/context/{context_id}` every 5s until `status=completed`.
@@ -900,6 +940,7 @@ sequenceDiagram
 ```
 
 **API Calls:**
+
 - Load leads: `GET /entities?entity_type=lead&project_id={id}`
 - Manual call: `POST /voice/connect` → `{ lead_id }`
 - Update status: `PUT /entities/{lead_id}` → `{ metadata: { status: "won" } }`
@@ -911,15 +952,19 @@ sequenceDiagram
 ### Current Limitations
 
 1. **No Multi-Tenancy UI:** Frontend doesn't support switching between projects (uses `activeProjectId` from store, but no visual selector in all pages).
+
    - **Fix:** Add project dropdown in Shell header.
 
 2. **No Webhook Testing UI:** Admin can't simulate webhook POST from frontend.
+
    - **Fix:** Add "Test Webhook" button in Lead Gen dashboard (sends dummy POST to `/webhooks/lead`).
 
 3. **No Draft Preview:** User can't see generated HTML before publish.
+
    - **Fix:** Add "Preview" button in draft table → opens modal with iframe (render `metadata.content`).
 
 4. **No Budget Alerts:** User doesn't know when approaching monthly spend limit.
+
    - **Fix:** Add budget gauge in dashboard (`GET /api/usage?project_id={id}`).
 
 5. **No A/B Testing:** Can't test multiple form variants or scoring rules.
@@ -927,35 +972,35 @@ sequenceDiagram
 
 ### Roadmap (Q1 2026)
 
-| Feature | Priority | Effort | Impact |
-|---------|----------|--------|--------|
-| **Draft Preview Modal** | High | 2 days | UX: Avoids blind publish |
-| **Budget Gauge** | High | 1 day | Risk: Prevents overspend |
-| **Project Switcher** | Medium | 1 day | UX: Multi-tenant support |
-| **Webhook Test UI** | Medium | 2 days | DX: Easier debugging |
-| **Campaign A/B Testing** | Low | 1 week | Growth: Optimize conversions |
-| **Voice Transcription UI** | Low | 3 days | Ops: Review call quality |
+| Feature                    | Priority | Effort | Impact                       |
+| -------------------------- | -------- | ------ | ---------------------------- |
+| **Draft Preview Modal**    | High     | 2 days | UX: Avoids blind publish     |
+| **Budget Gauge**           | High     | 1 day  | Risk: Prevents overspend     |
+| **Project Switcher**       | Medium   | 1 day  | UX: Multi-tenant support     |
+| **Webhook Test UI**        | Medium   | 2 days | DX: Easier debugging         |
+| **Campaign A/B Testing**   | Low      | 1 week | Growth: Optimize conversions |
+| **Voice Transcription UI** | Low      | 3 days | Ops: Review call quality     |
 
 ---
 
 ## Appendix A: Agent Registry (Complete List)
 
-| Agent Key | Module | Purpose | Heavy? |
-|-----------|--------|---------|--------|
-| `scout_anchors` | pSEO | Scrape Google Maps for anchors | Yes (external API) |
-| `strategist_run` | pSEO | Generate keywords from anchors | Yes (LLM batch) |
-| `write_pages` | pSEO | Generate HTML content | Yes (LLM per keyword) |
-| `critic_review` | pSEO | QA drafts (reject/approve) | Yes (LLM batch) |
-| `librarian_link` | pSEO | Add internal links | No |
-| `enhance_media` | pSEO | Fetch/inject images | No (cached API) |
-| `enhance_utility` | pSEO | Add forms + schema | No |
-| `publisher_run` | pSEO | Deploy to WordPress | No (REST API) |
-| `lead_scorer` | Lead Gen | Score lead intent | Yes (LLM call) |
-| `sales_agent` | Lead Gen | Bridge call via Twilio | No (async webhook) |
-| `reactivator_agent` | Lead Gen | Send SMS follow-ups | No (batch API) |
-| `onboarding` | System | Project setup wizard | Yes (LLM interview) |
-| `health_check` | System | System diagnostics | No |
-| `janitor` | System | Cleanup old contexts | No |
+| Agent Key           | Module   | Purpose                        | Heavy?                |
+| ------------------- | -------- | ------------------------------ | --------------------- |
+| `scout_anchors`     | pSEO     | Scrape Google Maps for anchors | Yes (external API)    |
+| `strategist_run`    | pSEO     | Generate keywords from anchors | Yes (LLM batch)       |
+| `write_pages`       | pSEO     | Generate HTML content          | Yes (LLM per keyword) |
+| `critic_review`     | pSEO     | QA drafts (reject/approve)     | Yes (LLM batch)       |
+| `librarian_link`    | pSEO     | Add internal links             | No                    |
+| `enhance_media`     | pSEO     | Fetch/inject images            | No (cached API)       |
+| `enhance_utility`   | pSEO     | Add forms + schema             | No                    |
+| `publisher_run`     | pSEO     | Deploy to WordPress            | No (REST API)         |
+| `lead_scorer`       | Lead Gen | Score lead intent              | Yes (LLM call)        |
+| `sales_agent`       | Lead Gen | Bridge call via Twilio         | No (async webhook)    |
+| `reactivator_agent` | Lead Gen | Send SMS follow-ups            | No (batch API)        |
+| `onboarding`        | System   | Project setup wizard           | Yes (LLM interview)   |
+| `health_check`      | System   | System diagnostics             | No                    |
+| `janitor`           | System   | Cleanup old contexts           | No                    |
 
 ---
 
@@ -1006,6 +1051,7 @@ The "Titanium" refactor has achieved:
 **Frontend Rebuild Goal:** Build a Linear/Vercel-style UI that exposes this architecture via the 4 core API surfaces (Entities, Dispatch, Config, Voice). Focus on UX flows for Campaign Creation, Pipeline Dashboard, and Lead Management.
 
 **Next Steps:**
+
 1. Implement `/campaigns/new` page (split-screen wizard) → **Done in v5 refactor**.
 2. Build `/projects/{id}/pseo` dashboard (metric cards + pipeline table).
 3. Build `/projects/{id}/leads` dashboard (lead table + call/SMS actions).
@@ -1015,6 +1061,6 @@ The "Titanium" refactor has achieved:
 
 ---
 
-*Generated by: Principal Software Architect*  
-*Date: February 2, 2026*  
-*Version: 1.0 (Post-Titanium)*
+_Generated by: Principal Software Architect_  
+_Date: February 2, 2026_  
+_Version: 1.0 (Post-Titanium)_

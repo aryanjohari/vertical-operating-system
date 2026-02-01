@@ -1,0 +1,237 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import { getEntities, connectCall } from "@/lib/api";
+import type { Lead } from "@/types";
+import { Phone, X } from "lucide-react";
+import { toast } from "sonner";
+import { cn } from "@/lib/utils";
+
+function AiScoreBadge({ score }: { score: number | undefined }) {
+  const s = score ?? 0;
+  if (s > 80) {
+    return (
+      <span className="acid-glow acid-glow-green inline-flex items-center rounded px-2 py-0.5 text-xs font-medium text-neon-green">
+        {s}
+      </span>
+    );
+  }
+  if (s < 40) {
+    return (
+      <span className="inline-flex items-center rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+        {s}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded border border-border px-2 py-0.5 text-xs font-medium text-foreground">
+      {s}
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: string | undefined }) {
+  const s = (status ?? "new").toLowerCase();
+  if (s === "spam_blocked") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-primary/30 px-2 py-0.5 text-xs font-medium text-primary">
+        <X className="h-3 w-3" />
+        Blocked
+      </span>
+    );
+  }
+  if (s === "called") {
+    return (
+      <span className="inline-flex items-center rounded bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-400">
+        Called
+      </span>
+    );
+  }
+  if (s === "new") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-secondary/20 px-2 py-0.5 text-xs font-medium text-secondary">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-secondary" />
+        New
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+      {s}
+    </span>
+  );
+}
+
+function TableSkeleton() {
+  return (
+    <div className="glass-panel animate-pulse overflow-hidden">
+      <div className="h-12 border-b border-border" />
+      {[1, 2, 3, 4, 5].map((i) => (
+        <div key={i} className="flex h-14 border-b border-border last:border-0">
+          <div className="w-1/5 bg-muted/50 p-3" />
+          <div className="w-1/5 bg-muted/30 p-3" />
+          <div className="w-1/4 bg-muted/30 p-3" />
+          <div className="w-16 bg-muted/20 p-3" />
+          <div className="w-24 bg-muted/20 p-3" />
+          <div className="flex-1 bg-muted/20 p-3" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export default function LeadsPage() {
+  const params = useParams();
+  const projectId = params.projectId as string;
+
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [callingId, setCallingId] = useState<string | null>(null);
+
+  const loadLeads = async () => {
+    const data = await getEntities<Lead>("lead", projectId);
+    setLeads(data);
+  };
+
+  useEffect(() => {
+    loadLeads()
+      .catch(() => setLeads([]))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  const handleCallNow = async (lead: Lead) => {
+    const phone = lead.primary_contact ?? lead.metadata?.phone;
+    if (!phone) {
+      toast.error("No phone number for this lead.");
+      return;
+    }
+    setCallingId(lead.id);
+    const toastId = toast.loading("Connecting...", {
+      style: {
+        background: "hsl(240 3.7% 11.9%)",
+        borderColor: "hsl(0 100% 60%)",
+      },
+    });
+    try {
+      const result = await connectCall(lead.id, projectId);
+      toast.dismiss(toastId);
+      if (result.status === "success") {
+        toast.success("Call initiated. You will be connected shortly.");
+        await loadLeads();
+      } else {
+        toast.error(result.message ?? "Call failed.");
+      }
+    } catch (err) {
+      toast.dismiss(toastId);
+      toast.error("Call failed. Please try again.", {
+        style: {
+          background: "hsl(0 100% 60% / 0.2)",
+          borderColor: "hsl(0 100% 60%)",
+        },
+      });
+    } finally {
+      setCallingId(null);
+    }
+  };
+
+  const getServiceRequested = (lead: Lead) => {
+    const data = lead.metadata?.data as Record<string, unknown> | undefined;
+    const desc = lead.metadata?.description as string | undefined;
+    if (data?.service) return String(data.service);
+    if (data?.message) return String(data.message);
+    if (desc) return desc;
+    return "—";
+  };
+
+  return (
+    <div className="space-y-6">
+      <h1 className="acid-text text-2xl font-bold text-foreground">
+        Revenue Center
+      </h1>
+
+      {loading ? (
+        <TableSkeleton />
+      ) : (
+        <div className="glass-panel overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-border">
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Name
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Phone
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Service Requested
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    AI Score
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Status
+                  </th>
+                  <th className="px-4 py-3 text-right text-sm font-medium text-muted-foreground">
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {leads.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-muted-foreground">
+                      No leads yet.
+                    </td>
+                  </tr>
+                ) : (
+                  leads.map((lead) => (
+                    <tr
+                      key={lead.id}
+                      className="border-b border-border last:border-0 transition-colors hover:bg-muted/30"
+                    >
+                      <td className="px-4 py-3 font-medium text-foreground">
+                        {lead.name}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {lead.primary_contact ?? lead.metadata?.phone ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground max-w-[200px] truncate">
+                        {getServiceRequested(lead)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <AiScoreBadge score={lead.metadata?.score as number} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <StatusBadge
+                          status={lead.metadata?.status as string}
+                        />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {(lead.metadata?.status as string) !== "spam_blocked" &&
+                          (lead.primary_contact ?? lead.metadata?.phone) && (
+                            <button
+                              type="button"
+                              onClick={() => handleCallNow(lead)}
+                              disabled={!!callingId}
+                              className={cn(
+                                "acid-glow inline-flex items-center gap-2 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                              )}
+                            >
+                              <Phone className="h-4 w-4" />
+                              {callingId === lead.id ? "Connecting..." : "Call Now"}
+                            </button>
+                          )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
