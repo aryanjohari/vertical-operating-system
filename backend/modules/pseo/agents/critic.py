@@ -94,14 +94,16 @@ class CriticAgent(BaseAgent):
         forbidden_topics = brand_brain.get("forbidden_topics", [])
         brand_voice = brand_brain.get("voice_tone", "Professional")
 
-        # 2. FETCH WORK ITEM (Find 'draft' drafts - Titanium status)
+        # 2. FETCH WORK ITEM (Find 'draft' or 'rejected' drafts; optional draft_id for row control)
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         to_review = [
             d for d in all_drafts
             if d.get("metadata", {}).get("campaign_id") == campaign_id
-            and d.get("metadata", {}).get("status") == "draft"
+            and d.get("metadata", {}).get("status") in ("draft", "rejected")
         ]
-
+        draft_id_param = input_data.params.get("draft_id")
+        if draft_id_param:
+            to_review = [d for d in to_review if d.get("id") == draft_id_param]
         if not to_review:
             return AgentOutput(status="complete", message="No drafts waiting for review.")
 

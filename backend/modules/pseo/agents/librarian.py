@@ -62,7 +62,9 @@ class LibrarianAgent(BaseAgent):
             d for d in campaign_drafts
             if (d.get("metadata", {}).get("status") or "") == "validated"
         ]
-
+        draft_id_param = input_data.params.get("draft_id")
+        if draft_id_param:
+            validated_drafts = [d for d in validated_drafts if d.get("id") == draft_id_param]
         if not validated_drafts:
             return AgentOutput(status="complete", message="No validated drafts waiting for linking.")
 

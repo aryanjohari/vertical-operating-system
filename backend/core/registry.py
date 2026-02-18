@@ -42,7 +42,7 @@ class AgentRegistry:
 
     # Manager actions that should run as heavy (background); key = task name, value = list of action strings
     HEAVY_ACTIONS_BY_TASK: Dict[str, List[str]] = {
-        "lead_gen_manager": ["lead_received", "ignite_reactivation", "instant_call", "process_scheduled_bridges"],
+        "lead_gen_manager": ["lead_received", "ignite_reactivation", "instant_call", "process_scheduled_bridges", "run_next_for_lead"],
     }
 
 

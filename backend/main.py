@@ -223,14 +223,14 @@ def health_check_endpoint():
 
 
 class SettingsInput(BaseModel):
-    wp_url: str
-    wp_user: str
-    wp_password: str
+    wp_url: str = ""
+    wp_user: str = ""
+    wp_password: Optional[str] = ""  # Optional: only update password when non-empty
 
 
 @app.get("/api/settings")
 async def get_settings(user_id: str = Depends(get_current_user)):
-    """Get WordPress credentials for a user."""
+    """Get WordPress credentials for a user (password never returned)."""
     try:
         secrets = memory.get_client_secrets(user_id)
         if secrets:
@@ -250,14 +250,21 @@ async def save_settings(
     request: SettingsInput,
     user_id: str = Depends(get_current_user),
 ):
-    """Save WordPress credentials for a user."""
+    """Save WordPress credentials. If wp_password is empty, only URL and username are updated."""
     try:
-        success = memory.save_client_secrets(
-            user_id=user_id,
-            wp_url=request.wp_url,
-            wp_user=request.wp_user,
-            wp_password=request.wp_password,
-        )
+        if request.wp_password and request.wp_password.strip():
+            success = memory.save_client_secrets(
+                user_id=user_id,
+                wp_url=request.wp_url or "",
+                wp_user=request.wp_user or "",
+                wp_password=request.wp_password,
+            )
+        else:
+            success = memory.save_client_secrets_partial(
+                user_id=user_id,
+                wp_url=request.wp_url or "",
+                wp_user=request.wp_user or "",
+            )
         if success:
             logger.info(f"Saved settings for user {user_id}")
             return {"success": True, "message": "Settings saved successfully"}

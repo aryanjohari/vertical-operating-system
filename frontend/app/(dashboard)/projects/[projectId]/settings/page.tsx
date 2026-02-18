@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getProjectConfig, getFormSchema, updateProjectConfig } from "@/lib/api";
+import { getProjectConfig, getFormSchema, updateProjectConfig, getSettings, saveSettings } from "@/lib/api";
 import { toast } from "sonner";
 import { DynamicForm } from "@/components/forms/DynamicForm";
 import type { FormSchema } from "@/lib/api";
@@ -17,16 +17,25 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  const [wpUrl, setWpUrl] = useState("");
+  const [wpUser, setWpUser] = useState("");
+  const [wpPassword, setWpPassword] = useState("");
+  const [wpSaving, setWpSaving] = useState(false);
+
   const loadSchemaAndConfig = useCallback(async () => {
     if (!projectId) return;
     setFetchError(null);
     try {
-      const [schemaRes, config] = await Promise.all([
+      const [schemaRes, config, settings] = await Promise.all([
         getFormSchema("profile"),
         getProjectConfig(projectId),
+        getSettings(),
       ]);
       setSchema(schemaRes.schema);
       setDefaults((config && Object.keys(config).length > 0 ? config : schemaRes.defaults ?? {}) as Record<string, unknown>);
+      setWpUrl(settings.wp_url ?? "");
+      setWpUser(settings.wp_user ?? "");
+      setWpPassword("");
     } catch (e) {
       setFetchError(e instanceof Error ? e.message : "Failed to load form");
       setSchema(null);
@@ -58,6 +67,23 @@ export default function SettingsPage() {
     },
     [projectId, loadSchemaAndConfig]
   );
+
+  const handleSaveWordPress = useCallback(async () => {
+    setWpSaving(true);
+    try {
+      await saveSettings({
+        wp_url: wpUrl.trim(),
+        wp_user: wpUser.trim(),
+        wp_password: wpPassword || undefined,
+      });
+      setWpPassword("");
+      toast.success("WordPress credentials saved.");
+    } catch {
+      toast.error("Failed to save WordPress credentials.");
+    } finally {
+      setWpSaving(false);
+    }
+  }, [wpUrl, wpUser, wpPassword]);
 
   if (loading) {
     return (
@@ -112,6 +138,64 @@ export default function SettingsPage() {
         ) : (
           <p className="text-sm text-muted-foreground">No form schema available.</p>
         )}
+      </div>
+
+      <div className="glass-panel max-w-3xl space-y-4 p-6">
+        <h2 className="text-lg font-semibold text-foreground">WordPress / CMS</h2>
+        <p className="text-sm text-muted-foreground">
+          Credentials used by the Publisher to post funnel pages to your WordPress site (wp-json/wp/v2/posts).
+          Use Application Password in production. Stored securely per account.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-1">
+          <div>
+            <label htmlFor="wp_url" className="mb-1 block text-sm font-medium text-foreground">
+              WordPress URL
+            </label>
+            <input
+              id="wp_url"
+              type="url"
+              value={wpUrl}
+              onChange={(e) => setWpUrl(e.target.value)}
+              placeholder="https://yoursite.com"
+              className="w-full rounded border border-border bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+          <div>
+            <label htmlFor="wp_user" className="mb-1 block text-sm font-medium text-foreground">
+              Username
+            </label>
+            <input
+              id="wp_user"
+              type="text"
+              value={wpUser}
+              onChange={(e) => setWpUser(e.target.value)}
+              placeholder="WordPress username or app user"
+              className="w-full rounded border border-border bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+          <div>
+            <label htmlFor="wp_password" className="mb-1 block text-sm font-medium text-foreground">
+              Password / Application Password
+            </label>
+            <input
+              id="wp_password"
+              type="password"
+              value={wpPassword}
+              onChange={(e) => setWpPassword(e.target.value)}
+              placeholder="Leave blank to keep current password"
+              autoComplete="new-password"
+              className="w-full rounded border border-border bg-background px-3 py-2 text-foreground placeholder:text-muted-foreground"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleSaveWordPress}
+            disabled={wpSaving}
+            className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
+          >
+            {wpSaving ? "Saving…" : "Save WordPress credentials"}
+          </button>
+        </div>
       </div>
     </div>
   );

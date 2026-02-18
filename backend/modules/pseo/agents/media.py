@@ -78,7 +78,9 @@ class MediaAgent(BaseAgent):
             if d.get("metadata", {}).get("campaign_id") == campaign_id
             and d.get("metadata", {}).get("status") == "ready_for_media"
         ]
-
+        draft_id_param = input_data.params.get("draft_id")
+        if draft_id_param:
+            media_ready_drafts = [d for d in media_ready_drafts if d.get("id") == draft_id_param]
         if not media_ready_drafts:
             return AgentOutput(status="complete", message="No drafts waiting for images.")
 

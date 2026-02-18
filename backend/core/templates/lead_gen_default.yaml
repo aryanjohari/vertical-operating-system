@@ -49,6 +49,9 @@ schema_template: ""
 call_button_template: ""
 # Optional: expected webhook path for post-Utility validation (default /api/webhooks/lead)
 form_webhook_path: "/api/webhooks/lead"
+# For deployed backend (e.g. Railway): full base URL so forms on WordPress POST to your API.
+# Example: https://your-app.railway.app . Leave empty to use relative path (same-origin only).
+webhook_base_url: ""
 
 # Optional custom rules for LLM scorer
 scoring_rules: {}

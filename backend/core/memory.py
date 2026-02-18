@@ -993,7 +993,7 @@ class MemoryManager:
             return None
 
     def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
-        """Save or update WordPress credentials for a user."""
+        """Save or update WordPress credentials for a user. Use save_client_secrets_partial to update only url/user."""
         self.logger.debug(f"Saving client secrets for user {user_id}")
         try:
             try:
@@ -1001,7 +1001,7 @@ class MemoryManager:
             except Exception as e:
                 self.logger.error(f"Encryption failed for wp_password for user {user_id}: {e}")
                 return False
-            
+
             sql = self.db_factory.get_insert_or_replace_sql(
                 table="client_secrets",
                 columns=["user_id", "wp_url", "wp_user", "wp_auth_hash"],
@@ -1009,7 +1009,7 @@ class MemoryManager:
             )
             with self.db_factory.get_cursor() as cursor:
                 cursor.execute(sql, (user_id, wp_url, wp_user, encrypted_password))
-            
+
             self.logger.info(f"Successfully saved client secrets for user {user_id}")
             return True
         except DatabaseError as e:
@@ -1017,6 +1017,39 @@ class MemoryManager:
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error saving client secrets for user {user_id}: {e}")
+            return False
+
+    def save_client_secrets_partial(self, user_id: str, wp_url: str, wp_user: str) -> bool:
+        """Update only WordPress URL and username; leave password unchanged. Creates row if missing (with empty hash)."""
+        self.logger.debug(f"Updating client secrets (url/user only) for user {user_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"SELECT wp_auth_hash FROM client_secrets WHERE user_id = {placeholder}",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                existing_hash = row[0] if row else None
+                if existing_hash is not None:
+                    cursor.execute(
+                        f"UPDATE client_secrets SET wp_url = {placeholder}, wp_user = {placeholder} WHERE user_id = {placeholder}",
+                        (wp_url, wp_user, user_id),
+                    )
+                else:
+                    sql = self.db_factory.get_insert_or_replace_sql(
+                        table="client_secrets",
+                        columns=["user_id", "wp_url", "wp_user", "wp_auth_hash"],
+                        primary_key="user_id",
+                    )
+                    cursor.execute(sql, (user_id, wp_url, wp_user, ""))
+            self.logger.info(f"Updated WordPress URL/user for user {user_id}")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating client secrets for user {user_id}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating client secrets for user {user_id}: {e}")
             return False
 
     # ====================================================

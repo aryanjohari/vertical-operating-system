@@ -44,7 +44,7 @@ def _load_form_template(lead_gen_cfg: Optional[Dict] = None) -> str:
     if os.path.exists(_DEFAULT_FORM_TEMPLATE_PATH):
         with open(_DEFAULT_FORM_TEMPLATE_PATH, "r") as f:
             return f.read()
-    return """<form class="lead-gen-form" method="post" action="/api/webhooks/lead">
+    return """<form class="lead-gen-form" method="post" action="{{ form_action_url }}">
 {% for field in fields %}<label for="{{ field.name }}">{{ field.label }}</label>
 {% if field.type == "select" %}<select name="{{ field.name }}" id="{{ field.name }}"{% if field.required %} required{% endif %}>{% for opt in field.options or [] %}<option value="{{ opt.value or opt.label or opt }}">{{ opt.label or opt.value or opt }}</option>{% endfor %}</select>
 {% else %}<input type="{{ field.type if field.type in ('text','tel','email') else 'text' }}" name="{{ field.name }}" id="{{ field.name }}"{% if field.required %} required{% endif %} />{% endif %}
@@ -151,12 +151,21 @@ class UtilityAgent(BaseAgent):
             "price_currency": "NZD",
         }
 
+    def _get_form_action_url(self, lead_gen_cfg: Optional[Dict] = None) -> str:
+        """Full URL for form action so WordPress-hosted pages POST to deployed backend (e.g. Railway)."""
+        base = (lead_gen_cfg or {}).get("webhook_base_url") or os.getenv("WEBHOOK_BASE_URL") or os.getenv("API_URL") or ""
+        path = (lead_gen_cfg or {}).get("form_webhook_path") or "/api/webhooks/lead"
+        if base:
+            return f"{base.rstrip('/')}{path}"
+        return path
+
     def _render_form_html(self, fields: List[Dict[str, Any]], lead_gen_cfg: Optional[Dict] = None) -> str:
         """Render form HTML via Jinja2 template (campaign-specific or default)."""
         template_str = _load_form_template(lead_gen_cfg)
         env = Environment(loader=BaseLoader(), autoescape=True)
         template = env.from_string(template_str)
-        return template.render(fields=fields)
+        form_action_url = self._get_form_action_url(lead_gen_cfg)
+        return template.render(fields=fields, form_action_url=form_action_url)
 
     def _render_schema_script(self, draft: dict, full_config: dict, lead_gen_cfg: Optional[Dict] = None) -> str:
         """Render JSON-LD schema via Jinja2 template (campaign-specific or default)."""
@@ -199,9 +208,11 @@ class UtilityAgent(BaseAgent):
         utility_ready_drafts = [
             d for d in all_drafts
             if d.get("metadata", {}).get("campaign_id") == campaign_id
-            and d.get("metadata", {}).get("status") in ["ready_for_utility", "ready_for_media"]
+            and d.get("metadata", {}).get("status") in ["ready_for_utility", "ready_for_media", "utility_validation_failed"]
         ]
-
+        draft_id_param = input_data.params.get("draft_id")
+        if draft_id_param:
+            utility_ready_drafts = [d for d in utility_ready_drafts if d.get("id") == draft_id_param]
         if not utility_ready_drafts:
             return AgentOutput(status="complete", message="No drafts waiting for utility processing.")
 

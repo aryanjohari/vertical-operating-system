@@ -9,6 +9,7 @@ import {
   getCampaignDrafts,
   getPseoStats,
   runPseoStep,
+  runNextForDraft,
   updateCampaignConfig,
   updateEntity,
   deleteEntity,
@@ -30,6 +31,32 @@ const PHASES: { key: string; label: string; step: string; statKey: string }[] = 
   { key: "utility", label: "Utility", step: "enhance_utility", statKey: "4_imaged" },
   { key: "publisher", label: "Publisher", step: "publish", statKey: "5_ready" },
 ];
+
+/** Draft statuses that have a "Run next" step (phase-based row control). */
+const DRAFT_STATUS_WITH_NEXT_STEP = new Set([
+  "pending_writer",
+  "draft",
+  "rejected",
+  "validated",
+  "ready_for_media",
+  "ready_for_utility",
+  "utility_validation_failed",
+  "ready_to_publish",
+]);
+
+function getNextStepLabel(status: string): string {
+  const map: Record<string, string> = {
+    pending_writer: "Write",
+    draft: "Review",
+    rejected: "Review",
+    validated: "Link",
+    ready_for_media: "Add image",
+    ready_for_utility: "Utility",
+    utility_validation_failed: "Utility",
+    ready_to_publish: "Publish",
+  };
+  return map[status] ?? "—";
+}
 
 type Campaign = {
   id: string;
@@ -73,6 +100,7 @@ export default function CampaignDashboardPage() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState<string | null>(null);
+  const [runningDraftId, setRunningDraftId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editH1, setEditH1] = useState("");
   const [editKeywords, setEditKeywords] = useState("");
@@ -226,6 +254,28 @@ export default function CampaignDashboardPage() {
       }
     },
     [editingId, editH1, editKeywords, drafts.entities, refresh]
+  );
+
+  const handleRunNextForDraft = useCallback(
+    async (draftId: string) => {
+      if (!projectId || !campaignId) return;
+      setRunningDraftId(draftId);
+      try {
+        const res = await runNextForDraft(projectId, campaignId, draftId);
+        if (res.status === "success" || res.status === "complete") {
+          toast.success(res.message ?? "Step completed");
+        } else {
+          toast.error(res.message ?? "Step failed");
+        }
+        refresh();
+      } catch {
+        toast.error("Request failed");
+        refresh();
+      } finally {
+        setRunningDraftId(null);
+      }
+    },
+    [projectId, campaignId, refresh]
   );
 
   const pipelineStatus =
@@ -395,6 +445,16 @@ export default function CampaignDashboardPage() {
                             </>
                           ) : (
                             <>
+                              {DRAFT_STATUS_WITH_NEXT_STEP.has(status) && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRunNextForDraft(d.id as string)}
+                                  disabled={runningDraftId === d.id}
+                                  className="mr-2 rounded border border-primary bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
+                                >
+                                  {runningDraftId === d.id ? "Running…" : `Run next (${getNextStepLabel(status)})`}
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => startEdit(d)}

@@ -54,7 +54,7 @@ class LeadGenManager(BaseAgent):
                 return AgentOutput(status="error", message="Campaign not found or access denied.")
             if campaign.get("module") != "lead_gen":
                 return AgentOutput(status="error", message=f"Campaign {campaign_id} is not a Lead Gen campaign.")
-        elif action not in ("lead_received", "dashboard_stats"):
+        elif action not in ("lead_received", "dashboard_stats", "run_next_for_lead"):
             return AgentOutput(
                 status="error",
                 message="campaign_id is required for this action. Please create a campaign or provide campaign_id.",
@@ -398,8 +398,98 @@ Return only valid JSON, no markdown formatting."""
                     self.logger.error(f"❌ Transcription failed: {e}", exc_info=True)
                     return AgentOutput(status="error", message=f"Transcription failed: {str(e)}")
 
-            # --- ACTION 5: DASHBOARD STATS (Default) ---
-            # Returns data for the Frontend Graphs
+            # --- ACTION 5: RUN NEXT FOR LEAD (Phase-based row control) ---
+            elif action == "run_next_for_lead":
+                lead_id = input_data.params.get("lead_id")
+                if not lead_id:
+                    return AgentOutput(status="error", message="run_next_for_lead requires lead_id.")
+                all_leads = memory.get_entities(tenant_id=user_id, entity_type="lead", project_id=project_id, limit=1000)
+                lead = next((l for l in all_leads if l.get("id") == lead_id), None)
+                if not lead:
+                    return AgentOutput(status="error", message="Lead not found or access denied.")
+                if (lead.get("metadata") or {}).get("campaign_id") != campaign_id:
+                    return AgentOutput(status="error", message="Lead does not belong to this campaign.")
+                meta = (lead.get("metadata") or {}).copy()
+                score = meta.get("score") if meta.get("score") is not None else None
+                bridge_status = meta.get("bridge_status")
+                scheduled_bridge_at = meta.get("scheduled_bridge_at")
+                now_iso = datetime.utcnow().isoformat() + "Z"
+
+                # Next step: Score (no score yet)
+                if score is None:
+                    score_result = await asyncio.wait_for(
+                        kernel.dispatch(
+                            AgentInput(
+                                task="lead_scorer",
+                                user_id=user_id,
+                                params={"lead_id": lead_id, "project_id": project_id, "campaign_id": campaign_id},
+                            )
+                        ),
+                        timeout=60,
+                    )
+                    if score_result.status != "success":
+                        return score_result
+                    score = score_result.data.get("score", 0) if isinstance(score_result.data, dict) else 0
+                    sb = config.get("modules", {}).get("lead_gen", {}).get("sales_bridge", {})
+                    min_score_to_ring = int(sb.get("min_score_to_ring", 90))
+                    if score < min_score_to_ring:
+                        return AgentOutput(
+                            status="success",
+                            data={"lead_id": lead_id, "score": score_result.data, "next_step": None},
+                            message=f"Lead scored ({score}); not eligible for bridge.",
+                        )
+                    bridge_review_email = (sb.get("bridge_review_email") or "").strip()
+                    if not bridge_review_email:
+                        return AgentOutput(
+                            status="success",
+                            data={"lead_id": lead_id, "score": score_result.data, "next_step": None},
+                            message="Lead scored; bridge review email not configured.",
+                        )
+                    bridge_delay_minutes = int(sb.get("bridge_delay_minutes", 10))
+                    scheduled_at = (datetime.utcnow() + timedelta(minutes=bridge_delay_minutes)).isoformat() + "Z"
+                    memory.update_entity(lead_id, {"scheduled_bridge_at": scheduled_at, "bridge_status": "scheduled"}, tenant_id=user_id)
+                    lead = memory.get_entity(lead_id, user_id) or lead
+                    lead_name = lead.get("name", "—")
+                    lead_contact = lead.get("primary_contact", "—")
+                    lead_message = (lead.get("metadata") or {}).get("data") or {}
+                    lead_message = lead_message.get("message", "") if isinstance(lead_message, dict) else str(lead_message)[:500]
+                    app_url = os.getenv("NEXT_PUBLIC_APP_URL") or os.getenv("APP_URL") or "https://app.apex.local"
+                    dashboard_link = f"{app_url.rstrip('/')}/projects/{project_id}"
+                    subject = f"High-value lead (score {score}) – bridge in {bridge_delay_minutes} min or connect now"
+                    body_plain = f"High-value lead (score {score}/100)\nName: {lead_name}\nContact: {lead_contact}\nMessage: {lead_message}\nBridge in {bridge_delay_minutes} min or connect now: {dashboard_link}"
+                    body_html = f"<p>High-value lead (score <strong>{score}/100</strong>)</p><p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p><p>Bridge in {bridge_delay_minutes} min, or <a href=\"{dashboard_link}\">connect now</a>.</p>"
+                    send_email(to=bridge_review_email, subject=subject, body_plain=body_plain, body_html=body_html)
+                    return AgentOutput(
+                        status="success",
+                        data={"lead_id": lead_id, "score": score_result.data, "scheduled_bridge_at": scheduled_at, "next_step": {"action": "bridge", "label": "Bridge call"}},
+                        message=f"Lead scored; bridge scheduled in {bridge_delay_minutes} min.",
+                    )
+
+                # Next step: Bridge (scheduled and time passed, within business hours)
+                if bridge_status == "scheduled" and scheduled_bridge_at and scheduled_bridge_at <= now_iso and within_business_hours(config):
+                    result = await asyncio.wait_for(
+                        kernel.dispatch(
+                            AgentInput(
+                                task="lead_gen_manager",
+                                user_id=user_id,
+                                params={"action": "instant_call", "lead_id": lead_id, "project_id": project_id, "campaign_id": campaign_id},
+                            )
+                        ),
+                        timeout=60,
+                    )
+                    memory.update_entity(lead_id, {"bridge_status": "bridge_attempted"}, tenant_id=user_id)
+                    return AgentOutput(
+                        status=result.status,
+                        message=result.message,
+                        data={"lead_id": lead_id, "result": result.data, "next_step": None},
+                    )
+                if bridge_status == "scheduled" and scheduled_bridge_at and scheduled_bridge_at > now_iso:
+                    return AgentOutput(status="success", data={"lead_id": lead_id, "next_step": {"action": "bridge", "label": "Bridge (scheduled)"}}, message="Bridge scheduled; not yet time.")
+                if bridge_status == "scheduled" and not within_business_hours(config):
+                    return AgentOutput(status="success", data={"lead_id": lead_id, "next_step": {"action": "bridge", "label": "Bridge (outside hours)"}}, message="Outside business hours.")
+                return AgentOutput(status="success", data={"lead_id": lead_id, "next_step": None}, message="No next step for this lead.")
+
+            # --- ACTION 6: DASHBOARD STATS (Default) ---
             else:
                 stats = self._get_stats(project_id, user_id, campaign_id)
                 return AgentOutput(status="success", data=stats, message="Stats retrieved.")

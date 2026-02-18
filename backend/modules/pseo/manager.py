@@ -138,6 +138,13 @@ class ManagerAgent(BaseAgent):
                 project_id=project_id,
                 campaign_id=campaign_id,
             )
+        if action == "run_next_for_draft":
+            return await self._run_next_for_draft(
+                input_data=input_data,
+                user_id=user_id,
+                project_id=project_id,
+                campaign_id=campaign_id,
+            )
         if action == "auto_orchestrate":
             return await self._run_full_cycle(input_data, stats, user_id, project_id, campaign_id)
         self.logger.warning(f"Unknown action: {action}, returning stats")
@@ -294,6 +301,18 @@ class ManagerAgent(BaseAgent):
         "publish",
     ]
 
+    # Draft status -> next pipeline step (for run_next_for_draft / phase-based UI)
+    DRAFT_STATUS_TO_NEXT_STEP = {
+        "pending_writer": "write_pages",
+        "draft": "critic_review",
+        "rejected": "critic_review",
+        "validated": "librarian_link",
+        "ready_for_media": "enhance_media",
+        "ready_for_utility": "enhance_utility",
+        "utility_validation_failed": "enhance_utility",
+        "ready_to_publish": "publish",
+    }
+
     async def _run_step(
         self,
         input_data: AgentInput,
@@ -365,6 +384,79 @@ class ManagerAgent(BaseAgent):
                 "result": result.data,
                 "next_step": next_step,
                 "stats": self._format_stats(stats_after),
+            },
+        )
+
+    def _get_next_step_for_draft(self, draft: Dict[str, Any]) -> Optional[str]:
+        """Return the pipeline step that should run next for this draft (phase-based control)."""
+        status = (draft.get("metadata") or {}).get("status") or ""
+        return self.DRAFT_STATUS_TO_NEXT_STEP.get(status)
+
+    async def _run_next_for_draft(
+        self,
+        input_data: AgentInput,
+        user_id: str,
+        project_id: str,
+        campaign_id: str,
+    ) -> AgentOutput:
+        """
+        Run the next pipeline step for a specific draft (row-controlled). Dispatches the
+        appropriate agent with draft_id so only this draft is processed.
+        Params: draft_id (required).
+        """
+        from backend.core.kernel import kernel
+
+        draft_id = input_data.params.get("draft_id")
+        if not draft_id:
+            return AgentOutput(status="error", message="run_next_for_draft requires draft_id.")
+
+        draft = memory.get_entity(draft_id, user_id)
+        if not draft:
+            return AgentOutput(status="error", message="Draft not found or access denied.")
+        if draft.get("entity_type") != "page_draft":
+            return AgentOutput(status="error", message="Entity is not a page draft.")
+        if (draft.get("metadata") or {}).get("campaign_id") != campaign_id:
+            return AgentOutput(status="error", message="Draft does not belong to this campaign.")
+
+        step = self._get_next_step_for_draft(draft)
+        if not step:
+            status = (draft.get("metadata") or {}).get("status", "")
+            return AgentOutput(
+                status="success",
+                message=f"Draft has no next step (status: {status}).",
+                data={"draft_id": draft_id, "step": None, "status": status},
+            )
+
+        base_params = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "campaign_id": campaign_id,
+            "draft_id": draft_id,
+            **input_data.params,
+        }
+        try:
+            result = await self._dispatch(kernel, step, base_params)
+        except asyncio.TimeoutError:
+            return AgentOutput(
+                status="error",
+                message=f"Step '{step}' timed out.",
+                data={"draft_id": draft_id, "step": step},
+            )
+        except Exception as e:
+            self.logger.error(f"run_next_for_draft {step} failed: {e}", exc_info=True)
+            return AgentOutput(
+                status="error",
+                message=f"Step failed: {str(e)}",
+                data={"draft_id": draft_id, "step": step},
+            )
+        return AgentOutput(
+            status=result.status,
+            message=result.message,
+            data={
+                "draft_id": draft_id,
+                "step": step,
+                "result": result.data,
+                "next_step": self._get_next_step_for_draft(memory.get_entity(draft_id, user_id) or {}),
             },
         )
 

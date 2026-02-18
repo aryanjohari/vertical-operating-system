@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { getEntities, getCampaigns, connectCall } from "@/lib/api";
+import { getEntities, getCampaigns, connectCall, runNextForLead } from "@/lib/api";
 import type { Lead } from "@/types";
 import { Phone, X, Plus } from "lucide-react";
 import { CreateCampaignDialog } from "@/components/campaigns/CreateCampaignDialog";
@@ -90,7 +90,16 @@ export default function LeadsPage() {
   const [campaigns, setCampaigns] = useState<{ id: string; name: string; module: string; status: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [callingId, setCallingId] = useState<string | null>(null);
+  const [runningLeadId, setRunningLeadId] = useState<string | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+
+  /** Next step for phase-based row control: Score (no score yet) or Bridge (scheduled). */
+  const getNextStepForLead = (lead: Lead): { label: string } | null => {
+    const meta = (lead.metadata ?? {}) as Record<string, unknown>;
+    if (meta.score === undefined || meta.score === null) return { label: "Score" };
+    if (meta.bridge_status === "scheduled") return { label: "Bridge" };
+    return null;
+  };
 
   const loadLeads = useCallback(async () => {
     const data = await getEntities<Lead>("lead", projectId);
@@ -115,6 +124,30 @@ export default function LeadsPage() {
     }
     load();
   }, [loadLeads, loadCampaigns]);
+
+  const handleRunNextForLead = async (lead: Lead) => {
+    const campaignId = (lead.metadata as Record<string, unknown> | undefined)?.campaign_id as string | undefined;
+    const cid = campaignId ?? campaigns[0]?.id;
+    if (!cid) {
+      toast.error("No lead gen campaign for this lead.");
+      return;
+    }
+    setRunningLeadId(lead.id);
+    try {
+      const res = await runNextForLead(projectId, cid, lead.id);
+      if (res.status === "success") {
+        toast.success(res.message ?? "Step completed");
+      } else {
+        toast.error(res.message ?? "Step failed");
+      }
+      await loadLeads();
+    } catch {
+      toast.error("Request failed");
+      await loadLeads();
+    } finally {
+      setRunningLeadId(null);
+    }
+  };
 
   const handleCallNow = async (lead: Lead) => {
     const phone = lead.primary_contact ?? lead.metadata?.phone;
@@ -257,6 +290,18 @@ export default function LeadsPage() {
                         />
                       </td>
                       <td className="px-4 py-3 text-right">
+                        {getNextStepForLead(lead) && (
+                          <button
+                            type="button"
+                            onClick={() => handleRunNextForLead(lead)}
+                            disabled={!!runningLeadId}
+                            className={cn(
+                              "mr-2 rounded border border-primary bg-primary/10 px-2 py-1 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-50"
+                            )}
+                          >
+                            {runningLeadId === lead.id ? "Running…" : `Run next (${getNextStepForLead(lead)?.label})`}
+                          </button>
+                        )}
                         {(lead.metadata?.status as string) !== "spam_blocked" &&
                           (lead.primary_contact ?? lead.metadata?.phone) && (
                             <button

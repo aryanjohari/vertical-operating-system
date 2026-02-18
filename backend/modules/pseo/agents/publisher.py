@@ -1,11 +1,22 @@
 # backend/modules/pseo/agents/publisher.py
 import json
+import re
 import base64
 import requests
 from datetime import datetime
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, replace spaces with hyphens, remove non-alphanumeric."""
+    if not text:
+        return "post"
+    s = text.strip().lower().replace(" ", "-")
+    s = re.sub(r"[^a-z0-9\-]", "", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "post"
 
 
 class PublisherAgent(BaseAgent):
@@ -37,28 +48,31 @@ class PublisherAgent(BaseAgent):
         # Support both cms_settings (new) and publisher_settings from DNA (old)
         cms_config = campaign_config.get("cms_settings") or self.config.get("modules", {}).get("local_seo", {}).get("publisher_settings", {})
 
-        wp_url = cms_config.get("url")
-        wp_user = cms_config.get("username")
         try:
             secrets = memory.get_client_secrets(user_id)
-            wp_password = secrets.get("wp_password") if secrets else None
-            if not wp_password:
-                return AgentOutput(status="error", message="WordPress password not found in secrets.")
         except Exception as e:
-            self.logger.error(f"Failed to retrieve WordPress password: {e}", exc_info=True)
+            self.logger.error(f"Failed to retrieve WordPress credentials: {e}", exc_info=True)
             return AgentOutput(status="error", message="Credential retrieval failed.")
 
-        if not wp_url or not wp_user:
-            return AgentOutput(status="error", message="Missing WordPress URL or username in Config.")
+        wp_url = (cms_config.get("url") or "").strip() or (secrets or {}).get("wp_url") or ""
+        wp_user = (cms_config.get("username") or "").strip() or (secrets or {}).get("wp_user") or ""
+        wp_password = secrets.get("wp_password") if secrets else None
 
-        # 2. FETCH READY PAGES (campaign-scoped)
+        if not wp_password:
+            return AgentOutput(status="error", message="WordPress password not found. Save it in Settings → WordPress / CMS.")
+        if not wp_url or not wp_user:
+            return AgentOutput(status="error", message="Missing WordPress URL or username. Set them in Settings → WordPress / CMS (or in campaign cms_settings).")
+
+        # 2. FETCH READY PAGES (campaign-scoped; optional draft_id for row control)
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         ready_pages = [
             d for d in all_drafts
             if d.get("metadata", {}).get("campaign_id") == campaign_id
             and d.get("metadata", {}).get("status") == "ready_to_publish"
         ]
-
+        draft_id_param = input_data.params.get("draft_id")
+        if draft_id_param:
+            ready_pages = [d for d in ready_pages if d.get("id") == draft_id_param]
         if not ready_pages:
             return AgentOutput(status="complete", message="No pages ready to publish.")
 
@@ -75,8 +89,7 @@ class PublisherAgent(BaseAgent):
                     meta = page["metadata"].copy()
                     meta["status"] = "published"
                     meta["published_at"] = datetime.now().isoformat()
-                    slug = meta.get("slug") or (meta.get("keyword", "").lower().replace(" ", "-"))
-                    meta["live_url"] = f"{wp_url.rstrip('/')}/{slug}"
+                    meta["live_url"] = f"{wp_url.rstrip('/')}/{meta.get('slug') or _slugify(meta.get('keyword', ''))}"
                     memory.save_entity(Entity(**{**page, "metadata": meta}), project_id=project_id)
                     published_count += 1
                     self.logger.info(f"Published '{page.get('name')}'")
@@ -100,14 +113,21 @@ class PublisherAgent(BaseAgent):
         content = meta.get("content", "")
         meta_description = meta.get("meta_description", "")
         schema_raw = meta.get("json_ld_schema")
-        slug = meta.get("slug") or (meta.get("keyword", "").lower().replace(" ", "-"))
+        keyword = (meta.get("keyword") or meta.get("h1_title") or page.get("name", "") or "").strip()
+        slug = meta.get("slug") or _slugify(keyword)
 
+        # Ensure JSON-LD schema is in content (Utility may already have injected it; append if missing)
         if schema_raw:
             try:
                 schema_json = json.loads(schema_raw) if isinstance(schema_raw, str) else schema_raw
-                content = content + "\n\n" + f"<script type='application/ld+json'>{json.dumps(schema_json, ensure_ascii=False)}</script>"
+                schema_block = f"<script type='application/ld+json'>{json.dumps(schema_json, ensure_ascii=False)}</script>"
+                if "application/ld+json" not in content:
+                    content = content + "\n\n" + schema_block
             except Exception as e:
                 self.logger.warning(f"Failed to inject schema: {e}")
+
+        # Rank Math & Yoast meta for SEO (focus keyword = primary keyword for the post)
+        focus_keyword = keyword or title[:60]
 
         post_data = {
             "title": title,
@@ -116,11 +136,15 @@ class PublisherAgent(BaseAgent):
             "status": "publish",
             "excerpt": meta_description,
             "categories": [1],
-            "meta": {},
+            "meta": {
+                "_yoast_wpseo_metadesc": meta_description or "",
+                "_yoast_wpseo_title": title[:60] if title else "",
+                "_yoast_wpseo_focuskw": focus_keyword[:60] if focus_keyword else "",
+                "rank_math_description": meta_description or "",
+                "rank_math_title": title[:60] if title else "",
+                "rank_math_focus_keyword": focus_keyword[:60] if focus_keyword else "",
+            },
         }
-        if meta_description:
-            post_data["meta"]["_yoast_wpseo_metadesc"] = meta_description
-            post_data["meta"]["rank_math_description"] = meta_description
 
         try:
             res = requests.post(endpoint, json=post_data, headers={"Authorization": f"Basic {creds}"}, timeout=10)

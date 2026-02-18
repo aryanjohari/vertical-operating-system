@@ -253,6 +253,43 @@ export async function updateProjectConfig(
   return data;
 }
 
+/**
+ * Get WordPress/CMS credentials (password never returned).
+ * GET /api/settings
+ */
+export async function getSettings(): Promise<{
+  wp_url: string;
+  wp_user: string;
+  wp_password: string;
+}> {
+  const { data } = await api.get<{
+    wp_url: string;
+    wp_user: string;
+    wp_password: string;
+  }>("/api/settings");
+  return data ?? { wp_url: "", wp_user: "", wp_password: "" };
+}
+
+/**
+ * Save WordPress/CMS credentials. Omit or leave wp_password empty to keep existing password.
+ * POST /api/settings
+ */
+export async function saveSettings(credentials: {
+  wp_url: string;
+  wp_user: string;
+  wp_password?: string;
+}): Promise<{ success: boolean; message: string }> {
+  const { data } = await api.post<{ success: boolean; message: string }>(
+    "/api/settings",
+    {
+      wp_url: credentials.wp_url ?? "",
+      wp_user: credentials.wp_user ?? "",
+      wp_password: credentials.wp_password ?? "",
+    }
+  );
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // API Methods
 // ---------------------------------------------------------------------------
@@ -559,6 +596,76 @@ export async function runPseoStep(
         reason: string;
       };
       stats?: Record<string, unknown>;
+    },
+  };
+}
+
+/**
+ * pSEO: run the next pipeline step for a specific draft (phase-based row control).
+ * Dispatches manager with action run_next_for_draft and draft_id.
+ */
+export async function runNextForDraft(
+  projectId: string,
+  campaignId: string,
+  draftId: string
+): Promise<{
+  status: string;
+  message: string;
+  data?: {
+    draft_id: string;
+    step: string | null;
+    result?: unknown;
+    next_step?: string | null;
+  };
+}> {
+  const res = await dispatchTask("manager", {
+    action: "run_next_for_draft",
+    draft_id: draftId,
+    project_id: projectId,
+    campaign_id: campaignId,
+  });
+  return {
+    status: res.status,
+    message: res.message,
+    data: res.data as {
+      draft_id: string;
+      step: string | null;
+      result?: unknown;
+      next_step?: string | null;
+    },
+  };
+}
+
+/**
+ * Lead gen: run the next step for a specific lead (phase-based row control).
+ * Dispatches lead_gen_manager with action run_next_for_lead and lead_id.
+ */
+export async function runNextForLead(
+  projectId: string,
+  campaignId: string,
+  leadId: string
+): Promise<{
+  status: string;
+  message: string;
+  data?: {
+    lead_id: string;
+    next_step?: { action: string; label: string } | null;
+    result?: unknown;
+  };
+}> {
+  const res = await dispatchTask("lead_gen_manager", {
+    action: "run_next_for_lead",
+    lead_id: leadId,
+    project_id: projectId,
+    campaign_id: campaignId,
+  });
+  return {
+    status: res.status,
+    message: res.message,
+    data: res.data as {
+      lead_id: string;
+      next_step?: { action: string; label: string } | null;
+      result?: unknown;
     },
   };
 }
