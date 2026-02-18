@@ -8,7 +8,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
 import { Mail, Lock, LogIn } from "lucide-react";
-import { auth } from "@/lib/api";
 import { useAppStore } from "@/store/useAppStore";
 import { AuthCard } from "@/components/auth/AuthCard";
 import { cn } from "@/lib/utils";

@@ -72,7 +72,7 @@ export function DynamicForm({
   onCancel,
 }: DynamicFormProps) {
   const [schema, setSchema] = useState<FormSchema | null>(schemaProp ?? null);
-  const [defaults, setDefaults] = useState<Record<string, unknown>>(
+  const [, setDefaults] = useState<Record<string, unknown>>(
     (defaultsProp ?? {}) as Record<string, unknown>
   );
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -128,7 +128,6 @@ export function DynamicForm({
     );
   }
 
-  const fields = schema.fields ?? [];
   const sections = schema.sections ?? {};
 
   return (

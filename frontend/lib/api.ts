@@ -95,8 +95,8 @@ export async function login(
 export async function register(
   email: string,
   password: string,
-  _fullName?: string,
-  _agencyName?: string
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- optional fullName/agencyName for API shape
+  ..._rest: (string | undefined)[]
 ): Promise<{ success: boolean; user_id: string | null }> {
   const { data } = await api.post<{
     success: boolean;

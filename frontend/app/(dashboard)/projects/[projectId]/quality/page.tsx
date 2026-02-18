@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getEntities, updateEntity } from "@/lib/api";
 import type { PageDraft } from "@/types";
 import { PreviewModal } from "@/components/drafts/PreviewModal";
-import { cn } from "@/lib/utils";
 
 const DRAFTING_STATUSES = ["processing", "drafted", "draft"];
 const REVIEW_STATUSES = [
@@ -80,16 +79,18 @@ export default function QualityPage() {
   const [loading, setLoading] = useState(true);
   const [previewDraft, setPreviewDraft] = useState<PageDraft | null>(null);
 
-  const loadDrafts = async () => {
+  const loadDrafts = useCallback(async () => {
     const data = await getEntities<PageDraft>("page_draft", projectId);
     setDrafts(data);
-  };
+  }, [projectId]);
 
   useEffect(() => {
-    loadDrafts()
-      .catch(() => setDrafts([]))
-      .finally(() => setLoading(false));
-  }, [projectId]);
+    queueMicrotask(() => {
+      loadDrafts()
+        .catch(() => setDrafts([]))
+        .finally(() => setLoading(false));
+    });
+  }, [loadDrafts]);
 
   const drafting = drafts.filter((d) =>
     DRAFTING_STATUSES.includes((d.metadata?.status as string) ?? "")

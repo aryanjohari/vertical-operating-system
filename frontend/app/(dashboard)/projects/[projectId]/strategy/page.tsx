@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   useReactTable,
@@ -22,9 +22,6 @@ import { AddKeywordsModal } from "@/components/keywords/AddKeywordsModal";
 import { Plus, Check, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const DRAFTING_STATUSES = ["processing", "drafted", "draft"];
-const REVIEW_STATUSES = ["in_review", "needs_revision"];
-const READY_STATUSES = ["approved", "published"];
 
 const columnHelper = createColumnHelper<SeoKeyword>();
 
@@ -125,16 +122,16 @@ export default function StrategyPage() {
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [actionLoading, setActionLoading] = useState(false);
 
-  const loadKeywords = async () => {
+  const loadKeywords = useCallback(async () => {
     const data = await getEntities<SeoKeyword>("seo_keyword", projectId);
     setKeywords(data);
-  };
+  }, [projectId]);
 
   useEffect(() => {
     loadKeywords()
       .catch(() => setKeywords([]))
       .finally(() => setLoading(false));
-  }, [projectId]);
+  }, [loadKeywords]);
 
   const table = useReactTable({
     data: keywords,

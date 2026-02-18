@@ -5,7 +5,7 @@ import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import { getProject, getCampaigns } from "@/lib/api";
 import type { Project } from "@/types";
-import { Plus, Rocket, Users, Settings } from "lucide-react";
+import { Plus, Rocket, Users } from "lucide-react";
 import { CreateCampaignDialog } from "@/components/campaigns/CreateCampaignDialog";
 
 type Campaign = {

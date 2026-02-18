@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { DynamicForm } from "@/components/forms/DynamicForm";
 import type { FormSchema } from "@/lib/api";
+import type { PageDraft } from "@/types";
 
 const PAGE_SIZE = 20;
 
@@ -93,7 +94,7 @@ export default function CampaignDashboardPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [nextStep, setNextStep] = useState<NextStep | null>(null);
-  const [drafts, setDrafts] = useState<{ entities: Array<Record<string, unknown>>; total: number }>({
+  const [drafts, setDrafts] = useState<{ entities: PageDraft[]; total: number }>({
     entities: [],
     total: 0,
   });
@@ -141,7 +142,7 @@ export default function CampaignDashboardPage() {
       setLoading(true);
       try {
         await Promise.all([loadCampaign(), loadStats(), loadDrafts()]);
-      } catch (e) {
+      } catch {
         if (!cancelled) toast.error("Failed to load campaign data");
       } finally {
         if (!cancelled) setLoading(false);
@@ -165,7 +166,7 @@ export default function CampaignDashboardPage() {
         }
         await loadStats();
         await loadDrafts();
-      } catch (e) {
+      } catch {
         toast.error("Request failed");
       } finally {
         setRunning(null);
@@ -184,7 +185,7 @@ export default function CampaignDashboardPage() {
       setSettingsSchema(schemaRes.schema);
       setSettingsDefaults((fullCampaign.config ?? schemaRes.defaults ?? {}) as Record<string, unknown>);
       setCampaign((c) => (c ? { ...c, config: fullCampaign.config } : null));
-    } catch (e) {
+    } catch {
       toast.error("Failed to load settings");
     }
   }, [projectId, campaignId]);
@@ -226,7 +227,7 @@ export default function CampaignDashboardPage() {
     [refresh]
   );
 
-  const startEdit = (d: Record<string, unknown>) => {
+  const startEdit = (d: PageDraft) => {
     const meta = (d.metadata as Record<string, unknown>) || {};
     setEditingId(d.id as string);
     setEditH1((meta.h1_title as string) ?? "");

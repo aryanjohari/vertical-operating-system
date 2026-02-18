@@ -171,7 +171,7 @@ export default function LeadsPage() {
       } else {
         toast.error(result.message ?? "Call failed.");
       }
-    } catch (err) {
+    } catch {
       toast.dismiss(toastId);
       toast.error("Call failed. Please try again.", {
         style: {
