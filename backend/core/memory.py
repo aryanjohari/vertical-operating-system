@@ -25,7 +25,7 @@ class GoogleEmbeddingFunction:
         self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
-        self.model = "text-embedding-004"
+        self.model = "text-embedding-005"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """
@@ -191,7 +191,27 @@ class MemoryManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON entities(tenant_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id)")
 
-            # 4. SECRETS
+            # 4. CAMPAIGNS
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS campaigns (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    module TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'DRAFT',
+                    config {json_type} NOT NULL,
+                    stats {json_type},
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(project_id) REFERENCES projects(project_id)
+                )
+            ''')
+            
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_project ON campaigns(project_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_module ON campaigns(module)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_campaigns_status ON campaigns(status)")
+
+            # 5. SECRETS
             cursor.execute(f'''
                 CREATE TABLE IF NOT EXISTS client_secrets (
                     user_id TEXT PRIMARY KEY,
@@ -253,6 +273,23 @@ class MemoryManager:
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error checking user existence for {user_id}: {e}")
+            return False
+
+    def health_check(self) -> bool:
+        """
+        Runs a simple query to verify database connectivity.
+        Returns True if the database is reachable, False otherwise.
+        """
+        try:
+            with self.db_factory.get_cursor(commit=False) as cursor:
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database health check failed: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Database health check failed: {e}")
             return False
 
     def verify_user(self, email, password):
@@ -321,7 +358,7 @@ class MemoryManager:
                 return result
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching user project for user {user_id}: {e}")
             return None
@@ -345,7 +382,7 @@ class MemoryManager:
                 return results
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching projects for user {user_id}: {e}")
             return []
@@ -408,6 +445,249 @@ class MemoryManager:
             return None
 
     # ====================================================
+    # SECTION B.5: CAMPAIGN MANAGEMENT
+    # ====================================================
+    def create_campaign(self, user_id: str, project_id: str, name: str, module: str, config: Dict[str, Any]) -> str:
+        """
+        Create a new campaign for a project.
+        Returns campaign_id (UUID format: cmp_xxxxx).
+        """
+        self.logger.debug(f"Creating campaign for project {project_id}, module {module}")
+        try:
+            # Verify project ownership
+            if not self.verify_project_ownership(user_id, project_id):
+                raise ValueError(f"User {user_id} does not own project {project_id}")
+            
+            # Generate campaign_id (format: cmp_xxxxx)
+            import uuid
+            campaign_id = f"cmp_{uuid.uuid4().hex[:10]}"
+            
+            # Insert campaign
+            json_type = self.db_factory.get_json_type()
+            placeholder = self.db_factory.get_placeholder()
+            
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    INSERT INTO campaigns (id, project_id, name, module, status, config, stats)
+                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                ''', (
+                    campaign_id,
+                    project_id,
+                    name,
+                    module,
+                    'DRAFT',
+                    json.dumps(config),
+                    json.dumps({})
+                ))
+            
+            self.logger.info(f"Successfully created campaign {campaign_id} for project {project_id}")
+            return campaign_id
+        except DatabaseError as e:
+            self.logger.error(f"Database error creating campaign: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"Unexpected error creating campaign: {e}")
+            raise
+
+    def get_campaign(self, campaign_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a campaign by ID with RLS check (via project ownership).
+        Returns None if not found or access denied.
+        """
+        self.logger.debug(f"Fetching campaign {campaign_id} for user {user_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                # Join with projects to verify ownership
+                cursor.execute(f'''
+                    SELECT c.*, p.user_id 
+                    FROM campaigns c
+                    JOIN projects p ON c.project_id = p.project_id
+                    WHERE c.id = {placeholder} AND p.user_id = {placeholder}
+                ''', (campaign_id, user_id))
+                row = cursor.fetchone()
+                
+                if row:
+                    result = dict(row)
+                    # Parse JSON fields
+                    if result.get('config'):
+                        result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
+                    if result.get('stats'):
+                        result['stats'] = json.loads(result['stats']) if isinstance(result['stats'], str) else result['stats']
+                    # Remove user_id from result (it's from join)
+                    result.pop('user_id', None)
+                    self.logger.debug(f"Found campaign {campaign_id}")
+                    return result
+                else:
+                    self.logger.debug(f"Campaign {campaign_id} not found or access denied")
+                    return None
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching campaign {campaign_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching campaign {campaign_id}: {e}")
+            return None
+
+    def get_campaigns_by_project(self, user_id: str, project_id: str, module: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get all campaigns for a project, optionally filtered by module.
+        Returns empty list if project not found or access denied.
+        """
+        self.logger.debug(f"Fetching campaigns for project {project_id}, module={module}")
+        try:
+            # Verify project ownership
+            if not self.verify_project_ownership(user_id, project_id):
+                self.logger.warning(f"Access denied: user {user_id} does not own project {project_id}")
+                return []
+            
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                
+                if module:
+                    cursor.execute(f'''
+                        SELECT * FROM campaigns 
+                        WHERE project_id = {placeholder} AND module = {placeholder}
+                        ORDER BY created_at DESC
+                    ''', (project_id, module))
+                else:
+                    cursor.execute(f'''
+                        SELECT * FROM campaigns 
+                        WHERE project_id = {placeholder}
+                        ORDER BY created_at DESC
+                    ''', (project_id,))
+                
+                rows = cursor.fetchall()
+                results = []
+                for row in rows:
+                    result = dict(row)
+                    # Parse JSON fields
+                    if result.get('config'):
+                        result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
+                    if result.get('stats'):
+                        result['stats'] = json.loads(result['stats']) if isinstance(result['stats'], str) else result['stats']
+                    results.append(result)
+                
+                self.logger.debug(f"Found {len(results)} campaigns for project {project_id}")
+                return results
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching campaigns: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching campaigns: {e}")
+            return []
+
+    def update_campaign_status(self, campaign_id: str, user_id: str, status: str) -> bool:
+        """
+        Update campaign status. Validates ownership via project.
+        Returns True on success, False on failure.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} status to {status}")
+        try:
+            # Verify ownership by checking if campaign exists and user owns the project
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+            
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    UPDATE campaigns 
+                    SET status = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                ''', (status, campaign_id))
+            
+            self.logger.info(f"Successfully updated campaign {campaign_id} status to {status}")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign status: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign status: {e}")
+            return False
+
+    def update_campaign_stats(self, campaign_id: str, user_id: str, stats: Dict[str, Any]) -> bool:
+        """
+        Update campaign stats. Validates ownership via project.
+        Merges with existing stats (doesn't overwrite).
+        Returns True on success, False on failure.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} stats")
+        try:
+            # Verify ownership
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+            
+            # Merge with existing stats
+            existing_stats = campaign.get('stats', {}) or {}
+            merged_stats = {**existing_stats, **stats}
+            
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(f'''
+                    UPDATE campaigns 
+                    SET stats = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                ''', (json.dumps(merged_stats), campaign_id))
+            
+            self.logger.info(f"Successfully updated campaign {campaign_id} stats")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign stats: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign stats: {e}")
+            return False
+
+    def update_campaign_config(self, campaign_id: str, user_id: str, new_config: Dict[str, Any]) -> bool:
+        """
+        Update campaign config. Validates ownership via project.
+
+        Overwrites the existing config with the provided dictionary.
+        """
+        self.logger.debug(f"Updating campaign {campaign_id} config")
+        try:
+            # Verify ownership
+            campaign = self.get_campaign(campaign_id, user_id)
+            if not campaign:
+                self.logger.warning(f"Cannot update campaign {campaign_id}: not found or access denied")
+                return False
+
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE campaigns
+                    SET config = {placeholder}, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = {placeholder}
+                    """,
+                    (json.dumps(new_config), campaign_id),
+                )
+
+            self.logger.info(f"Successfully updated campaign {campaign_id} config")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating campaign config: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating campaign config: {e}")
+            return False
+
+    # ====================================================
     # SECTION C: SCALABLE ENTITY STORAGE
     # ====================================================
     def save_entity(self, entity: Entity, project_id: Optional[str] = None) -> bool:
@@ -454,33 +734,41 @@ class MemoryManager:
             self.logger.error(f"Unexpected error saving entity {entity.id}: {e}")
             return False
 
-    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, 
-                     project_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
-        self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}")
+    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None,
+                     project_id: Optional[str] = None, campaign_id: Optional[str] = None,
+                     limit: int = 100, offset: int = 0, return_total: bool = False) -> List[Dict]:
+        """
+        Fetch entities with optional filters. Use get_entities_count for total when paginating by campaign_id.
+        """
+        self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}, campaign: {campaign_id}")
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
-                
+
                 query = f"SELECT * FROM entities WHERE tenant_id = {placeholder}"
                 params = [tenant_id]
-                
+
                 if entity_type:
                     query += f" AND entity_type = {placeholder}"
                     params.append(entity_type)
-                
+
                 if project_id:
                     query += f" AND project_id = {placeholder}"
                     params.append(project_id)
-                    
+
+                if campaign_id:
+                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    params.append(campaign_id)
+
                 query += f" ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}"
                 params.extend([limit, offset])
-                
+
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
-                
+
                 results = []
                 for row in rows:
                     item = dict(row)
@@ -490,12 +778,12 @@ class MemoryManager:
                         self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
                         item['metadata'] = {}
                     results.append(item)
-                
+
                 self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
                 return results
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching entities for tenant {tenant_id}: {e}")
             return []
@@ -503,34 +791,134 @@ class MemoryManager:
             self.logger.error(f"Unexpected error fetching entities for tenant {tenant_id}: {e}")
             return []
 
-    def update_entity(self, entity_id: str, new_metadata: dict) -> bool:
-        """Updates the metadata of an existing entity."""
-        self.logger.debug(f"Updating entity {entity_id}")
+    def get_entities_count(self, tenant_id: str, entity_type: Optional[str] = None,
+                           project_id: Optional[str] = None, campaign_id: Optional[str] = None) -> int:
+        """Count entities with same filters as get_entities (no limit/offset)."""
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                query = f"SELECT COUNT(*) FROM entities WHERE tenant_id = {placeholder}"
+                params = [tenant_id]
+                if entity_type:
+                    query += f" AND entity_type = {placeholder}"
+                    params.append(entity_type)
+                if project_id:
+                    query += f" AND project_id = {placeholder}"
+                    params.append(project_id)
+                if campaign_id:
+                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    params.append(campaign_id)
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error counting entities for tenant {tenant_id}: {e}")
+            return 0
+        except Exception as e:
+            self.logger.error(f"Unexpected error counting entities for tenant {tenant_id}: {e}")
+            return 0
+
+    def get_entity(self, entity_id: str, tenant_id: str) -> Optional[Dict]:
+        """
+        Get a single entity by id with RLS (tenant_id). Returns None if not found or access denied.
+        """
+        self.logger.debug(f"Fetching entity {entity_id} for tenant {tenant_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(
+                    f"SELECT * FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (entity_id, tenant_id),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                entity = dict(row)
+                try:
+                    entity["metadata"] = json.loads(entity["metadata"]) if entity.get("metadata") else {}
+                except (json.JSONDecodeError, TypeError):
+                    entity["metadata"] = {}
+                return entity
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching entity {entity_id}: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching entity {entity_id}: {e}")
+            return None
+
+    def update_entity_name_contact(
+        self, entity_id: str, tenant_id: str, name: Optional[str] = None, primary_contact: Optional[str] = None
+    ) -> bool:
+        """
+        Update name and/or primary_contact for an entity. RLS: WHERE id AND tenant_id.
+        At least one of name or primary_contact must be provided.
+        Returns True on success, False if entity not found or access denied.
+        """
+        if name is None and primary_contact is None:
+            return True
+        self.logger.debug(f"Updating entity {entity_id} name/contact for tenant {tenant_id}")
         try:
             placeholder = self.db_factory.get_placeholder()
             with self.db_factory.get_cursor() as cursor:
-                # 1. Fetch existing metadata
-                cursor.execute(f"SELECT metadata FROM entities WHERE id = {placeholder}", (entity_id,))
+                if name is not None and primary_contact is not None:
+                    cursor.execute(
+                        f"UPDATE entities SET name = {placeholder}, primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (name, primary_contact, entity_id, tenant_id),
+                    )
+                elif name is not None:
+                    cursor.execute(
+                        f"UPDATE entities SET name = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (name, entity_id, tenant_id),
+                    )
+                else:
+                    cursor.execute(
+                        f"UPDATE entities SET primary_contact = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                        (primary_contact, entity_id, tenant_id),
+                    )
+            self.logger.info(f"Successfully updated entity {entity_id} name/contact")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating entity {entity_id} name/contact: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating entity {entity_id} name/contact: {e}")
+            return False
+
+    def update_entity(self, entity_id: str, new_metadata: dict, tenant_id: str) -> bool:
+        """Updates the metadata of an existing entity. RLS: WHERE id AND tenant_id."""
+        self.logger.debug(f"Updating entity {entity_id} for tenant {tenant_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"SELECT metadata FROM entities WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (entity_id, tenant_id),
+                )
                 row = cursor.fetchone()
-                
                 if not row:
-                    self.logger.warning(f"Entity {entity_id} not found for update")
+                    self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
                     return False
-                
-                # 2. Merge new data with old data
                 try:
                     current_meta = json.loads(row[0])
                 except (json.JSONDecodeError, TypeError) as e:
                     self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
                     current_meta = {}
                 current_meta.update(new_metadata)
-                
-                # 3. Save back
                 cursor.execute(
-                    f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder}", 
-                    (json.dumps(current_meta), entity_id)
+                    f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",
+                    (json.dumps(current_meta), entity_id, tenant_id),
                 )
-            
             self.logger.info(f"Successfully updated entity {entity_id}")
             return True
         except DatabaseError as e:
@@ -596,7 +984,7 @@ class MemoryManager:
                 return None
             finally:
                 cursor.close()
-                conn.close()
+                self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error retrieving client secrets for user {user_id}: {e}")
             return None
@@ -605,7 +993,7 @@ class MemoryManager:
             return None
 
     def save_client_secrets(self, user_id: str, wp_url: str, wp_user: str, wp_password: str) -> bool:
-        """Save or update WordPress credentials for a user."""
+        """Save or update WordPress credentials for a user. Use save_client_secrets_partial to update only url/user."""
         self.logger.debug(f"Saving client secrets for user {user_id}")
         try:
             try:
@@ -613,7 +1001,7 @@ class MemoryManager:
             except Exception as e:
                 self.logger.error(f"Encryption failed for wp_password for user {user_id}: {e}")
                 return False
-            
+
             sql = self.db_factory.get_insert_or_replace_sql(
                 table="client_secrets",
                 columns=["user_id", "wp_url", "wp_user", "wp_auth_hash"],
@@ -621,7 +1009,7 @@ class MemoryManager:
             )
             with self.db_factory.get_cursor() as cursor:
                 cursor.execute(sql, (user_id, wp_url, wp_user, encrypted_password))
-            
+
             self.logger.info(f"Successfully saved client secrets for user {user_id}")
             return True
         except DatabaseError as e:
@@ -629,6 +1017,39 @@ class MemoryManager:
             return False
         except Exception as e:
             self.logger.error(f"Unexpected error saving client secrets for user {user_id}: {e}")
+            return False
+
+    def save_client_secrets_partial(self, user_id: str, wp_url: str, wp_user: str) -> bool:
+        """Update only WordPress URL and username; leave password unchanged. Creates row if missing (with empty hash)."""
+        self.logger.debug(f"Updating client secrets (url/user only) for user {user_id}")
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            with self.db_factory.get_cursor() as cursor:
+                cursor.execute(
+                    f"SELECT wp_auth_hash FROM client_secrets WHERE user_id = {placeholder}",
+                    (user_id,),
+                )
+                row = cursor.fetchone()
+                existing_hash = row[0] if row else None
+                if existing_hash is not None:
+                    cursor.execute(
+                        f"UPDATE client_secrets SET wp_url = {placeholder}, wp_user = {placeholder} WHERE user_id = {placeholder}",
+                        (wp_url, wp_user, user_id),
+                    )
+                else:
+                    sql = self.db_factory.get_insert_or_replace_sql(
+                        table="client_secrets",
+                        columns=["user_id", "wp_url", "wp_user", "wp_auth_hash"],
+                        primary_key="user_id",
+                    )
+                    cursor.execute(sql, (user_id, wp_url, wp_user, ""))
+            self.logger.info(f"Updated WordPress URL/user for user {user_id}")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error updating client secrets for user {user_id}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error updating client secrets for user {user_id}: {e}")
             return False
 
     # ====================================================
@@ -697,6 +1118,71 @@ class MemoryManager:
             self.logger.error(f"Unexpected error logging usage for project {project_id}: {e}")
             return False
 
+    def get_usage_ledger(
+        self, user_id: str, project_id: Optional[str] = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get usage records from usage_ledger. If project_id is set, verifies ownership and returns
+        records for that project. Otherwise returns records for all projects owned by user_id.
+        Creates usage_ledger table if it doesn't exist.
+        """
+        self.logger.debug(f"Fetching usage ledger for user {user_id}, project_id={project_id}")
+        try:
+            self.create_usage_table_if_not_exists()
+            placeholder = self.db_factory.get_placeholder()
+
+            if project_id:
+                if not self.verify_project_ownership(user_id, project_id):
+                    return []
+                with self.db_factory.get_cursor(commit=False) as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                        FROM usage_ledger
+                        WHERE project_id = {placeholder}
+                        ORDER BY timestamp DESC
+                        LIMIT {placeholder}
+                        """,
+                        (project_id, limit),
+                    )
+                    rows = cursor.fetchall()
+            else:
+                projects = self.get_projects(user_id=user_id)
+                project_ids = [p.get("project_id") for p in projects] if projects else []
+                if not project_ids:
+                    return []
+                placeholders = ",".join([placeholder] * len(project_ids))
+                with self.db_factory.get_cursor(commit=False) as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT id, project_id, resource_type, quantity, cost_usd, timestamp
+                        FROM usage_ledger
+                        WHERE project_id IN ({placeholders})
+                        ORDER BY timestamp DESC
+                        LIMIT {placeholder}
+                        """,
+                        (*project_ids, limit),
+                    )
+                    rows = cursor.fetchall()
+
+            return [
+                {
+                    "id": row[0],
+                    "project_id": row[1],
+                    "resource_type": row[2],
+                    "quantity": row[3],
+                    "cost_usd": row[4],
+                    "timestamp": row[5],
+                }
+                for row in rows
+            ]
+        except DatabaseError as e:
+            self.logger.error(f"Database error fetching usage ledger: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching usage ledger: {e}")
+            return []
+
     def get_monthly_spend(self, project_id: str) -> float:
         """
         Gets the total monthly spend for a project (current month).
@@ -739,8 +1225,8 @@ class MemoryManager:
     # ====================================================
     # SECTION D: SEMANTIC MEMORY (RAG)
     # ====================================================
-    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None):
-        """Saves embeddings with Project Context."""
+    def save_context(self, tenant_id: str, text: str, metadata: Dict = {}, project_id: str = None, campaign_id: str = None):
+        """Saves embeddings with Project and Campaign Context."""
         if not self.chroma_enabled or not self.vector_collection:
             self.logger.debug("ChromaDB not available, skipping context save")
             return
@@ -749,6 +1235,8 @@ class MemoryManager:
             metadata['tenant_id'] = tenant_id
             if project_id:
                 metadata['project_id'] = project_id
+            if campaign_id:
+                metadata['campaign_id'] = campaign_id
             
             # Manually embed using our Google embedding function to ensure consistency
             embeddings = self.embedding_fn([text])
@@ -762,21 +1250,38 @@ class MemoryManager:
         except Exception as e:
             self.logger.warning(f"Failed to save context to ChromaDB: {e}")
 
-    def query_context(self, tenant_id: str, query: str, n_results: int = 3, project_id: str = None):
-        """Retrieves embeddings filtered by Project."""
+    def query_context(self, tenant_id: str, query: str, n_results: int = 3, project_id: str = None, campaign_id: str = None, return_metadata: bool = False):
+        """Retrieves embeddings filtered by Project and Campaign.
+        
+        Args:
+            tenant_id: User ID for RLS
+            query: Search query text
+            n_results: Number of results to return
+            project_id: Optional project filter
+            campaign_id: Optional campaign filter
+            return_metadata: If True, returns list of dicts with 'text' and 'metadata'. If False, returns list of text strings.
+        
+        Returns:
+            List of text strings (if return_metadata=False) or list of dicts with 'text' and 'metadata' (if return_metadata=True)
+        """
         if not self.chroma_enabled or not self.vector_collection:
             self.logger.debug("ChromaDB not available, returning empty results")
             return []
             
         try:
-            where_clause = {"tenant_id": tenant_id}
+            # Build where clause with tenant_id, project_id, and campaign_id filters
+            where_conditions = [{"tenant_id": tenant_id}]
+            
             if project_id:
-                where_clause = {
-                    "$and": [
-                        {"tenant_id": tenant_id},
-                        {"project_id": project_id}
-                    ]
-                }
+                where_conditions.append({"project_id": project_id})
+            
+            if campaign_id:
+                where_conditions.append({"campaign_id": campaign_id})
+            
+            if len(where_conditions) > 1:
+                where_clause = {"$and": where_conditions}
+            else:
+                where_clause = where_conditions[0]
             
             # Manually embed query using our Google embedding function to ensure consistency
             query_embedding = self.embedding_fn.embed_query(query)
@@ -786,7 +1291,18 @@ class MemoryManager:
                 n_results=n_results,
                 where=where_clause
             )
-            return results['documents'][0] if results['documents'] else []
+            
+            if return_metadata:
+                # Return list of dicts with text and metadata
+                documents = results.get('documents', [[]])[0] if results.get('documents') else []
+                metadatas = results.get('metadatas', [[]])[0] if results.get('metadatas') else []
+                return [
+                    {"text": doc, "metadata": meta}
+                    for doc, meta in zip(documents, metadatas)
+                ]
+            else:
+                # Return list of text strings (backward compatible)
+                return results['documents'][0] if results['documents'] else []
         except Exception as e:
             self.logger.warning(f"Failed to query context from ChromaDB: {e}")
             return []

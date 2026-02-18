@@ -1,0 +1,37 @@
+<form class="lead-gen-form" method="post" action="/api/webhooks/lead">
+  {% for field in fields %}
+  <label for="{{ field.name }}">{{ field.label }}</label>
+  {% if field.type == "select" %}
+  <select
+    name="{{ field.name }}"
+    id="{{ field.name }}"
+    {%
+    if
+    field.required
+    %}
+    required{%
+    endif
+    %}
+  >
+    {% for opt in field.options or [] %}
+    <option value="{{ opt.value or opt.label or opt }}">
+      {{ opt.label or opt.value or opt }}
+    </option>
+    {% endfor %}
+  </select>
+  {% else %}
+  <input
+    type="{{ field.type if field.type in ('text','tel','email') else 'text' }}"
+    name="{{ field.name }}"
+    id="{{ field.name }}"
+    {%
+    if
+    field.required
+    %}
+    required{%
+    endif
+    %}
+  />
+  {% endif %} {% endfor %}
+  <button type="submit" class="btn btn-primary">Get Immediate Help</button>
+</form>

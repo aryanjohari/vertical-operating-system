@@ -1,20 +1,14 @@
-// app/(dashboard)/layout.tsx
-'use client';
+import { AuthGuard } from "@/components/layout/AuthGuard";
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useRequireAuth } from '@/lib/hooks';
-
-export default function DashboardLayout({
+export default function DashboardRootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const isAuthenticated = useRequireAuth();
-
-  if (!isAuthenticated) {
-    return null;
-  }
-
-  return <>{children}</>;
+  return (
+    <AuthGuard>
+      <DashboardLayout>{children}</DashboardLayout>
+    </AuthGuard>
+  );
 }

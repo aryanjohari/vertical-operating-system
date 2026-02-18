@@ -91,12 +91,10 @@ class AnalyticsAgent(BaseAgent):
                 new_meta['rewrite_reason'] = "low_ctr_high_impressions"
                 new_meta['quality_score'] = 0 # Force re-evaluation
                 
-                memory.update_entity(match['id'], new_meta)
-                
-                # Also reset the keyword so the Writer picks it up
+                memory.update_entity(match['id'], new_meta, self.user_id)
                 kw_id = match['metadata'].get('keyword_id')
                 if kw_id:
-                    memory.update_entity(kw_id, {"status": "pending"})
+                    memory.update_entity(kw_id, {"status": "pending"}, self.user_id)
                     
                 actions += 1
 

@@ -87,16 +87,17 @@ def _get_user_id_from_project(project_id: str) -> Optional[str]:
     return memory.get_project_owner(project_id)
 
 async def _create_and_trigger_lead(
-    normalized_data: Dict[str, Any], 
-    source: str, 
-    project_id: str, 
+    normalized_data: Dict[str, Any],
+    source: str,
+    project_id: str,
     user_id: str = None,
-    background_tasks: Optional[BackgroundTasks] = None
+    campaign_id: Optional[str] = None,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> Dict[str, Any]:
     """
-    Creates a lead entity and triggers SalesAgent for instant call.
+    Creates a lead entity and triggers LeadGenManager (lead_received) to score and bridge call.
     
-    If background_tasks is provided, executes SalesAgent in background (non-blocking).
+    If background_tasks is provided, executes in background (non-blocking).
     Otherwise, executes synchronously (backward compatible).
     """
     # Validate project_id format (security: prevent path traversal)
@@ -160,26 +161,27 @@ async def _create_and_trigger_lead(
             ttl_seconds=3600  # 1 hour
         )
         
-        # Define background task wrapper
-        async def trigger_sales_agent():
+        # Define background task wrapper - dispatch to Manager (conductor)
+        async def trigger_lead_received():
             try:
                 await kernel.dispatch(AgentInput(
-                    task="sales_agent",
+                    task="lead_gen_manager",
                     user_id=user_id,
                     params={
-                        "action": "instant_call",
+                        "action": "lead_received",
                         "lead_id": lead_entity.id,
                         "project_id": project_id,
-                        "context_id": context.context_id  # Pass context to agent
-                    }
+                        "campaign_id": campaign_id,
+                        "context_id": context.context_id,
+                    },
                 ))
-                logger.info(f"📞 Background SalesAgent completed for lead {lead_entity.id}")
+                logger.info(f"Lead received flow completed for lead {lead_entity.id}")
             except Exception as e:
-                logger.error(f"❌ Background SalesAgent failed for lead {lead_entity.id}: {e}", exc_info=True)
-        
+                logger.error(f"Lead received flow failed for lead {lead_entity.id}: {e}", exc_info=True)
+
         # Schedule background task
-        background_tasks.add_task(trigger_sales_agent)
-        logger.info(f"📞 Scheduled SalesAgent for lead {lead_entity.id} (background)")
+        background_tasks.add_task(trigger_lead_received)
+        logger.info(f"Scheduled lead_received for lead {lead_entity.id} (background)")
         
         # Return immediately with context_id
         return {
@@ -193,23 +195,24 @@ async def _create_and_trigger_lead(
         # Backward compatibility: Execute synchronously
         try:
             await kernel.dispatch(AgentInput(
-                task="sales_agent",
+                task="lead_gen_manager",
                 user_id=user_id,
                 params={
-                    "action": "instant_call",
+                    "action": "lead_received",
                     "lead_id": lead_entity.id,
-                    "project_id": project_id
-                }
+                    "project_id": project_id,
+                    "campaign_id": campaign_id,
+                },
             ))
-            logger.info(f"📞 Triggered SalesAgent for lead {lead_entity.id}")
+            logger.info(f"Triggered lead_received for lead {lead_entity.id}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to trigger SalesAgent for lead {lead_entity.id}: {e}", exc_info=True)
-            # Don't fail the webhook if SalesAgent fails - lead is still saved
-        
+            logger.warning(f"Lead received flow failed for lead {lead_entity.id}: {e}", exc_info=True)
+            # Don't fail the webhook - lead is still saved
+
         return {
             "success": True,
             "lead_id": lead_entity.id,
-            "message": "Lead captured and bridge call initiated"
+            "message": "Lead captured and bridge call initiated",
         }
 
 # --- 0. CORS PREFLIGHT HANDLERS ---
@@ -290,14 +293,18 @@ async def handle_google_ads_webhook(request: Request, background_tasks: Backgrou
         
         # Normalize payload
         normalized_data = _normalize_lead_data(payload, "google_ads")
-        
-        # Create lead and trigger SalesAgent
+
+        # Optional campaign_id for multi-campaign projects
+        campaign_id = request.query_params.get("campaign_id")
+
+        # Create lead and trigger lead_received (Manager -> Scorer -> Sales)
         result = await _create_and_trigger_lead(
-            normalized_data, 
-            "google_ads", 
-            project_id, 
+            normalized_data,
+            "google_ads",
+            project_id,
             user_id=project_owner,
-            background_tasks=background_tasks
+            campaign_id=campaign_id,
+            background_tasks=background_tasks,
         )
         
         return result
@@ -367,14 +374,18 @@ async def handle_wordpress_webhook(request: Request, background_tasks: Backgroun
         
         # Normalize payload
         normalized_data = _normalize_lead_data(payload, "wordpress_form")
-        
-        # Create lead and trigger SalesAgent
+
+        # Optional campaign_id for multi-campaign projects
+        campaign_id = request.query_params.get("campaign_id")
+
+        # Create lead and trigger lead_received (Manager -> Scorer -> Sales)
         result = await _create_and_trigger_lead(
-            normalized_data, 
-            "wordpress_form", 
-            project_id, 
+            normalized_data,
+            "wordpress_form",
+            project_id,
             user_id=project_owner,
-            background_tasks=background_tasks
+            campaign_id=campaign_id,
+            background_tasks=background_tasks,
         )
         
         return result

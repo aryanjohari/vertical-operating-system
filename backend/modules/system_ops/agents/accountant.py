@@ -1,21 +1,13 @@
 # backend/modules/system_ops/agents/accountant.py
 import logging
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
+from backend.core.config import settings
 from backend.core.memory import memory
 
 class AccountantAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="AccountantAgent")
         self.logger = logging.getLogger("Apex.Accountant")
-        
-        # Hardcoded price list (in USD)
-        self.PRICE_LIST = {
-            "twilio_voice": 0.05,  # $0.05 per minute
-            "gemini_token": 0.001,  # $0.001 per 1k tokens
-        }
-        
-        # Default project limit (in USD)
-        self.DEFAULT_PROJECT_LIMIT = 50.0
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         """
@@ -51,11 +43,12 @@ class AccountantAgent(BaseAgent):
             return AgentOutput(status="error", message="Invalid 'resource' parameter. Must be a string.")
         
         # Validate resource_type against whitelist (security: prevent injection)
-        if resource_type not in self.PRICE_LIST:
+        price_list = settings.BILLING_PRICE_LIST
+        if resource_type not in price_list:
             self.logger.warning(f"Unknown resource type: {resource_type}, rejecting request")
             return AgentOutput(
                 status="error", 
-                message=f"Invalid resource type: {resource_type}. Supported types: {', '.join(self.PRICE_LIST.keys())}"
+                message=f"Invalid resource type: {resource_type}. Supported types: {', '.join(price_list.keys())}"
             )
         
         if quantity is None:
@@ -71,8 +64,8 @@ class AccountantAgent(BaseAgent):
             self.logger.warning(f"Negative quantity rejected: {quantity}")
             return AgentOutput(status="error", message="Invalid 'quantity' parameter. Must be non-negative.")
         
-        # Calculate cost
-        unit_price = self.PRICE_LIST.get(resource_type)
+        # Calculate cost (prices from settings; no hardcoded numbers)
+        unit_price = price_list.get(resource_type)
         
         # For gemini_token, quantity is in tokens, so divide by 1000
         if resource_type == "gemini_token":
@@ -111,8 +104,8 @@ class AccountantAgent(BaseAgent):
             self.logger.error(f"Error getting monthly spend: {e}", exc_info=True)
             monthly_spend = 0.0
         
-        # Get project limit (could be from config, but using default for now)
-        project_limit = self.DEFAULT_PROJECT_LIMIT
+        # Get project limit from settings (env or default)
+        project_limit = settings.DEFAULT_PROJECT_LIMIT
         
         # Check if limit exceeded
         if monthly_spend > project_limit:

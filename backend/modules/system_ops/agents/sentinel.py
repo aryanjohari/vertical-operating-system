@@ -5,7 +5,6 @@ import shutil
 import httpx
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
-from backend.core.db import get_db_factory
 from backend.modules.system_ops.models import SystemHealthStatus
 
 class SentinelAgent(BaseAgent):
@@ -81,19 +80,13 @@ class SentinelAgent(BaseAgent):
             self.logger.warning(f"⚠️ Twilio API check failed: {e}")
             health_status.twilio_ok = False
         
-        # 4. Check Database
-        try:
-            # Try a simple read operation
-            db_factory = get_db_factory(db_path=memory.db_path)
-            with db_factory.get_cursor(commit=False) as cursor:
-                cursor.execute("SELECT 1")
-                cursor.fetchone()
+        # 4. Check Database (via MemoryManager; no raw SQL in agent)
+        health_status.database_ok = memory.health_check()
+        if health_status.database_ok:
             self.logger.debug("✅ Database: OK")
-            health_status.database_ok = True
-        except Exception as e:
-            self.logger.error(f"❌ Database check failed: {e}")
+        else:
+            self.logger.error("❌ Database check failed")
             health_status.status = "critical"
-            health_status.database_ok = False
         
         # 5. Check Gemini API (optional, but good to know)
         try:

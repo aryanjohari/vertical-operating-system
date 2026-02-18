@@ -13,7 +13,7 @@ import jwt
 import logging
 from typing import Optional
 from datetime import datetime, timedelta
-from fastapi import HTTPException, Security, Depends
+from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.core.memory import memory
 
@@ -175,8 +175,32 @@ def create_access_token(user_id: str) -> str:
 def verify_user_credentials(email: str, password: str) -> Optional[str]:
     """
     Verify user credentials and return user_id if valid.
-    
     Used by login endpoint.
     """
     provider = get_auth_provider()
     return provider.verify_credentials(email, password)
+
+
+async def validate_project_access(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+) -> str:
+    """
+    FastAPI dependency: verify the authenticated user owns the project.
+    Use on project-scoped routes. Path param project_id and user_id from get_current_user are injected.
+    Example: verified_project_id: str = Depends(validate_project_access)
+    Raises 403 if not owned; returns project_id on success.
+    """
+    if not memory.verify_project_ownership(user_id, project_id):
+        raise HTTPException(status_code=403, detail="Project not found or access denied")
+    return project_id
+
+
+def validate_project_access_sync(project_id: str, user_id: str) -> str:
+    """
+    Non-dependency helper: verify user_id owns project_id.
+    Raises HTTPException 403 if not. Returns project_id.
+    """
+    if not memory.verify_project_ownership(user_id, project_id):
+        raise HTTPException(status_code=403, detail="Project not found or access denied")
+    return project_id
