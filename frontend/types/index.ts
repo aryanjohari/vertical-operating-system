@@ -75,7 +75,13 @@ export interface Lead extends Entity {
   entity_type: "lead";
   metadata: Entity["metadata"] & {
     source?: string;
-    status?: "new" | "contacted" | "calling" | "called" | "converted" | "spam_blocked";
+    status?:
+      | "new"
+      | "contacted"
+      | "calling"
+      | "called"
+      | "converted"
+      | "spam_blocked";
     phone?: string;
     email?: string;
     score?: number;
@@ -106,10 +112,24 @@ export interface FormSettings {
   fields: FormFieldConfig[];
 }
 
+export interface BusinessHoursConfig {
+  timezone?: string;
+  start_hour?: number;
+  end_hour?: number;
+}
+
 export interface SalesBridgeConfig {
   destination_phone: string;
   whisper_text?: string;
   sms_alert_template?: string;
+  /** Email for manual bridge-review notifications (high-value leads). */
+  bridge_review_email?: string;
+  /** Only leads with score >= this get bridge-review email and can be bridged. Default 90. */
+  min_score_to_ring?: number;
+  /** Bridging allowed only within these hours (project timezone). */
+  business_hours?: BusinessHoursConfig;
+  /** Optional list of dates when bridging is disabled, e.g. ["2025-12-25"]. */
+  holidays?: string[];
 }
 
 export interface NurturingConfig {

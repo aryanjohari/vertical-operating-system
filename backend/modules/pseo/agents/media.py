@@ -1,17 +1,54 @@
 # backend/modules/pseo/agents/media.py
-import asyncio
-import json
 import os
+import re
 import httpx
 import html
 from urllib.parse import urlparse
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
-from backend.core.services.llm_gateway import llm_gateway
 
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "YOUR_KEY_HERE")
 FALLBACK_IMG = "https://images.unsplash.com/photo-1480714378408-67cf0d13bc1b"
+
+
+def _normalize_query(keyword: str) -> str:
+    """Normalize keyword for Unsplash: lowercase, strip, collapse spaces."""
+    if not keyword or not isinstance(keyword, str):
+        return "professional service"
+    s = keyword.strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s or "professional service"
+
+
+def _build_search_queries(
+    keyword: str,
+    config_template: str = None,
+    brand_or_article_hints: list = None,
+) -> list:
+    """
+    Deterministic search queries: primary from keyword, optional template, optional brand/article hints.
+    If config_template is set (e.g. "{keyword} professional"), use it for the first query.
+    """
+    normalized = _normalize_query(keyword)
+    queries = []
+    if config_template and "{keyword}" in config_template:
+        queries.append(config_template.replace("{keyword}", normalized))
+    else:
+        queries.append(f"{normalized} professional service")
+    # Optional: merge brand/article hints into an extra query for relevance
+    if brand_or_article_hints:
+        hints = [h for h in brand_or_article_hints if isinstance(h, str) and h.strip()]
+        if hints:
+            combined = f"{normalized} {hints[0].strip().lower()}"
+            if combined not in queries:
+                queries.append(combined)
+    # Second deterministic fallback: first word + "service" or safe default
+    first_word = normalized.split()[0] if normalized else "professional"
+    if first_word != "professional":
+        queries.append(f"{first_word} service")
+    queries.append("professional service")
+    return queries
 
 
 class MediaAgent(BaseAgent):
@@ -20,7 +57,6 @@ class MediaAgent(BaseAgent):
         self.unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        # 1. Titanium Standard: Validate injected context
         if not self.project_id or not self.user_id:
             self.logger.error("Missing injected context: project_id or user_id")
             return AgentOutput(status="error", message="Agent context not properly initialized.")
@@ -36,7 +72,6 @@ class MediaAgent(BaseAgent):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
 
-        # 2. FETCH WORK ITEM ('ready_for_media')
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         media_ready_drafts = [
             d for d in all_drafts
@@ -49,65 +84,46 @@ class MediaAgent(BaseAgent):
 
         target_draft = media_ready_drafts[0]
         draft_meta = target_draft.get("metadata", {})
-        # Support both content and html_content (Titanium: content)
         html_content = draft_meta.get("content") or draft_meta.get("html_content", "")
         keyword = draft_meta.get("keyword", "")
 
-        self.logger.info(f"MEDIA: Finding visuals for '{keyword}'")
+        self.logger.info(f"MEDIA: Finding visuals for '{keyword}' (deterministic Unsplash)")
 
-        # 3. GENERATE VISUAL SEARCH TERMS (LLM "Director") via llm_gateway
-        prompt = f"""
-        Act as a Visual Director.
-        Topic: "{keyword}"
-        Goal: Find a safe, professional, abstract stock photo from Unsplash.
+        # Config-driven query template and optional brand/article hints, fallback URL
+        config = self.config or {}
+        media_config = config.get("modules", {}).get("local_seo", {}).get("media") or {}
+        query_template = media_config.get("unsplash_query_template")
+        brand_hints = media_config.get("brand_image_keywords") or media_config.get("article_image_hints") or []
+        if isinstance(brand_hints, str):
+            brand_hints = [brand_hints] if brand_hints.strip() else []
+        fallback_url = (media_config.get("fallback_image_url") or "").strip() or None
 
-        Rules:
-        1. NO text, people's faces, or scary items (like handcuffs/jails).
-        2. Focus on: Architecture, Keys, Office settings, Paperwork, Calming interiors.
-        3. Return ONLY a JSON list of 3 search queries.
+        search_queries = _build_search_queries(keyword, query_template, brand_hints)
 
-        Example for 'Plumber': ["modern bathroom faucet", "clean copper pipes", "tools on table"]
-        """
-        search_terms = [keyword]
-        try:
-            response_text = await asyncio.to_thread(
-                llm_gateway.generate_content,
-                system_prompt="You are a visual director. Return only a JSON array of 3 search query strings.",
-                user_prompt=prompt,
-                model="gemini-2.5-flash",
-                temperature=0.5,
-                max_retries=2,
-            )
-            content = response_text.strip().replace("```json", "").replace("```", "").strip()
-            search_terms = json.loads(content)
-            if not isinstance(search_terms, list):
-                search_terms = [keyword]
-        except Exception as e:
-            self.logger.warning(f"LLM visual generation failed, using keyword: {e}")
-
-        # 4. SEARCH UNSPLASH (async; non-blocking)
         image_url = None
         credit_text = ""
-        for term in search_terms:
-            found = await self._search_unsplash(term)
+        used_query = None
+        for q in search_queries:
+            # Unsplash API expects + for spaces in URL
+            api_query = q.replace(" ", "+")
+            found = await self._search_unsplash(api_query)
             if found:
                 image_url = found["url"]
                 credit_text = f"Photo by {found['photographer']} on Unsplash"
-                self.logger.info(f"Found image for '{term}'")
+                used_query = q
+                self.logger.info(f"Found image for query: {q}")
                 break
+
         if not image_url:
-            self.logger.warning("Specific images failed, trying generic fallback.")
-            fallback = await self._search_unsplash("modern office architecture")
-            if fallback:
-                image_url = fallback["url"]
-        if not image_url:
-            image_url = FALLBACK_IMG
-            credit_text = "Unsplash"
-        if not self._validate_url(image_url):
-            image_url = FALLBACK_IMG
+            self.logger.warning("All Unsplash queries returned no result; using fallback image.")
+            image_url = fallback_url if fallback_url and self._validate_url(fallback_url) else FALLBACK_IMG
             credit_text = "Unsplash"
 
-        # 5. INJECT INTO HTML (SEO Optimized)
+        if not self._validate_url(image_url):
+            self.logger.warning("Image URL invalid; using fallback.")
+            image_url = fallback_url if fallback_url and self._validate_url(fallback_url) else FALLBACK_IMG
+            credit_text = "Unsplash"
+
         img_tag = f"""
             <figure class="main-image">
                 <img src="{html.escape(image_url)}" alt="{html.escape(keyword)} - Professional Service" title="{html.escape(keyword)}" loading="lazy" width="800" height="500">
@@ -119,7 +135,6 @@ class MediaAgent(BaseAgent):
         else:
             html_content = html_content.replace("</h1>", f"</h1>\n{img_tag}")
 
-        # 6. SAVE & ADVANCE (use "content" per Titanium/DB pattern)
         target_draft["metadata"]["content"] = html_content
         target_draft["metadata"]["status"] = "ready_for_utility"
         target_draft["metadata"]["image_added"] = bool(image_url and image_url != FALLBACK_IMG)
@@ -130,7 +145,8 @@ class MediaAgent(BaseAgent):
             message=f"Added image to '{keyword}'",
             data={
                 "draft_id": target_draft["id"],
-                "search_terms_used": search_terms,
+                "search_queries_used": search_queries,
+                "used_query": used_query,
                 "next_step": "Ready for Utility",
             },
         )

@@ -27,6 +27,28 @@ sales_bridge:
   destination_phone: "REQUIRED" # Client's mobile; also used for sticky Call button
   whisper_text: "Apex Lead Alert. Press 1 to connect."
   sms_alert_template: "New Lead: [Name]"
+  # Manual review: only high-score leads get bridge-review email; no auto-bridge
+  bridge_review_email: "" # Email that receives "high-value lead, connect when ready" notifications
+  min_score_to_ring: 90 # Only leads with score >= this get bridge-review email and can be bridged
+  # Business hours: bridging allowed only within these hours (project timezone)
+  business_hours:
+    timezone: "Pacific/Auckland"
+    start_hour: 8 # 0-23
+    end_hour: 18 # 0-23 (exclusive: 18 = 6pm end)
+    days_of_week: [1, 2, 3, 4, 5] # Mon=1 .. Sun=7 (1=Mon, 7=Sun). Leave empty for all days.
+  holidays: [] # Optional list of dates when bridging is disabled, e.g. ["2025-12-25"]
+  # Delay before auto-bridge: lead is scored, then scheduled_bridge_at = now + bridge_delay_minutes
+  bridge_delay_minutes: 10
+
+# Campaign-specific Jinja2 templates (editable in dashboard; leave empty to use built-in file)
+# Form: vars 'fields' (from form_settings.fields). Must include action="/api/webhooks/lead" or your webhook.
+form_template: ""
+# JSON-LD: vars service_name, brand_name, area_served_json, price_currency
+schema_template: ""
+# Call button: vars 'tel_link', 'phone'. Leave empty for default sticky "Call Now".
+call_button_template: ""
+# Optional: expected webhook path for post-Utility validation (default /api/webhooks/lead)
+form_webhook_path: "/api/webhooks/lead"
 
 # Optional custom rules for LLM scorer
 scoring_rules: {}

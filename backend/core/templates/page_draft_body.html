@@ -1,0 +1,29 @@
+<h1>{{ keyword }}</h1>
+{{ image_main_placeholder }}
+<p>{{ hook_paragraph }}</p>
+{% if local_blurb %}
+<p>{{ local_blurb }}</p>
+{% endif %}
+<p>{{ local_paragraph }}</p>
+<p>{{ regulatory_paragraph }}</p>
+{% if fact_box and fact_box|length > 0 %}
+<div class="fact-box">
+  <table>
+    <caption>
+      Key information
+    </caption>
+    {% for row in fact_box %}
+    <tr>
+      <th>{{ row.label }}</th>
+      <td>{{ row.value }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %} {% if feature_list_title or feature_list_body %}
+<h2>{{ feature_list_title }}</h2>
+{{ feature_list_body }} {% endif %} {% if faq_body %}
+<section class="faq-section" aria-label="Frequently asked questions">
+  {{ faq_body }}
+</section>
+{% endif %} {{ form_capture_placeholder }}

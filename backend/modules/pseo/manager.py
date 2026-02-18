@@ -45,10 +45,13 @@ class ManagerAgent(BaseAgent):
         kws = [k for k in all_kws if k.get("metadata", {}).get("campaign_id") == campaign_id]
         drafts = [d for d in all_drafts if d.get("metadata", {}).get("campaign_id") == campaign_id]
 
+        drafts_pending_writer = len([d for d in drafts if d.get("metadata", {}).get("status") == "pending_writer"])
         stats = {
             "anchors": len(anchors),
             "kws_total": len(kws),
             "kws_pending": len([k for k in kws if k.get("metadata", {}).get("status") == "pending"]),
+            "drafts_pending_writer": drafts_pending_writer,
+            "drafts_total": len(drafts),
             # Treat both 'draft' and 'rejected' as needing review
             "1_unreviewed": len(
                 [
@@ -127,6 +130,14 @@ class ManagerAgent(BaseAgent):
                 campaign_id=campaign_id,
             )
             return result
+        if action == "run_step":
+            return await self._run_step(
+                input_data=input_data,
+                stats=stats,
+                user_id=user_id,
+                project_id=project_id,
+                campaign_id=campaign_id,
+            )
         if action == "auto_orchestrate":
             return await self._run_full_cycle(input_data, stats, user_id, project_id, campaign_id)
         self.logger.warning(f"Unknown action: {action}, returning stats")
@@ -162,14 +173,18 @@ class ManagerAgent(BaseAgent):
             if res.status == "error":
                 return AgentOutput(status="error", message=f"Scout Failed: {res.message}")
 
-        # Phase 2: Strategist if no keywords
-        if stats["kws_total"] == 0:
-            self.logger.info("No Keywords found. Deploying STRATEGIST...")
+        # Phase 2: Strategist if no keywords or no drafts (intent-cluster: Strategist creates page_drafts)
+        if stats["anchors"] > 0 and (stats["kws_total"] == 0 or stats.get("drafts_total", 0) == 0):
+            self.logger.info("No keywords/drafts. Deploying STRATEGIST...")
             res = await self._dispatch(kernel, "strategist_run", base_params)
             if res.status == "error":
                 return AgentOutput(status="error", message=f"Strategist Failed: {res.message}")
 
-        # Phase 3: Production line (batch each agent via kernel; max 5 pages per cycle)
+        # Phase 3: Production line (batch each agent via kernel; Writer uses campaign batch_size)
+        campaign = memory.get_campaign(campaign_id, user_id)
+        pseo_settings = self._get_pseo_settings(campaign) if campaign else {}
+        writer_batch_size = max(1, min(50, int(pseo_settings.get("batch_size", 5))))
+
         for task_name, label in [
             ("write_pages", "WRITER"),
             ("critic_review", "CRITIC"),
@@ -178,7 +193,8 @@ class ManagerAgent(BaseAgent):
             ("enhance_utility", "UTILITY"),
         ]:
             self.logger.info(f"Checking {label} queue...")
-            await self._run_batch(kernel, task_name, base_params, max_batch=5)
+            max_batch = writer_batch_size if task_name == "write_pages" else 5
+            await self._run_batch(kernel, task_name, base_params, max_batch=max_batch)
 
         # Phase 4: Publisher (single run)
         self.logger.info("Checking PUBLISHER queue...")
@@ -265,6 +281,92 @@ class ManagerAgent(BaseAgent):
     async def _dispatch(self, kernel, task_name: str, params: dict) -> AgentOutput:
         task_input = AgentInput(task=task_name, user_id=params["user_id"], params=params)
         return await asyncio.wait_for(kernel.dispatch(task_input), timeout=300)
+
+    # Step names that run_step can dispatch (single-agent run)
+    RUN_STEP_TASKS = [
+        "scout_anchors",
+        "strategist_run",
+        "write_pages",
+        "critic_review",
+        "librarian_link",
+        "enhance_media",
+        "enhance_utility",
+        "publish",
+    ]
+
+    async def _run_step(
+        self,
+        input_data: AgentInput,
+        stats: Dict[str, Any],
+        user_id: str,
+        project_id: str,
+        campaign_id: str,
+    ) -> AgentOutput:
+        """
+        Run a single pipeline step (one agent). Returns result and next_step for UI.
+        Params: step or agent_key (e.g. scout_anchors, write_pages). Optional: auto_continue (ignored; frontend handles).
+        """
+        from backend.core.kernel import kernel
+
+        step = input_data.params.get("step") or input_data.params.get("agent_key")
+        if not step or step not in self.RUN_STEP_TASKS:
+            return AgentOutput(
+                status="error",
+                message=f"run_step requires 'step' or 'agent_key' one of: {', '.join(self.RUN_STEP_TASKS)}",
+            )
+        base_params = {
+            "project_id": project_id,
+            "user_id": user_id,
+            "campaign_id": campaign_id,
+            **input_data.params,
+        }
+        try:
+            result = await self._dispatch(kernel, step, base_params)
+        except asyncio.TimeoutError:
+            return AgentOutput(
+                status="error",
+                message=f"Step '{step}' timed out.",
+                data={"step": step, "next_step": self._get_recommended_next_step(stats)},
+            )
+        except Exception as e:
+            self.logger.error(f"run_step {step} failed: {e}", exc_info=True)
+            return AgentOutput(
+                status="error",
+                message=f"Step failed: {str(e)}",
+                data={"step": step, "next_step": self._get_recommended_next_step(stats)},
+            )
+        # Refresh stats after step for accurate next_step
+        all_anchors = memory.get_entities(tenant_id=user_id, entity_type="anchor_location", project_id=project_id)
+        all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
+        all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
+        anchors = [a for a in all_anchors if a.get("metadata", {}).get("campaign_id") == campaign_id]
+        kws = [k for k in all_kws if k.get("metadata", {}).get("campaign_id") == campaign_id]
+        drafts = [d for d in all_drafts if d.get("metadata", {}).get("campaign_id") == campaign_id]
+        drafts_pending_writer = len([d for d in drafts if d.get("metadata", {}).get("status") == "pending_writer"])
+        stats_after = {
+            "anchors": len(anchors),
+            "kws_total": len(kws),
+            "kws_pending": len([k for k in kws if k.get("metadata", {}).get("status") == "pending"]),
+            "drafts_pending_writer": drafts_pending_writer,
+            "drafts_total": len(drafts),
+            "1_unreviewed": len([d for d in drafts if d.get("metadata", {}).get("status") in ("draft", "rejected")]),
+            "2_validated": len([d for d in drafts if d.get("metadata", {}).get("status") == "validated"]),
+            "3_linked": len([d for d in drafts if d.get("metadata", {}).get("status") == "ready_for_media"]),
+            "4_imaged": len([d for d in drafts if d.get("metadata", {}).get("status") == "ready_for_utility"]),
+            "5_ready": len([d for d in drafts if d.get("metadata", {}).get("status") == "ready_to_publish"]),
+            "6_live": len([d for d in drafts if d.get("metadata", {}).get("status") in ("published", "live")]),
+        }
+        next_step = self._get_recommended_next_step(stats_after)
+        return AgentOutput(
+            status=result.status,
+            message=result.message,
+            data={
+                "step": step,
+                "result": result.data,
+                "next_step": next_step,
+                "stats": self._format_stats(stats_after),
+            },
+        )
 
     async def _run_batch(self, kernel, task_name: str, base_params: dict, max_batch: int = 5) -> None:
         """Run agent via kernel repeatedly until 'complete' or max_batch or error."""
@@ -503,12 +605,17 @@ class ManagerAgent(BaseAgent):
             return {"agent_key": "librarian_link", "label": "Librarian", "description": "Add internal links", "reason": f"{stats['2_validated']} pages need links"}
         if stats["1_unreviewed"] > 0:
             return {"agent_key": "critic_review", "label": "Critic", "description": "Quality check", "reason": f"{stats['1_unreviewed']} drafts need review"}
-        if stats["kws_pending"] > 0 and stats["1_unreviewed"] < 2:
-            return {"agent_key": "write_pages", "label": "Writer", "description": "Create content", "reason": f"{stats['kws_pending']} keywords need pages"}
-        if stats["kws_total"] < (stats["anchors"] * 5) and stats["anchors"] > 0:
-            return {"agent_key": "strategist_run", "label": "Strategist", "description": "Generate keywords", "reason": f"Need more keywords ({stats['kws_total']}/{stats['anchors'] * 5})"}
+        drafts_pending_writer = stats.get("drafts_pending_writer", 0)
+        kws_pending = stats.get("kws_pending", 0)
+        if drafts_pending_writer > 0 or (kws_pending > 0 and stats.get("1_unreviewed", 0) < 2):
+            reason = f"{drafts_pending_writer} drafts need writing" if drafts_pending_writer > 0 else f"{kws_pending} keywords need pages"
+            return {"agent_key": "write_pages", "label": "Writer", "description": "Create content", "reason": reason}
         if stats["anchors"] == 0:
             return {"agent_key": "scout_anchors", "label": "Scout", "description": "Find locations", "reason": "No anchor locations found"}
+        if stats.get("drafts_total", 0) == 0 and stats["anchors"] > 0:
+            return {"agent_key": "strategist_run", "label": "Strategist", "description": "Create page drafts", "reason": "No page drafts yet; run Strategist"}
+        if kws_pending > 0 and stats["anchors"] > 0:
+            return {"agent_key": "strategist_run", "label": "Strategist", "description": "Generate keywords", "reason": f"Need more keywords ({stats['kws_total']}/{stats['anchors'] * 5})"}
         if stats["6_live"] > 20:
             return {"agent_key": "analytics_audit", "label": "Analytics", "description": "Analyze performance", "reason": f"{stats['6_live']} live pages ready for analysis"}
         return {"agent_key": None, "label": "Pipeline Balanced", "description": "All stages progressing well", "reason": "No immediate action needed"}
@@ -517,6 +624,9 @@ class ManagerAgent(BaseAgent):
         return {
             "anchors": stats["anchors"],
             "kws_total": stats["kws_total"],
+            "kws_pending": stats["kws_pending"],
+            "drafts_pending_writer": stats.get("drafts_pending_writer", 0),
+            "drafts_total": stats.get("drafts_total", 0),
             "Drafts": stats["1_unreviewed"] + stats["2_validated"] + stats["3_linked"] + stats["4_imaged"] + stats["5_ready"] + stats["6_live"],
             "1_unreviewed": stats["1_unreviewed"],
             "2_validated": stats["2_validated"],
@@ -524,5 +634,4 @@ class ManagerAgent(BaseAgent):
             "4_imaged": stats["4_imaged"],
             "5_ready": stats["5_ready"],
             "6_live": stats["6_live"],
-            "kws_pending": stats["kws_pending"],
         }

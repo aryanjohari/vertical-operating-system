@@ -1,62 +1,65 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
-import {
-  getProject,
-  getEntities,
-} from "@/lib/api";
+import { getProject, getCampaigns } from "@/lib/api";
 import type { Project } from "@/types";
-import type { PageDraft, Lead } from "@/types";
-import { PulseCard, PulseCardSkeleton } from "@/components/projects/PulseCard";
-import { Rocket, Users, Dna } from "lucide-react";
+import { Plus, Rocket, Users, Settings } from "lucide-react";
+import { CreateCampaignDialog } from "@/components/campaigns/CreateCampaignDialog";
 
-export default function ProjectOverviewPage() {
+type Campaign = {
+  id: string;
+  name: string;
+  module: string;
+  status: string;
+};
+
+export default function ProjectDashboardPage() {
   const router = useRouter();
   const params = useParams();
   const projectId = params.projectId as string;
 
   const [project, setProject] = useState<Project | null>(null);
-  const [pageDrafts, setPageDrafts] = useState<PageDraft[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [createModule, setCreateModule] = useState<"pseo" | "lead_gen" | null>(null);
 
-  useEffect(() => {
+  const loadData = useCallback(async () => {
     if (!projectId) return;
-    async function load() {
-      try {
-        const [proj, drafts, leadList] = await Promise.all([
-          getProject(projectId),
-          getEntities<PageDraft>("page_draft", projectId),
-          getEntities<Lead>("lead", projectId),
-        ]);
-        setProject(proj ?? null);
-        setPageDrafts(drafts);
-        setLeads(leadList);
-      } catch {
-        setProject(null);
-        setPageDrafts([]);
-        setLeads([]);
-      } finally {
-        setLoading(false);
-      }
+    try {
+      const [proj, campList] = await Promise.all([
+        getProject(projectId),
+        getCampaigns(projectId),
+      ]);
+      setProject(proj ?? null);
+      setCampaigns(campList);
+    } catch {
+      setProject(null);
+      setCampaigns([]);
+    } finally {
+      setLoading(false);
     }
-    load();
   }, [projectId]);
 
-  const publishedCount = pageDrafts.filter(
-    (d) => (d.metadata?.status as string) === "published"
-  ).length;
-  const pendingDrafts = pageDrafts.length - publishedCount;
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
-  const newLeads = leads.filter(
-    (l) => (l.metadata?.status as string) === "new" || !l.metadata?.status
-  ).length;
-  const calledLeads = leads.filter(
-    (l) => (l.metadata?.status as string) === "called"
-  ).length;
+  const handleCreateClick = (module: "pseo" | "lead_gen") => {
+    setCreateModule(module);
+    setCreateDialogOpen(true);
+  };
 
+  const handleCreateSuccess = () => {
+    setCreateDialogOpen(false);
+    setCreateModule(null);
+    loadData();
+  };
+
+  const pseoCampaigns = campaigns.filter((c) => c.module === "pseo");
+  const leadGenCampaigns = campaigns.filter((c) => c.module === "lead_gen");
   const displayName =
     project?.niche || projectId?.replace(/_/g, " ") || "Project";
 
@@ -64,15 +67,9 @@ export default function ProjectOverviewPage() {
     return (
       <div className="space-y-6">
         <div className="h-8 w-64 animate-pulse rounded bg-muted" />
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <PulseCardSkeleton />
-          <PulseCardSkeleton />
-          <PulseCardSkeleton />
-        </div>
-        <div className="flex gap-3">
-          <div className="h-10 w-36 animate-pulse rounded bg-muted" />
-          <div className="h-10 w-32 animate-pulse rounded bg-muted" />
-          <div className="h-10 w-28 animate-pulse rounded bg-muted" />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="h-40 animate-pulse rounded-lg bg-muted" />
+          <div className="h-40 animate-pulse rounded-lg bg-muted" />
         </div>
       </div>
     );
@@ -99,54 +96,91 @@ export default function ProjectOverviewPage() {
         {displayName.charAt(0).toUpperCase() + displayName.slice(1)}
       </h1>
 
-      {/* Pulse Cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <PulseCard
-          title="Traffic"
-          primary={`${pageDrafts.length} drafts`}
-          secondary={`${publishedCount} published · ${pendingDrafts} pending`}
-        />
-        <PulseCard
-          title="Revenue"
-          primary={`${leads.length} leads`}
-          secondary={`${newLeads} new · ${calledLeads} called`}
-        />
-        <PulseCard
-          title="System"
-          primary="3 active"
-          secondary="Scout · Strategist · Publisher"
-        />
-      </div>
-
-      {/* Quick Actions */}
-      <div className="space-y-3">
-        <p className="text-sm font-medium text-muted-foreground">
-          Quick Actions
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <Link
-            href={`/projects/${projectId}/strategy`}
-            className="acid-glow flex items-center gap-2 rounded border border-primary/50 bg-primary/10 px-4 py-2 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
+      {/* pSEO block */}
+      <section className="glass-panel rounded-lg border border-border p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+            <Rocket className="h-5 w-5" />
+            pSEO Campaigns
+          </h2>
+          <button
+            type="button"
+            onClick={() => handleCreateClick("pseo")}
+            className="acid-glow flex items-center gap-2 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
           >
-            <Rocket className="h-4 w-4" />
-            Launch Campaign
-          </Link>
-          <Link
-            href={`/projects/${projectId}/leads`}
-            className="flex items-center gap-2 rounded border border-border bg-muted/50 px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            <Users className="h-4 w-4" />
-            View Leads
-          </Link>
-          <Link
-            href={`/projects/${projectId}/settings`}
-            className="flex items-center gap-2 rounded border border-border bg-muted/50 px-4 py-2 text-sm font-medium text-foreground transition-colors hover:bg-muted"
-          >
-            <Dna className="h-4 w-4" />
-            Edit DNA
-          </Link>
+            <Plus className="h-4 w-4" />
+            Create Campaign
+          </button>
         </div>
-      </div>
+        {pseoCampaigns.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No pSEO campaigns yet. Create one to get started.
+          </p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {pseoCampaigns.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center justify-between rounded border border-border bg-muted/30 px-3 py-2 text-sm"
+              >
+                <Link
+                  href={`/projects/${projectId}/campaigns/${c.id}`}
+                  className="font-medium text-foreground hover:underline"
+                >
+                  {c.name}
+                </Link>
+                <span className="text-xs text-muted-foreground">{c.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Lead Gen block */}
+      <section className="glass-panel rounded-lg border border-border p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+            <Users className="h-5 w-5" />
+            Lead Gen Campaigns
+          </h2>
+          <button
+            type="button"
+            onClick={() => handleCreateClick("lead_gen")}
+            className="acid-glow flex items-center gap-2 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            Create Campaign
+          </button>
+        </div>
+        {leadGenCampaigns.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No Lead Gen campaigns yet. Create one to get started.
+          </p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {leadGenCampaigns.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center justify-between rounded border border-border bg-muted/30 px-3 py-2 text-sm"
+              >
+                <span className="font-medium text-foreground">{c.name}</span>
+                <span className="text-xs text-muted-foreground">{c.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <CreateCampaignDialog
+        isOpen={createDialogOpen}
+        onClose={() => {
+          setCreateDialogOpen(false);
+          setCreateModule(null);
+        }}
+        onSuccess={handleCreateSuccess}
+        projectId={projectId}
+        module={createModule ?? "pseo"}
+      />
     </div>
   );
 }

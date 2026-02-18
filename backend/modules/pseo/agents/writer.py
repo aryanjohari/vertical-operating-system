@@ -1,13 +1,47 @@
 # backend/modules/pseo/agents/writer.py
 import asyncio
+import html
 import json
-import random
 import hashlib
-from typing import List, Dict, Any
+import os
+from typing import List, Dict, Any, Optional
+from jinja2 import Environment, BaseLoader
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
 from backend.core.services.llm_gateway import llm_gateway
+from backend.modules.pseo.agents.utility import get_local_blurb
+
+# Default page body template (Jinja2); can be overridden from config
+_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "core", "templates")
+_DEFAULT_TEMPLATE_PATH = os.path.join(_TEMPLATE_DIR, "page_draft_body.html")
+
+
+def _load_page_template(config: Optional[Dict] = None) -> str:
+    """Load page body template from config (pseo.page_template) or default file."""
+    if config:
+        t = config.get("modules", {}).get("local_seo", {}).get("page_template")
+        if t and isinstance(t, str):
+            return t
+    if os.path.exists(_DEFAULT_TEMPLATE_PATH):
+        with open(_DEFAULT_TEMPLATE_PATH, "r") as f:
+            return f.read()
+    return """<h1>{{ keyword }}</h1>
+{{ image_main_placeholder }}
+<p>{{ hook_paragraph }}</p>
+{% if local_blurb %}<p>{{ local_blurb }}</p>
+{% endif %}<p>{{ local_paragraph }}</p>
+<p>{{ regulatory_paragraph }}</p>
+{% if fact_box and fact_box|length > 0 %}
+<div class="fact-box"><table>{% for row in fact_box %}<tr><th>{{ row.label }}</th><td>{{ row.value }}</td></tr>{% endfor %}</table></div>
+{% endif %}
+{% if feature_list_title or feature_list_body %}<h2>{{ feature_list_title }}</h2>
+{{ feature_list_body }}
+{% endif %}
+{% if faq_body %}{{ faq_body }}
+{% endif %}
+{{ form_capture_placeholder }}
+"""
 
 
 class WriterAgent(BaseAgent):
@@ -15,7 +49,6 @@ class WriterAgent(BaseAgent):
         super().__init__(name="Writer")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        # 1. Titanium Standard: Validate injected context
         if not self.project_id or not self.user_id:
             self.logger.error("Missing injected context: project_id or user_id")
             return AgentOutput(status="error", message="Agent context not properly initialized.")
@@ -31,182 +64,159 @@ class WriterAgent(BaseAgent):
         if not campaign_id:
             return AgentOutput(status="error", message="Campaign ID required")
 
-        # Verify project ownership (security: defense-in-depth)
         if not memory.verify_project_ownership(user_id, project_id):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
 
-        # Load Campaign Config
         campaign = memory.get_campaign(campaign_id, user_id)
         if not campaign:
             return AgentOutput(status="error", message="Campaign not found.")
         config = campaign.get("config", {})
-        service_focus = config.get("service_focus", "Service")
+        targeting = config.get("targeting", {})
+        service_focus = targeting.get("service_focus", config.get("service_focus", "Service"))
 
-        # Load Identity / Brand from injected config (DNA)
+        # Configurable word target from campaign or DNA (pseo_settings / writer)
+        pseo_settings = config.get("pseo_settings") or (self.config or {}).get("modules", {}).get("pseo", {}).get("pseo_settings") or {}
+        writer_config = config.get("writer") or (self.config or {}).get("modules", {}).get("pseo", {}).get("writer") or {}
+        min_word_count = int(
+            writer_config.get("min_word_count")
+            or writer_config.get("word_target")
+            or pseo_settings.get("min_word_count")
+            or 600
+        )
+
         brand_voice = self.config.get("brand_brain", {}).get("voice_tone", "Professional, Empathetic")
 
-        # 2. FETCH WORK ITEM (Find a 'pending' keyword; optionally target one by keyword_id)
-        all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
-        pending_kws = [
-            k
-            for k in all_kws
-            if k.get("metadata", {}).get("campaign_id") == campaign_id
-            and k.get("metadata", {}).get("status") == "pending"
-            and not k.get("metadata", {}).get("status") == "excluded"
+        # Prefer page_draft with status pending_writer (intent-cluster flow); fallback to seo_keyword (legacy)
+        all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
+        pending_drafts = [
+            d for d in all_drafts
+            if d.get("metadata", {}).get("campaign_id") == campaign_id
+            and d.get("metadata", {}).get("status") == "pending_writer"
         ]
-        keyword_id_param = input_data.params.get("keyword_id")
-        if keyword_id_param is not None:
-            pending_kws = [k for k in pending_kws if k.get("id") == keyword_id_param]
+        draft_id_param = input_data.params.get("draft_id")
+
+        if pending_drafts:
+            # Intent-cluster path: write into existing page_draft
+            if draft_id_param:
+                pending_drafts = [d for d in pending_drafts if d.get("id") == draft_id_param]
+                if not pending_drafts:
+                    return AgentOutput(status="error", message="Draft not found or not pending_writer.")
+            target_draft = pending_drafts[0]
+            draft_meta = target_draft.get("metadata", {})
+            kw_text = draft_meta.get("h1_title") or target_draft.get("name", "").replace("Page: ", "")
+            anchor_ref_id = draft_meta.get("anchor_id")
+            kw_meta = {"intent": draft_meta.get("cluster_id"), "anchor_reference": anchor_ref_id}
+            use_draft_path = True
+        else:
+            # Legacy path: seo_keyword pending
+            keyword_id_param = input_data.params.get("keyword_id")
+            all_kws = memory.get_entities(tenant_id=user_id, entity_type="seo_keyword", project_id=project_id)
+            pending_kws = [
+                k for k in all_kws
+                if k.get("metadata", {}).get("campaign_id") == campaign_id
+                and k.get("metadata", {}).get("status") == "pending"
+                and not k.get("metadata", {}).get("excluded")
+            ]
+            if keyword_id_param is not None:
+                pending_kws = [k for k in pending_kws if k.get("id") == keyword_id_param]
             if not pending_kws:
-                return AgentOutput(
-                    status="error",
-                    message="Keyword not found or not pending.",
-                )
-        if not pending_kws:
-            return AgentOutput(status="complete", message="No pending keywords to write.")
+                return AgentOutput(status="complete", message="No pending keywords or drafts to write.")
+            target_kw = pending_kws[0]
+            kw_text = target_kw.get("name")
+            kw_meta = target_kw.get("metadata", {})
+            anchor_ref_id = kw_meta.get("anchor_reference")
+            target_draft = None
+            use_draft_path = False
 
-        target_kw = pending_kws[0]
-        kw_text = target_kw.get("name")
-        kw_meta = target_kw.get("metadata", {})
-        self.logger.info(f"WRITER: Drafting page for '{kw_text}'")
+        self.logger.info(f"WRITER: Drafting page for '{kw_text}' (data-only + Jinja2)")
 
-        # 3. GATHER INTELLIGENCE (Anti-Hallucination Data)
         anchor_data = None
-        anchor_ref_id = kw_meta.get("anchor_reference")
         if anchor_ref_id:
             anchor_entity = memory.get_entity(anchor_ref_id, user_id)
-            # if anchor_entity:
-            #     anchor_data = {
-            #         "name": anchor_entity.name,
-            #         "address": anchor_entity.metadata.get("address"),
-            #         "phone": anchor_entity.metadata.get("primary_contact"),
-            #     }
             if anchor_entity:
-    # Use ['key'] syntax because anchor_entity is a dict from memory.py
                 anchor_data = {
                     "name": anchor_entity.get("name"),
                     "address": anchor_entity.get("metadata", {}).get("address"),
                     "phone": anchor_entity.get("metadata", {}).get("primary_contact"),
                 }
 
-        # Query ChromaDB for semantically relevant knowledge fragments (RAG)
-        # This finds fragments most relevant to the keyword being written
         vector_fragments = memory.query_context(
             tenant_id=user_id,
-            query=kw_text,  # Use keyword as semantic search query
-            n_results=5,  # Get top 5 most relevant fragments
+            query=kw_text,
+            n_results=5,
             project_id=project_id,
             campaign_id=campaign_id,
-            return_metadata=True  # Get metadata with text
+            return_metadata=True,
         )
-        
-        # Also get from SQL DB as fallback/backup
         all_intel = memory.get_entities(tenant_id=user_id, entity_type="knowledge_fragment", project_id=project_id)
         campaign_intel = [i for i in all_intel if i.get("metadata", {}).get("campaign_id") == campaign_id]
-        
-        # Combine vector results with SQL results, prioritizing vector (semantic) matches
         intel_list = []
-        
-        # Add vector DB results first (most relevant)
         for frag in vector_fragments:
             frag_meta = frag.get("metadata", {})
             intel_list.append({
                 "name": frag_meta.get("title", ""),
                 "url": frag_meta.get("url", ""),
-                "snippet": frag.get("text", ""),  # Use full text from vector DB
-                "type": frag_meta.get("fragment_type", "fact")
+                "snippet": frag.get("text", ""),
+                "type": frag_meta.get("fragment_type", "fact"),
             })
-        
-        # Add SQL DB results if we need more (up to 4 total)
         sql_added = 0
         for sql_frag in campaign_intel:
             if sql_added >= max(0, 4 - len(intel_list)):
                 break
-            # Skip if already in vector results (by URL)
             sql_url = sql_frag.get("metadata", {}).get("url", "")
             if not any(f.get("url") == sql_url for f in intel_list):
                 intel_list.append({
                     "name": sql_frag.get("name", ""),
                     "url": sql_url,
                     "snippet": sql_frag.get("metadata", {}).get("snippet", ""),
-                    "type": sql_frag.get("metadata", {}).get("type", "fact")
+                    "type": sql_frag.get("metadata", {}).get("type", "fact"),
                 })
                 sql_added += 1
-        
-        # Limit to 4 fragments total
         selected_intel = intel_list[:4]
-        
-        # Build context string for prompt
         intel_context = "\n".join([
             f"- {frag.get('type', 'fact').upper()}: {frag.get('name', 'Unknown')} (Source: {frag.get('url', 'N/A')})\n  {frag.get('snippet', '')[:200]}"
             for frag in selected_intel
         ])
-        
         if not intel_context:
             intel_context = "No specific knowledge fragments available. Use general best practices."
             self.logger.warning(f"No knowledge fragments found for keyword '{kw_text}' in campaign {campaign_id}")
 
-        # 4. CONSTRUCT THE PROMPT
+        # Data-only prompt: LLM returns structured JSON, no HTML
         prompt = f"""
-        ACT AS: Senior Content Writer & SEO Specialist for '{service_focus}' services.
-        TONE: {brand_voice}.
-        GOAL: Write a high-converting, minumum 750 words(strictly), local service page + SEO Metadata.
+ACT AS: Senior Content Writer & SEO Specialist for '{service_focus}' services.
+TONE: {brand_voice}.
 
-        --- INPUT DATA (USE THIS, DO NOT INVENT) ---
-        KEYWORD: "{kw_text}"
-        INTENT: {kw_meta.get('intent')}
+INPUT DATA (USE THIS, DO NOT INVENT):
+KEYWORD: "{kw_text}"
+INTENT: {kw_meta.get('intent')}
+LOCAL ANCHOR: {f"User is near: {anchor_data['name']} at {anchor_data['address']}." if anchor_data else "User is searching city-wide."}
 
-        LOCAL ANCHOR CONTEXT (Crucial):
-        {f"User is near: {anchor_data['name']} at {anchor_data['address']}." if anchor_data else "User is searching city-wide."}
+KNOWLEDGE BANK (cite only; never invent):
+{intel_context}
 
-        KNOWLEDGE BANK (CITE THESE):
-        {intel_context}
+TASK: Return ONLY a JSON object with these keys (plain text content, no HTML).
+Aim for at least {min_word_count} words total across sections to avoid thin content; use hook, local, regulatory, feature list, and FAQ to get there.
 
-        --- STRUCTURE & REQUIREMENTS ---
-        1. **HTML Content:** - H1 tag must include the Keyword.
-           - Direct hook answering the pain point.
-           - *Local Paragraph:* Explain we are "minutes away from {anchor_data['name'] if anchor_data else 'central locations'}".
-           - *Regulatory Reality:* Use KNOWLEDGE BANK to explain rules/costs.
-           - Placeholders: Insert {{{{image_main}}}} after H1, {{{{form_capture}}}} at end.
-           - FORMAT: Pure HTML body tags (<p>, <h2>, <ul>). NO <html> or <body> tags.
+- "meta_title": string, max 60 chars, includes keyword
+- "meta_description": string, max 160 chars, includes keyword
+- "hook_paragraph": string, 1-3 sentences answering the pain point
+- "local_paragraph": string, 1-2 sentences about being minutes away from anchor or central
+- "regulatory_paragraph": string, 1-3 sentences using KNOWLEDGE BANK for rules/costs (no invention)
+- "fact_box": array of {{"label": "...", "value": "..."}} ONLY for facts explicitly in KNOWLEDGE BANK (costs, fees, processing times, documents, hours). If none, use [].
+- "feature_list": object with "title" (string, e.g. "5 Signs You Need a Plumber" or "Eligibility Requirements") and "items" (array of exactly 5 strings, bullet points specific to the keyword/niche).
+- "faq_section": array of exactly 3 objects, each {{"question": "...", "answer": "..."}}, relevant to the keyword for SEO rich snippets.
 
-        2. **HARD FACTS (Anti-Hallucination — CRITICAL):**
-           Search the KNOWLEDGE BANK snippets ONLY for these "Hard Facts":
-           - **Costs/Fees:** dollar amounts, filing fees, callout fees, price ranges (e.g. "$150", "from $X").
-           - **Processing Times:** durations, deadlines (e.g. "5–7 days", "within 24 hours").
-           - **Required Documents:** lists of forms, IDs, certificates (e.g. "proof of address, ID").
-           - **Opening Hours:** business/court hours (e.g. "Mon–Fri 9–5", "24/7").
-           **IF you find one or more such facts** (explicitly stated in the snippets):
-           - You MUST add a structured HTML block *inside* the body (e.g. after the regulatory paragraph).
-           - Use either <div class="fact-box"> with an inner <table>, or <table class="fact-box">.
-           - Include one row per fact (e.g. "Filing fee" | "$X", "Processing" | "Y days", "Documents required" | "A, B, C").
-           - Add a brief caption/source if the snippet mentions it (e.g. "Source: [name]").
-           **IF you find NO such facts** in the KNOWLEDGE BANK:
-           - Do NOT add any fact-box or table. Do NOT guess, estimate, or invent prices or figures.
-           - Omit the block entirely. Never hallucinate data.
+Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_box must be [].
+"""
 
-        3. **Meta Data:**
-           - Meta Title: Catchy, includes keyword, max 60 chars.
-           - Meta Description: Persuasive ad copy, includes keyword, max 160 chars.
-
-        --- OUTPUT FORMAT (STRICT JSON) ---
-        Return ONLY a JSON object with these keys:
-        {{
-            "html_content": "...",
-            "meta_title": "...",
-            "meta_description": "..."
-        }}
-        """
-
-        # 5. GENERATE & PARSE (use llm_gateway via asyncio.to_thread)
         try:
             response_text = await asyncio.to_thread(
                 llm_gateway.generate_content,
-                system_prompt="You are a content writer. Return only valid JSON with keys html_content, meta_title, meta_description. Never invent costs, fees, processing times, documents, or opening hours—only use facts explicitly present in the provided KNOWLEDGE BANK; if none exist, omit any fact-box/table.",
+                system_prompt="You are a content writer. Return only valid JSON with keys: meta_title, meta_description, hook_paragraph, local_paragraph, regulatory_paragraph, fact_box (array of {label, value}), feature_list ({title, items: 5 strings}), faq_section (array of 3 {question, answer}). No HTML, no markdown.",
                 user_prompt=prompt,
                 model="gemini-2.5-flash",
-                temperature=0.7,
+                temperature=0.5,
                 max_retries=2,
             )
             content_str = response_text.strip()
@@ -215,49 +225,125 @@ class WriterAgent(BaseAgent):
             elif "```" in content_str:
                 content_str = content_str.split("```")[1]
             content_str = content_str.strip()
-
             result = json.loads(content_str)
-            html_content = result.get("html_content", "")
-            meta_title = result.get("meta_title", "")
-            meta_description = result.get("meta_description", "")
         except Exception as e:
-            self.logger.error(f"Writer Generation Failed: {e}")
+            self.logger.error(f"Writer LLM/parse failed: {e}")
             return AgentOutput(status="error", message=f"Failed to generate valid JSON content: {e}")
 
-        # 6. SAVE DRAFT (use "content" and "draft" per Titanium/DB pattern)
-        page_id = hashlib.md5(kw_text.encode()).hexdigest()[:16]
-        draft = Entity(
-            id=f"page_{page_id}",
-            tenant_id=user_id,
-            project_id=project_id,
-            entity_type="page_draft",
-            name=f"Page: {kw_text}",
-            metadata={
-                "campaign_id": campaign_id,
-                "keyword_id": target_kw.get("id"),
-                "keyword": kw_text,
+        meta_title = result.get("meta_title", kw_text)
+        meta_description = result.get("meta_description", "")
+        hook_paragraph = result.get("hook_paragraph", "")
+        local_paragraph = result.get("local_paragraph", "")
+        regulatory_paragraph = result.get("regulatory_paragraph", "")
+        fact_box = result.get("fact_box")
+        if not isinstance(fact_box, list):
+            fact_box = []
+
+        # feature_list: { "title": "...", "items": [5 strings] }
+        feature_list = result.get("feature_list") or {}
+        if not isinstance(feature_list, dict):
+            feature_list = {}
+        fl_items = feature_list.get("items")
+        if not isinstance(fl_items, list):
+            fl_items = []
+        fl_items = [str(x).strip() for x in fl_items[:5] if x]
+        feature_list_title = (feature_list.get("title") or "").strip()
+        feature_list_body = ""
+        if fl_items:
+            feature_list_body = "<ul>\n" + "\n".join(f"<li>{html.escape(i)}</li>" for i in fl_items) + "\n</ul>"
+
+        # faq_section: [ { "question": "...", "answer": "..." }, ... ] -> <details><summary>...</summary>...</details>
+        faq_section = result.get("faq_section")
+        if not isinstance(faq_section, list):
+            faq_section = []
+        faq_section = faq_section[:3]
+        faq_body = ""
+        for item in faq_section:
+            if not isinstance(item, dict):
+                continue
+            q = (item.get("question") or "").strip()
+            a = (item.get("answer") or "").strip()
+            if q or a:
+                faq_body += f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>\n'
+
+        # Local blurb (Python-generated sentence)
+        geo = targeting.get("geo_targets", {}) or {}
+        cities = geo.get("cities", []) if isinstance(geo.get("cities"), list) else []
+        city = (cities[0] or "").strip() if cities else ""
+        distance = (
+            targeting.get("default_distance")
+            or (self.config.get("modules", {}) or {}).get("local_seo", {}).get("default_distance")
+            or "minutes"
+        )
+        anchor = (anchor_data.get("name", "") or "").strip() if anchor_data else ""
+        local_blurb = get_local_blurb(city, distance, anchor)
+
+        # Render Jinja2 template with data
+        template_str = _load_page_template(self.config)
+        env = Environment(loader=BaseLoader())
+        template = env.from_string(template_str)
+        html_content = template.render(
+            keyword=kw_text,
+            hook_paragraph=hook_paragraph,
+            local_paragraph=local_paragraph,
+            local_blurb=local_blurb,
+            regulatory_paragraph=regulatory_paragraph,
+            fact_box=fact_box,
+            feature_list_title=feature_list_title,
+            feature_list_body=feature_list_body,
+            faq_body=faq_body,
+            image_main_placeholder="{{image_main}}",
+            form_capture_placeholder="{{form_capture}}",
+        )
+
+        if use_draft_path and target_draft:
+            # Update existing page_draft in place (intent-cluster flow)
+            existing_meta = target_draft.get("metadata", {}) or {}
+            new_meta = {
+                **existing_meta,
                 "status": "draft",
                 "content": html_content,
+                "html_content": html_content,
                 "meta_title": meta_title,
                 "meta_description": meta_description,
                 "anchor_used": anchor_data.get("name") if anchor_data else None,
-                "version": 1,
-            },
-        )
-        memory.save_entity(draft, project_id=project_id)
-
-        # 7. UPDATE KEYWORD STATUS (safe dict access; memory returns dicts)
-        meta = target_kw.get("metadata") or {}
-        meta = dict(meta)
-        meta["status"] = "drafted"
-        target_kw["metadata"] = meta
-        memory.save_entity(Entity(**target_kw), project_id=project_id)
+                "version": existing_meta.get("version", 1) + 1,
+            }
+            memory.update_entity(target_draft["id"], new_meta, tenant_id=user_id)
+            page_id = target_draft["id"]
+        else:
+            # Legacy: create new page_draft and mark keyword as drafted
+            page_id = hashlib.md5(kw_text.encode()).hexdigest()[:16]
+            draft = Entity(
+                id=f"page_{page_id}",
+                tenant_id=user_id,
+                entity_type="page_draft",
+                name=f"Page: {kw_text}",
+                primary_contact=None,
+                metadata={
+                    "campaign_id": campaign_id,
+                    "keyword_id": target_kw.get("id"),
+                    "keyword": kw_text,
+                    "status": "draft",
+                    "content": html_content,
+                    "meta_title": meta_title,
+                    "meta_description": meta_description,
+                    "anchor_used": anchor_data.get("name") if anchor_data else None,
+                    "version": 1,
+                },
+            )
+            memory.save_entity(draft, project_id=project_id)
+            meta = target_kw.get("metadata") or {}
+            meta = dict(meta)
+            meta["status"] = "drafted"
+            target_kw["metadata"] = meta
+            memory.save_entity(Entity(**target_kw), project_id=project_id)
 
         return AgentOutput(
             status="success",
             message=f"Drafted page '{kw_text}' with SEO metadata",
             data={
-                "page_id": f"page_{page_id}",
+                "page_id": page_id if isinstance(page_id, str) else f"page_{page_id}",
                 "keyword": kw_text,
                 "meta_title": meta_title,
                 "next_step": "Ready for Critic",

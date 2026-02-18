@@ -1,11 +1,70 @@
 # backend/modules/pseo/agents/critic.py
 import asyncio
 import json
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Tuple
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
 from backend.core.services.llm_gateway import llm_gateway
+
+
+def _run_deterministic_structure_checks(
+    html_content: str,
+    draft_meta: Dict[str, Any],
+    config: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """Run deterministic checks (placeholders, h1, form, tel, json-ld, metadata). Returns (passed, failure_reason)."""
+    critic_cfg = config.get("critic") or config.get("modules", {}).get("pseo", {}).get("critic") or {}
+    required_placeholders = critic_cfg.get("required_placeholders") or ["form_capture", "image_main"]
+    check_form_webhook = critic_cfg.get("check_form_webhook", False)
+    expected_webhook = critic_cfg.get("form_webhook_path") or "/api/webhooks/lead"
+    content_lower = html_content.lower()
+
+    if "<h1>" not in content_lower and "<h1 " not in content_lower:
+        return False, "Missing required <h1> tag."
+
+    if "form_capture" in required_placeholders:
+        has_form_placeholder = "{{form_capture}}" in html_content
+        has_form_injected = "<form" in content_lower or "conversion-block" in content_lower
+        if not has_form_placeholder and not has_form_injected:
+            return False, "Missing required placeholder {{form_capture}} or form block."
+        if check_form_webhook and (has_form_injected or "action=" in content_lower):
+            if expected_webhook not in html_content and "action=" in content_lower:
+                if "/api/webhooks" not in html_content:
+                    return False, f"Form action should point to webhook (e.g. {expected_webhook})."
+
+    if "image_main" in required_placeholders:
+        has_image_placeholder = "{{image_main}}" in html_content
+        has_image_injected = "<img" in content_lower and "src=" in content_lower
+        if not has_image_placeholder and not has_image_injected:
+            return False, "Missing required placeholder {{image_main}} or image tag."
+
+    if critic_cfg.get("check_tel_link"):
+        destination_phone = (
+            (config.get("modules") or {}).get("lead_gen", {}).get("sales_bridge", {}).get("destination_phone")
+            or (config.get("lead_gen_integration") or {}).get("destination_phone")
+            or ""
+        )
+        if destination_phone and destination_phone != "REQUIRED" and "tel:" not in html_content:
+            return False, "Missing tel: link for destination_phone."
+
+    if critic_cfg.get("check_json_ld"):
+        ld_match = re.search(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>([^<]+)</script>', html_content, re.DOTALL | re.IGNORECASE)
+        if not ld_match:
+            return False, "Missing JSON-LD script block."
+        try:
+            json.loads(ld_match.group(1).strip())
+        except (json.JSONDecodeError, ValueError):
+            return False, "Invalid JSON in application/ld+json script."
+
+    if critic_cfg.get("check_metadata", True):
+        if not (draft_meta.get("meta_title") or "").strip():
+            return False, "Missing meta_title."
+        if not (draft_meta.get("meta_description") or "").strip():
+            return False, "Missing meta_description."
+
+    return True, ""
 
 
 class CriticAgent(BaseAgent):
@@ -53,6 +112,34 @@ class CriticAgent(BaseAgent):
         keyword = draft_meta.get("keyword", "")
 
         self.logger.info(f"CRITIC: Reviewing draft for '{keyword}'")
+
+        # 2b. Deterministic structure checks (before LLM)
+        config = self.config or {}
+        struct_ok, struct_reason = _run_deterministic_structure_checks(html_content, draft_meta, config)
+        if not struct_ok:
+            target_draft["metadata"]["status"] = "rejected"
+            target_draft["metadata"]["qa_score"] = 0
+            target_draft["metadata"]["qa_notes"] = f"Structure check failed: {struct_reason}"
+            memory.save_entity(Entity(**target_draft), project_id=project_id)
+            self.logger.warning(f"FAILED (structure): {keyword} - {struct_reason}")
+            return AgentOutput(
+                status="success",
+                message=f"Draft rejected for '{keyword}': {struct_reason}",
+                data={"draft_id": target_draft["id"], "score": 0, "failure_reason": struct_reason},
+            )
+
+        critic_cfg = config.get("critic") or config.get("modules", {}).get("pseo", {}).get("critic") or {}
+        run_llm_after_checks = critic_cfg.get("run_llm_after_checks", True)
+        if not run_llm_after_checks:
+            target_draft["metadata"]["status"] = "validated"
+            target_draft["metadata"]["qa_score"] = 10
+            target_draft["metadata"]["qa_notes"] = "Deterministic checks passed (LLM skipped)."
+            memory.save_entity(Entity(**target_draft), project_id=project_id)
+            return AgentOutput(
+                status="success",
+                message=f"Draft validated for '{keyword}' (structure only)",
+                data={"draft_id": target_draft["id"], "score": 10, "next_step": "Ready for Librarian"},
+            )
 
         # 3. CONSTRUCT EVALUATION PROMPT
         prompt = f"""

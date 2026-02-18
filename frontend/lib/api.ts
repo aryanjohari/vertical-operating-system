@@ -4,20 +4,13 @@
  */
 
 import axios, { type AxiosInstance } from "axios";
-import type {
-  Entity,
-  SeoKeyword,
-  PageDraft,
-  Lead,
-  Project,
-} from "@/types";
+import type { Entity, SeoKeyword, PageDraft, Lead, Project } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Auth token storage (set via setAuthToken after login)
 let authToken: string | null = null;
@@ -127,6 +120,103 @@ export async function getProjects(): Promise<Project[]> {
 }
 
 /**
+ * Profile form data matching profile_template.yaml structure.
+ */
+export interface ProfileFormData {
+  identity: {
+    project_id: string;
+    business_name: string;
+    niche: string;
+    website: string;
+    schema_type: string;
+    contact: { phone: string; email: string; address: string };
+    socials: { facebook: string; linkedin: string; google_maps_cid: string };
+  };
+  brand_brain: {
+    voice_tone: string;
+    key_differentiators: string[] | string;
+    knowledge_nuggets: string[] | string;
+    common_objections: string[] | string;
+    forbidden_topics: string[] | string;
+  };
+  modules: {
+    local_seo: { enabled: boolean };
+    lead_gen: { enabled: boolean };
+    admin: { enabled: boolean };
+  };
+}
+
+/**
+ * Form schema from YAML (schema-driven forms).
+ */
+export interface FormSchemaField {
+  path: string;
+  type: "string" | "array" | "boolean" | "number" | "object";
+  itemType?: "string" | "object";
+  required?: boolean;
+  default?: unknown;
+  label?: string;
+  /** For array of object: schema for one item (sub-fields with relative paths). */
+  itemSchema?: FormSchemaField[];
+}
+
+export interface FormSchema {
+  fields: FormSchemaField[];
+  sections: Record<string, FormSchemaField[]>;
+}
+
+export interface FormSchemaResponse {
+  schema: FormSchema;
+  defaults: Record<string, unknown>;
+}
+
+/**
+ * Fetch form schema for dynamic forms (YAML-driven).
+ * GET /api/schemas/profile | /api/schemas/campaign/pseo | /api/schemas/campaign/lead_gen
+ */
+export async function getFormSchema(
+  type: "profile" | "pseo" | "lead_gen"
+): Promise<FormSchemaResponse> {
+  const path =
+    type === "profile"
+      ? "/api/schemas/profile"
+      : `/api/schemas/campaign/${type}`;
+  const { data } = await api.get<FormSchemaResponse>(path);
+  return data;
+}
+
+/**
+ * Create a new project (simple: name + niche).
+ * POST /api/projects
+ */
+export async function createProject(
+  name: string,
+  niche: string
+): Promise<{ success: boolean; project_id: string }> {
+  const { data } = await api.post<{
+    success: boolean;
+    project_id: string;
+    message?: string;
+  }>("/api/projects", { name, niche });
+  return { success: data.success, project_id: data.project_id };
+}
+
+/**
+ * Create a new project with full profile form data (schema-driven, matches profile_template.yaml).
+ * POST /api/projects
+ */
+export async function createProjectWithProfile(
+  profile: Record<string, unknown>
+): Promise<{ success: boolean; project_id: string }> {
+  const { data } = await api.post<{
+    success: boolean;
+    project_id: string;
+    message?: string;
+  }>("/api/projects", { profile });
+  return { success: data.success, project_id: data.project_id };
+}
+
+/**
  * Fetch a single project by ID.
  * Resolves from getProjects() since backend has no dedicated endpoint.
  */
@@ -169,19 +259,50 @@ export async function updateProjectConfig(
 
 /**
  * Fetch entities filtered by type and optional project.
- * GET /api/entities?entity_type=...&project_id=...
+ * GET /api/entities?entity_type=...&project_id=...&limit=...&offset=...&campaign_id=...
  */
 export async function getEntities<T extends Entity = Entity>(
   type: EntityType,
-  projectId?: string | null
+  projectId?: string | null,
+  opts?: { campaignId?: string; limit?: number; offset?: number }
 ): Promise<T[]> {
-  const params: Record<string, string> = { entity_type: type };
+  const params: Record<string, string | number> = { entity_type: type };
   if (projectId) params.project_id = projectId;
+  if (opts?.campaignId) params.campaign_id = opts.campaignId;
+  if (opts?.limit != null) params.limit = opts.limit;
+  if (opts?.offset != null) params.offset = opts.offset;
 
   const { data } = await api.get<{ entities: T[] }>("/api/entities", {
     params,
   });
   return data.entities ?? [];
+}
+
+/**
+ * Fetch page drafts for a campaign with pagination. Returns entities and total count.
+ */
+export async function getCampaignDrafts(
+  projectId: string,
+  campaignId: string,
+  page: number = 1,
+  pageSize: number = 20
+): Promise<{ entities: PageDraft[]; total: number }> {
+  const offset = (page - 1) * pageSize;
+  const params: Record<string, string | number> = {
+    entity_type: "page_draft",
+    project_id: projectId,
+    campaign_id: campaignId,
+    limit: pageSize,
+    offset,
+  };
+  const { data } = await api.get<{ entities: PageDraft[]; total?: number }>(
+    "/api/entities",
+    { params }
+  );
+  return {
+    entities: data.entities ?? [],
+    total: data.total ?? data.entities?.length ?? 0,
+  };
 }
 
 /**
@@ -217,7 +338,7 @@ export async function deleteEntity(
  * POST /api/entities
  */
 export async function createEntity<
-  T extends Record<string, unknown> = Record<string, unknown>,
+  T extends Record<string, unknown> = Record<string, unknown>
 >(
   type: EntityType,
   data: {
@@ -238,6 +359,97 @@ export async function createEntity<
     project_id: data.project_id ?? null,
   });
   return response;
+}
+
+/**
+ * Fetch campaigns for a project.
+ * GET /api/projects/{projectId}/campaigns?module=...
+ */
+export async function getCampaigns(
+  projectId: string,
+  module?: string
+): Promise<
+  {
+    id: string;
+    name: string;
+    module: string;
+    status: string;
+    config?: Record<string, unknown>;
+  }[]
+> {
+  const params: Record<string, string> = {};
+  if (module) params.module = module;
+  const { data } = await api.get<{
+    campaigns: {
+      id: string;
+      name: string;
+      module: string;
+      status: string;
+      config?: Record<string, unknown>;
+    }[];
+  }>(`/api/projects/${projectId}/campaigns`, { params });
+  return data.campaigns ?? [];
+}
+
+export type Campaign = {
+  id: string;
+  name: string;
+  module: string;
+  status: string;
+  config?: Record<string, unknown>;
+  project_id?: string;
+  stats?: Record<string, unknown>;
+};
+
+/**
+ * Fetch a single campaign by ID with full config.
+ * GET /api/projects/{projectId}/campaigns/{campaignId}
+ */
+export async function getCampaign(
+  projectId: string,
+  campaignId: string
+): Promise<Campaign> {
+  const { data } = await api.get<{ campaign: Campaign }>(
+    `/api/projects/${projectId}/campaigns/${campaignId}`
+  );
+  return data.campaign;
+}
+
+/**
+ * Update campaign config. Full replace with config, or shallow merge with config_partial.
+ * PATCH /api/projects/{projectId}/campaigns/{campaignId}
+ */
+export async function updateCampaignConfig(
+  projectId: string,
+  campaignId: string,
+  config: Record<string, unknown>,
+  options?: { merge?: boolean }
+): Promise<Campaign> {
+  const body = options?.merge
+    ? { config_partial: config }
+    : { config };
+  const { data } = await api.patch<{ campaign: Campaign }>(
+    `/api/projects/${projectId}/campaigns/${campaignId}`,
+    body
+  );
+  return data.campaign;
+}
+
+/**
+ * Create a campaign via form data (1:1 mapping to pseo_default or lead_gen_default).
+ * POST /api/projects/{projectId}/campaigns
+ */
+export async function createCampaignWithForm(
+  projectId: string,
+  module: "pseo" | "lead_gen",
+  formData: Record<string, unknown>,
+  name?: string
+): Promise<{ campaign_id: string }> {
+  const { data } = await api.post<{ campaign_id: string }>(
+    `/api/projects/${projectId}/campaigns`,
+    { name: name ?? "", module, form_data: formData }
+  );
+  return { campaign_id: data.campaign_id };
 }
 
 /**
@@ -264,6 +476,91 @@ export async function dispatchTask(
   });
 
   return data;
+}
+
+/**
+ * pSEO: get pipeline stats and recommended next step.
+ * Dispatches manager with action dashboard_stats.
+ */
+export async function getPseoStats(
+  projectId: string,
+  campaignId: string
+): Promise<{
+  stats: Record<string, unknown>;
+  next_step: {
+    agent_key: string | null;
+    label: string;
+    description: string;
+    reason: string;
+  };
+}> {
+  const res = await dispatchTask("manager", {
+    action: "dashboard_stats",
+    project_id: projectId,
+    campaign_id: campaignId,
+  });
+  const data = (res.data as Record<string, unknown>) ?? {};
+  return {
+    stats: (data.stats as Record<string, unknown>) ?? {},
+    next_step: (data.next_step as {
+      agent_key: string | null;
+      label: string;
+      description: string;
+      reason: string;
+    }) ?? {
+      agent_key: null,
+      label: "—",
+      description: "",
+      reason: "",
+    },
+  };
+}
+
+/**
+ * pSEO: run a single pipeline step (e.g. scout_anchors, write_pages).
+ * Returns result and next_step. On error, show message and freeze (no auto-continue).
+ * Optional params (e.g. keyword_id) are forwarded to the manager/agent for manual page creation.
+ */
+export async function runPseoStep(
+  projectId: string,
+  campaignId: string,
+  step: string,
+  params?: Record<string, unknown>
+): Promise<{
+  status: string;
+  message: string;
+  data?: {
+    step: string;
+    next_step: {
+      agent_key: string | null;
+      label: string;
+      description: string;
+      reason: string;
+    };
+    stats?: Record<string, unknown>;
+  };
+}> {
+  const res = await dispatchTask("manager", {
+    action: "run_step",
+    step,
+    project_id: projectId,
+    campaign_id: campaignId,
+    ...params,
+  });
+  return {
+    status: res.status,
+    message: res.message,
+    data: res.data as {
+      step: string;
+      next_step: {
+        agent_key: string | null;
+        label: string;
+        description: string;
+        reason: string;
+      };
+      stats?: Record<string, unknown>;
+    },
+  };
 }
 
 /**
@@ -299,8 +596,7 @@ export const entities = {
     getEntities<SeoKeyword>("seo_keyword", projectId),
   getPageDrafts: (projectId?: string | null) =>
     getEntities<PageDraft>("page_draft", projectId),
-  getLeads: (projectId?: string | null) =>
-    getEntities<Lead>("lead", projectId),
+  getLeads: (projectId?: string | null) => getEntities<Lead>("lead", projectId),
 };
 
 // ---------------------------------------------------------------------------

@@ -54,7 +54,7 @@ export default function RegisterPage() {
       // Auto-login after successful registration
       const loginResult = await login(data.email, data.password);
       if (loginResult.success) {
-        router.push("/onboarding");
+        router.push("/projects");
       } else {
         toast.success("Account created. Please sign in.", {
           style: { background: "hsl(180 100% 50% / 0.1)", borderColor: "hsl(180 100% 50%)" },

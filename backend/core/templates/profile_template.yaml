@@ -45,6 +45,11 @@ modules:
   # High-level toggles only. Specific configs live in Campaigns.
   local_seo:
     enabled: false
+    # Media: Unsplash image search (used by pSEO Media agent)
+    media:
+      unsplash_query_template: ""   # e.g. "{keyword} professional" — leave empty for default
+      brand_image_keywords: []      # optional hints merged into search (e.g. ["legal", "court"])
+      fallback_image_url: ""        # optional override when Unsplash returns nothing
   lead_gen:
     enabled: false
   admin:

@@ -1,11 +1,13 @@
 # backend/modules/lead_gen/agents/utility.py
 import html as html_module
 import json
-from typing import List, Dict, Any
+import os
+import re
+from typing import List, Dict, Any, Optional, Tuple
+from jinja2 import Environment, BaseLoader
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
-
 
 DEFAULT_FORM_FIELDS = [
     {"name": "name", "type": "text", "label": "Name", "required": True},
@@ -13,92 +15,166 @@ DEFAULT_FORM_FIELDS = [
     {"name": "email", "type": "email", "label": "Email", "required": False},
 ]
 
+_TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "core", "templates")
+_DEFAULT_FORM_TEMPLATE_PATH = os.path.join(_TEMPLATE_DIR, "lead_gen_form.html")
+_DEFAULT_SCHEMA_TEMPLATE = '''{
+  "@context": "https://schema.org",
+  "@type": "Service",
+  "serviceType": "{{ service_name }}",
+  "provider": { "@type": "LocalBusiness", "name": "{{ brand_name }}" },
+  "areaServed": {{ area_served_json }},
+  "offers": { "@type": "Offer", "priceCurrency": "{{ price_currency }}", "availability": "https://schema.org/InStock" }
+}'''
+_DEFAULT_CALL_BUTTON = '<a href="{{ tel_link }}" class="sticky-footer">Call Now</a>'
+
+
+def _lead_gen_section(campaign: Dict[str, Any], campaign_config: Dict[str, Any], merged_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve lead_gen config: campaign config (if lead_gen) or merged DNA modules.lead_gen."""
+    if campaign.get("module") == "lead_gen":
+        return campaign_config
+    return (merged_config or {}).get("modules", {}).get("lead_gen", {})
+
+
+def _load_form_template(lead_gen_cfg: Optional[Dict] = None) -> str:
+    """Load form Jinja2 template from campaign/DNA (form_template) or default file."""
+    if lead_gen_cfg:
+        t = lead_gen_cfg.get("form_template")
+        if t and isinstance(t, str) and t.strip():
+            return t.strip()
+    if os.path.exists(_DEFAULT_FORM_TEMPLATE_PATH):
+        with open(_DEFAULT_FORM_TEMPLATE_PATH, "r") as f:
+            return f.read()
+    return """<form class="lead-gen-form" method="post" action="/api/webhooks/lead">
+{% for field in fields %}<label for="{{ field.name }}">{{ field.label }}</label>
+{% if field.type == "select" %}<select name="{{ field.name }}" id="{{ field.name }}"{% if field.required %} required{% endif %}>{% for opt in field.options or [] %}<option value="{{ opt.value or opt.label or opt }}">{{ opt.label or opt.value or opt }}</option>{% endfor %}</select>
+{% else %}<input type="{{ field.type if field.type in ('text','tel','email') else 'text' }}" name="{{ field.name }}" id="{{ field.name }}"{% if field.required %} required{% endif %} />{% endif %}
+{% endfor %}<button type="submit" class="btn btn-primary">Get Immediate Help</button>
+</form>"""
+
+
+def _load_schema_template(lead_gen_cfg: Optional[Dict] = None) -> str:
+    """Load schema Jinja2 template from campaign/DNA (schema_template) or default."""
+    if lead_gen_cfg:
+        t = lead_gen_cfg.get("schema_template")
+        if t and isinstance(t, str) and t.strip():
+            return t.strip()
+    schema_path = os.path.join(_TEMPLATE_DIR, "lead_gen_schema.json")
+    if os.path.exists(schema_path):
+        with open(schema_path, "r") as f:
+            return f.read()
+    return _DEFAULT_SCHEMA_TEMPLATE
+
+
+def _load_call_button_template(lead_gen_cfg: Optional[Dict] = None) -> str:
+    """Load call button Jinja2 template; vars: tel_link, phone. Empty = use default sticky."""
+    if lead_gen_cfg:
+        t = lead_gen_cfg.get("call_button_template")
+        if t and isinstance(t, str) and t.strip():
+            return t.strip()
+    return _DEFAULT_CALL_BUTTON
+
+
+def _validate_final_lead_gen_assets(
+    html_content: str,
+    config: Dict[str, Any],
+    expected_webhook_path: str = "/api/webhooks/lead",
+) -> Tuple[bool, str]:
+    """
+    Post-Utility deterministic check: form action, tel link (if destination_phone set), JSON-LD.
+    Returns (passed, failure_reason).
+    """
+    content_lower = html_content.lower()
+    # Form must exist and post to webhook
+    if "<form" not in content_lower or "action=" not in content_lower:
+        return False, "Missing form or form action."
+    if expected_webhook_path not in html_content:
+        return False, f"Form action must point to webhook (expected path containing '{expected_webhook_path}')."
+    # Tel link if destination_phone is set
+    destination_phone = (
+        (config.get("modules") or {}).get("lead_gen", {}).get("sales_bridge", {}).get("destination_phone")
+        or (config.get("lead_gen_integration") or {}).get("destination_phone")
+        or config.get("destination_phone")
+        or ""
+    )
+    if destination_phone and str(destination_phone).strip() != "REQUIRED":
+        if "tel:" not in html_content:
+            return False, "Missing tel: link for destination_phone (call button)."
+    # JSON-LD script present and valid
+    ld_match = re.search(
+        r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>([^<]+)</script>',
+        html_content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not ld_match:
+        return False, "Missing JSON-LD script block."
+    try:
+        json.loads(ld_match.group(1).strip())
+    except (json.JSONDecodeError, ValueError):
+        return False, "Invalid JSON in application/ld+json script."
+    return True, ""
+
 
 class UtilityAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Utility")
 
-    def _get_form_fields(self, config: dict) -> List[Dict[str, Any]]:
-        """Resolve form fields from config (dual-path for backward compatibility)."""
-        fields = (
-            config.get("lead_gen_integration", {}).get("form_settings", {}).get("fields")
-            or config.get("modules", {}).get("lead_gen", {}).get("form_settings", {}).get("fields")
-        )
+    def _get_form_fields(self, lead_gen_cfg: dict) -> List[Dict[str, Any]]:
+        fields = (lead_gen_cfg or {}).get("form_settings", {}).get("fields")
         return fields if fields else DEFAULT_FORM_FIELDS
 
-    def _get_destination_phone(self, config: dict) -> str:
-        """Resolve destination_phone from config (dual-path)."""
-        return (
-            config.get("lead_gen_integration", {}).get("destination_phone")
-            or config.get("modules", {}).get("lead_gen", {}).get("sales_bridge", {}).get("destination_phone")
-            or ""
-        )
+    def _get_destination_phone(self, lead_gen_cfg: dict) -> str:
+        return (lead_gen_cfg or {}).get("sales_bridge", {}).get("destination_phone") or ""
 
-    def _build_dynamic_form(self, fields: List[Dict[str, Any]]) -> str:
-        """Build HTML form from field config (text, tel, email, select)."""
-        parts = ['<form class="lead-gen-form" method="post" action="/api/webhooks/lead">']
-        for field in fields:
-            name = field.get("name", "field")
-            field_type = field.get("type", "text")
-            label = field.get("label", name.title())
-            required = field.get("required", False)
-            req_attr = ' required' if required else ''
-            label_html = f'<label for="{html_module.escape(name)}">{html_module.escape(label)}</label>'
-            if field_type == "select":
-                options = field.get("options", [])
-                if not isinstance(options, list):
-                    options = []
-                opts_html = ""
-                for opt in options:
-                    if isinstance(opt, dict):
-                        val = str(opt.get("value", opt.get("label", "")))
-                        lbl = str(opt.get("label", val))
-                    else:
-                        val = str(opt)
-                        lbl = str(opt)
-                    opts_html += f'<option value="{html_module.escape(val)}">{html_module.escape(lbl)}</option>'
-                parts.append(f'{label_html}<select name="{html_module.escape(name)}" id="{html_module.escape(name)}"{req_attr}>{opts_html}</select>')
-            else:
-                input_type = field_type if field_type in ("text", "tel", "email") else "text"
-                parts.append(f'{label_html}<input type="{input_type}" name="{html_module.escape(name)}" id="{html_module.escape(name)}"{req_attr} />')
-        parts.append('<button type="submit" class="btn btn-primary">Get Immediate Help</button>')
-        parts.append("</form>")
-        return "\n".join(parts)
-
-    def _build_schema(self, draft: dict, config: dict, user_id: str) -> dict:
-        """Build LocalBusiness/Service JSON-LD schema (E-E-A-T signals)."""
+    def _get_schema_data(self, draft: dict, config: dict) -> Dict[str, Any]:
+        """Build schema data dict from config + draft (deterministic, no LLM)."""
         service_name = config.get("service_focus", "Service")
-        brand_name = config.get("brand_name", config.get("identity", {}).get("business_name", "Our Agency"))
-        schema = {
-            "@context": "https://schema.org",
-            "@type": "Service",
-            "serviceType": service_name,
-            "provider": {"@type": "LocalBusiness", "name": brand_name},
-            "areaServed": [],
-        }
+        brand_name = config.get("brand_name") or config.get("identity", {}).get("business_name", "Our Agency")
+        cities = config.get("targeting", {}).get("geo_targets", {}).get("cities", [])
+        if not isinstance(cities, list):
+            cities = [cities] if cities else []
         anchor_name = draft.get("metadata", {}).get("anchor_used")
+        area_served = []
         if anchor_name:
-            schema["areaServed"].append({
+            locality = cities[0] if cities else "New Zealand"
+            area_served.append({
                 "@type": "Place",
                 "name": f"Area near {anchor_name}",
-                "address": {
-                    "@type": "PostalAddress",
-                    "addressLocality": config.get("targeting", {}).get("geo_targets", {}).get("cities", ["New Zealand"])[0],
-                },
+                "address": {"@type": "PostalAddress", "addressLocality": locality},
             })
         else:
-            cities = config.get("targeting", {}).get("geo_targets", {}).get("cities", [])
             for city in cities:
-                schema["areaServed"].append({"@type": "City", "name": city})
-        schema["offers"] = {
-            "@type": "Offer",
-            "priceCurrency": "NZD",
-            "availability": "https://schema.org/InStock",
+                area_served.append({"@type": "City", "name": city})
+        return {
+            "service_name": service_name,
+            "brand_name": brand_name,
+            "area_served_json": json.dumps(area_served),
+            "price_currency": "NZD",
         }
-        return schema
+
+    def _render_form_html(self, fields: List[Dict[str, Any]], lead_gen_cfg: Optional[Dict] = None) -> str:
+        """Render form HTML via Jinja2 template (campaign-specific or default)."""
+        template_str = _load_form_template(lead_gen_cfg)
+        env = Environment(loader=BaseLoader(), autoescape=True)
+        template = env.from_string(template_str)
+        return template.render(fields=fields)
+
+    def _render_schema_script(self, draft: dict, full_config: dict, lead_gen_cfg: Optional[Dict] = None) -> str:
+        """Render JSON-LD schema via Jinja2 template (campaign-specific or default)."""
+        data = self._get_schema_data(draft, full_config)
+        template_str = _load_schema_template(lead_gen_cfg)
+        env = Environment(loader=BaseLoader())
+        template = env.from_string(template_str)
+        out = template.render(**data)
+        return f'<script type="application/ld+json">{out}</script>'
+
+    def _render_call_button(self, tel_link: str, phone_display: str, lead_gen_cfg: Optional[Dict] = None) -> str:
+        """Render call button HTML via Jinja2 template (vars: tel_link, phone)."""
+        template_str = _load_call_button_template(lead_gen_cfg)
+        env = Environment(loader=BaseLoader(), autoescape=True)
+        template = env.from_string(template_str)
+        return template.render(tel_link=tel_link, phone=phone_display)
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        # 1. Titanium Standard: Validate injected context
         if not self.project_id or not self.user_id:
             self.logger.error("Missing injected context: project_id or user_id")
             return AgentOutput(status="error", message="Agent context not properly initialized.")
@@ -114,13 +190,11 @@ class UtilityAgent(BaseAgent):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
 
-        # Load Campaign Config (merged DNA + campaign)
         campaign = memory.get_campaign(campaign_id, user_id)
         if not campaign:
             return AgentOutput(status="error", message="Campaign not found.")
         config = campaign.get("config", {})
 
-        # 2. FETCH WORK ITEM ('ready_for_utility' or 'ready_for_media')
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         utility_ready_drafts = [
             d for d in all_drafts
@@ -136,15 +210,25 @@ class UtilityAgent(BaseAgent):
         html_content = draft_meta.get("content") or draft_meta.get("html_content", "")
         keyword = draft_meta.get("keyword", "")
 
-        self.logger.info(f"UTILITY: Building technical assets for '{keyword}'")
+        self.logger.info(f"UTILITY: Building technical assets for '{keyword}' (Jinja2)")
 
-        # 3. BUILD JSON-LD SCHEMA (Always Run - E-E-A-T signals)
-        schema_json = self._build_schema(target_draft, config, user_id)
-        schema_script = f'<script type="application/ld+json">{json.dumps(schema_json)}</script>'
+        lead_gen_cfg = _lead_gen_section(campaign, config, self.config or {})
+        full_config = self.config or {}
 
-        # 4. DYNAMIC FORM from config
-        fields = self._get_form_fields(config)
-        form_html = self._build_dynamic_form(fields)
+        schema_script = self._render_schema_script(target_draft, full_config, lead_gen_cfg)
+        schema_json = self._get_schema_data(target_draft, full_config)
+        schema_json["area_served_json"] = json.loads(schema_json["area_served_json"])
+        full_schema = {
+            "@context": "https://schema.org",
+            "@type": "Service",
+            "serviceType": schema_json["service_name"],
+            "provider": {"@type": "LocalBusiness", "name": schema_json["brand_name"]},
+            "areaServed": schema_json["area_served_json"],
+            "offers": {"@type": "Offer", "priceCurrency": schema_json["price_currency"], "availability": "https://schema.org/InStock"},
+        }
+
+        fields = self._get_form_fields(lead_gen_cfg)
+        form_html = self._render_form_html(fields, lead_gen_cfg)
 
         keyword_safe = (draft_meta.get("keyword") or "").strip() or "Support"
         anchor_used = (draft_meta.get("anchor_used") or "").strip()
@@ -172,31 +256,48 @@ class UtilityAgent(BaseAgent):
         if "{{table_here}}" in final_html:
             final_html = final_html.replace("{{table_here}}", "")
 
-        # 5. ALWAYS inject schema (E-E-A-T)
         if "</body>" in final_html:
             final_html = final_html.replace("</body>", f"{schema_script}</body>")
         else:
             final_html += f"\n{schema_script}"
 
-        # 6. STICKY CALL BUTTON if destination_phone exists
-        destination_phone = self._get_destination_phone(config)
+        destination_phone = self._get_destination_phone(lead_gen_cfg)
         if destination_phone and destination_phone != "REQUIRED":
             phone_clean = "".join(c for c in destination_phone if c.isdigit() or c in "+")
+            tel_link = f"tel:{html_module.escape(phone_clean)}"
+            phone_display = html_module.escape(destination_phone.strip())
+            call_html = self._render_call_button(tel_link, phone_display, lead_gen_cfg)
             sticky_css = (
                 '<style>.sticky-footer{position:fixed;bottom:0;left:0;right:0;'
                 'background:#1a73e8;color:#fff;padding:12px;text-align:center;'
                 'text-decoration:none;font-weight:bold;z-index:9999;}</style>'
             )
-            sticky_btn = f'<a href="tel:{html_module.escape(phone_clean)}" class="sticky-footer">Call Now</a>'
             if "</body>" in final_html:
-                final_html = final_html.replace("</body>", f"{sticky_css}{sticky_btn}</body>")
+                final_html = final_html.replace("</body>", f"{sticky_css}{call_html}</body>")
             else:
-                final_html += f"\n{sticky_css}{sticky_btn}"
+                final_html += f"\n{sticky_css}{call_html}"
 
-        # 7. SAVE & FINISH (Titanium/DB pattern)
+        # Post-Utility validator: form webhook, tel link, JSON-LD
+        expected_webhook = (lead_gen_cfg or {}).get("form_webhook_path") or "/api/webhooks/lead"
+        valid, reason = _validate_final_lead_gen_assets(final_html, full_config, expected_webhook)
+        if not valid:
+            target_draft["metadata"]["content"] = final_html
+            target_draft["metadata"]["json_ld_schema"] = json.dumps(full_schema)
+            target_draft["metadata"]["status"] = "utility_validation_failed"
+            target_draft["metadata"]["utility_validation_reason"] = reason
+            memory.save_entity(Entity(**target_draft), project_id=project_id)
+            self.logger.warning(f"UTILITY: Post-validation failed for '{keyword}': {reason}")
+            return AgentOutput(
+                status="error",
+                message=f"Lead gen validation failed: {reason}",
+                data={"draft_id": target_draft["id"], "validation_reason": reason},
+            )
+
         target_draft["metadata"]["content"] = final_html
-        target_draft["metadata"]["json_ld_schema"] = json.dumps(schema_json)
+        target_draft["metadata"]["json_ld_schema"] = json.dumps(full_schema)
         target_draft["metadata"]["status"] = "ready_to_publish"
+        if "utility_validation_reason" in target_draft["metadata"]:
+            del target_draft["metadata"]["utility_validation_reason"]
         memory.save_entity(Entity(**target_draft), project_id=project_id)
 
         return AgentOutput(

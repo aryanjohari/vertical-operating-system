@@ -1,5 +1,5 @@
 # =========================================================
-# APEX pSEO CAMPAIGN v4.0 (The Content Engine)
+# APEX pSEO CAMPAIGN v4.0 (Intent Cluster Strategy)
 # =========================================================
 
 # 1. TARGETING (The Scope)
@@ -9,41 +9,75 @@ targeting:
     cities: ["Auckland"]
     suburbs: ["Manukau", "Henderson", "Albany"]
 
-# 2. INTEL MINING (The "Anti-Hallucination" Layer)
-# The Miner must fill these variables before writing starts.
+# 2. INTENT CLUSTERS (1 Page per Intent per Location)
+intent_clusters:
+  - id: "emergency"
+    role: "Transactional"
+    h1_template: "Emergency {Service} near {Anchor}"
+    secondary_keywords:
+      - "urgent"
+      - "24/7"
+      - "same day"
+  - id: "guide"
+    role: "Informational"
+    h1_template: "{Service} Guide near {Anchor}"
+    secondary_keywords:
+      - "how to"
+      - "cost"
+      - "process"
+
+# 3. TRUSTED FACTS (Add/remove facts: name + value, e.g. bail_fee / service_charge)
+trusted_facts:
+  - name: "bail_fee"
+    value: "None"
+  - name: "service_charge"
+    value: "Included"
+
+# 4. MINING (Scout: anchors + snippet-only intel)
 mining_requirements:
-  
-  # A. OFFICIAL DATA (Builds Authority)
-  regulatory:
-    enabled: true
-    queries: 
-      - "official filing fee for {service} in {city}"
-      - "council permit rules for {service} {city}"
-    extraction_goals: ["cost", "processing_time", "official_source_url"]
-
-  # B. COMPETITOR PRICING (Builds Value)
-  competitor:
-    enabled: true
-    queries:
-      - "average cost of {service} {city}"
-      - "{service} price list {city}"
-    extraction_goals: ["price_range", "callout_fee"]
-
-  # C. LOCAL PROOF (Builds Trust)
   geo_context:
     enabled: true
     target_anchors: ["Court", "Police Station", "Hardware Store", "Council Building"]
+  # Minimal queries for Serper + Gemini extraction (no full-page scraping)
+  snippet_queries:
+    - "average cost of {service} {city}"
+    - "market price {service} {city}"
 
-# 3. ASSET FABRICATION (The Conversion Elements)
+# 5. ASSET FABRICATION (The Conversion Elements)
 assets:
   - type: "comparison_table"
     title: "Us vs. Average {City} Rates"
     data_source: "competitor_mining"
-  
+
   - type: "regulatory_alert"
-    title: "⚠️ Important {City} Council Rule"
+    title: "Important {City} Council Rule"
     data_source: "regulatory_mining"
 
   - type: "lead_magnet"
     style: "urgent"
     text: "Get a Free Quote in 60 Seconds"
+
+# 6. PIPELINE SETTINGS (Writer batch, word count; Librarian/Critic optional)
+pseo_settings:
+  batch_size: 5
+  speed_profile: "balanced"
+  min_word_count: 600
+
+# Optional: Writer overrides (campaign-level)
+# writer:
+#   min_word_count: 600
+
+# Optional: Librarian (run only when all pages validated; deterministic link order)
+# librarian:
+#   run_only_when_all_validated: true
+#   max_internal_links: 3
+#   max_intel_sources: 2
+
+# Optional: Critic (deterministic structure checks before LLM)
+# critic:
+#   required_placeholders: ["form_capture", "image_main"]
+#   check_form_webhook: false
+#   check_tel_link: false
+#   check_json_ld: false
+#   check_metadata: true
+#   run_llm_after_checks: true

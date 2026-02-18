@@ -77,7 +77,7 @@ class LLMGateway:
     def generate_embeddings(
         self,
         texts: list[str],
-        model: str = "text-embedding-004",
+        model: str = "text-embedding-005",
         max_retries: int = 3,
     ) -> list[list[float]]:
         """
@@ -85,7 +85,7 @@ class LLMGateway:
         
         Args:
             texts: List of text strings to embed
-            model: Embedding model to use (default: text-embedding-004)
+            model: Embedding model to use (default: text-embedding-005)
             max_retries: Maximum number of retry attempts
             
         Returns:

@@ -1,8 +1,8 @@
 # Apex OS v5 Architecture: The "Titanium" Refactor
 
-**Document Version:** 1.0  
-**Date:** February 2, 2026  
-**Status:** Post-Refactor | Frontend Rebuild Spec
+**Document Version:** 1.1  
+**Date:** February 12, 2026  
+**Status:** Post-Refactor | Aligned with current codebase
 
 ---
 
@@ -13,6 +13,46 @@
 3. [Module Deep Dives (The Flows)](#3-module-deep-dives-the-flows)
 4. [The API Surface (For Frontend Refactor)](#4-the-api-surface-for-frontend-refactor)
 5. [Market Fit & Stress Test Analysis](#5-market-fit--stress-test-analysis)
+6. [Implementation Notes (Current Codebase)](#6-implementation-notes-current-codebase)
+7. [Deployment Architecture](#7-deployment-architecture-production-recommendations)
+8. [Frontend Refactor: Critical UX Flows](#8-frontend-refactor-critical-ux-flows)
+9. [Known Limitations & Future Roadmap](#9-known-limitations--future-roadmap)
+
+---
+
+## 6. Implementation Notes (Current Codebase)
+
+*This section reflects the actual implementation as of February 2026. Use it as the source of truth when integrating with the API or debugging.*
+
+### API Base & Router Prefixes
+
+- All backend routes are mounted under `/api` except root `/` and `/health`. Agents router has **no** prefix, so dispatch is `POST /api/run` and `GET /api/context/{context_id}`.
+- **Webhooks:** `POST /api/webhooks/google-ads?project_id=...` and `POST /api/webhooks/wordpress?project_id=...`. There is **no** `POST /api/webhooks/lead`; the lead form template (`lead_gen_form.html`) references that URL but the route is not implemented. Use WordPress or Google Ads webhook with `project_id` for form-style submissions.
+- **Voice:** `POST /api/voice/connect` is invoked by **Twilio** (when boss presses 1), with query param `target=<customer_phone>`. It does **not** accept a JSON body with `lead_id`/`project_id`. The frontend "Connect call" action uses `POST /api/run` with `task: "sales_agent"`, `params: { action: "instant_call", lead_id, project_id }`.
+
+### Lead Gen: Bridge vs Manual Review
+
+- **Inbound flow:** Webhook creates lead → `LeadGenManager` `lead_received` → `lead_scorer` runs. If `score >= min_score_to_ring` (default **90**), the system sends a **bridge review email** to `sales_bridge.bridge_review_email` and **does not** auto-trigger a Twilio call. The boss connects the call manually from the dashboard via "Connect call" (which dispatches `sales_agent` with `instant_call`).
+- **Twilio bridge flow:** SalesAgent calls the **boss** (destination_phone) first, plays whisper, boss presses 1 → Twilio requests `/api/voice/connect?target=<customer_phone>` → customer is dialed and bridged. Status/recording callbacks go to `/api/voice/status` and `/api/voice/recording-status`.
+
+### Agent Task Names (Kernel Resolution)
+
+- pSEO pipeline: task **`manager`** (not `pseo_manager`) → `AgentRegistry.DIRECTORY["manager"]` (PSEOManager). Frontend uses `dispatchTask("manager", { action: "dashboard_stats", ... })`.
+- Lead Gen: task **`lead_gen_manager`** for orchestrator; **`lead_scorer`**, **`sales_agent`**, **`reactivator_agent`** for sub-agents.
+- Publisher agent key is **`publish`** (not `publisher_run`). Writer key is **`write_pages`**.
+- **Heavy tasks** (run in background with context polling): e.g. `scout_anchors`, `strategist_run`, `write_pages`, `critic_review`, `sales_agent`, `reactivator_agent`; and `lead_gen_manager` when `action` is `lead_received`, `ignite_reactivation`, or `instant_call`.
+
+### Entity & Pipeline Status Values
+
+- **page_draft:** `draft` → `validated` → `ready_for_media` → `ready_for_utility` → `ready_to_publish` → `published`. Writer creates drafts with `metadata.status = "draft"`.
+- **lead:** `metadata.status` includes `new`, `scored`, `calling`, `called`, `won`, `lost`; `metadata.source` e.g. `wordpress_form`, `google_ads`, `voice_call`, `web_form`, `sniper`.
+
+### Frontend Routes (Next.js)
+
+- Project dashboard: `/projects/[projectId]` (overview with pSEO stats and leads).
+- Lead management: `/projects/[projectId]/leads` (table, Connect call, status).
+- Settings (DNA, Twilio, campaigns): `/projects/[projectId]/settings`.
+- Other: `/projects/[projectId]/intel`, `/projects/[projectId]/strategy`, `/projects/[projectId]/quality`.
 
 ---
 
@@ -124,7 +164,7 @@ flowchart TB
 | -------------------- | ------------------------------------------------------------ | ------------ | -------------------------------------------------------- |
 | `anchor_location`    | Google Maps places used as content anchors                   | pSEO         | `pending` → `validated` → `active`                       |
 | `seo_keyword`        | Keywords derived from anchors (e.g., "bail lawyer auckland") | pSEO         | `pending` → `processing` → `mapped`                      |
-| `page_draft`         | HTML pages in various stages of completion                   | pSEO         | `draft` → `validated` → `ready_to_publish` → `published` |
+| `page_draft`         | HTML pages in various stages of completion                   | pSEO         | `draft` → `validated` → `ready_for_media` → `ready_for_utility` → `ready_to_publish` → `published` |
 | `knowledge_fragment` | Scraped intel (competitors, regulations) stored as RAG       | pSEO         | `raw` → `processed`                                      |
 | `lead`               | Inbound leads from forms/webhooks                            | Lead Gen     | `new` → `scored` → `calling` → `won`/`lost`              |
 | `campaign`           | Configuration container (targeting, settings)                | Both         | `DRAFT` → `ACTIVE` → `PAUSED`                            |
@@ -376,96 +416,94 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-    participant Form as WordPress Form
+    participant Form as Form / External
     participant Webhook as Webhook Router
+    participant Manager as LeadGen Manager
     participant Scorer as Scorer Agent
-    participant Sales as Sales Bridge Agent
+    participant Email as Email (Bridge Review)
+    participant Dashboard as Dashboard
+    participant Sales as Sales Agent
     participant Twilio as Twilio API
-    participant Client as Client Phone
+    participant Boss as Boss Phone
+    participant Customer as Customer Phone
     participant Reactivator as Reactivator Agent
 
-    Form->>Webhook: POST /webhooks/lead (data)
-    Webhook->>Scorer: Create lead entity + dispatch
+    Form->>Webhook: POST /api/webhooks/wordpress?project_id=... (or google-ads)
+    Webhook->>Webhook: Create lead entity (status=new)
+    Webhook->>Manager: dispatch lead_gen_manager, action=lead_received
 
+    Manager->>Scorer: dispatch lead_scorer
     Note over Scorer: LLM Judge evaluates intent/urgency
     Scorer->>Scorer: Score = 85/100 (high intent)
-    Scorer->>Sales: Dispatch if score >= threshold (70)
+    Scorer->>Manager: score result
 
-    Sales->>Twilio: Initiate call (lead phone)
-    Twilio->>Form: Call lead
-    Form->>Twilio: Press 1 to connect
-    Twilio->>Twilio: Bridge to client phone
-    Twilio->>Client: Ring client
+    alt score >= min_score_to_ring (default 90)
+        Manager->>Email: Send bridge review email (no auto-call)
+        Note over Manager: Boss connects manually from dashboard
+    else score < threshold
+        Manager->>Manager: Lead scored; not eligible for bridge
+    end
 
-    alt Call Connected
-        Client->>Twilio: Answer
-        Twilio->>Form: Connected (lead + client)
-        Note over Sales: Update lead status=connected
+    Note over Dashboard: User clicks "Connect call"
+    Dashboard->>Sales: POST /api/run task=sales_agent, action=instant_call
+    Sales->>Twilio: Call BOSS first (destination_phone)
+    Twilio->>Boss: Ring boss, play whisper
+    Boss->>Twilio: Press 1 to connect
+    Twilio->>Sales: GET /api/voice/connect?target=<customer_phone>
+    Twilio->>Customer: Dial customer (bridge)
+    Twilio->>Boss: Connected (boss + customer)
+
+    alt Call Completed
+        Twilio->>Webhook: POST /api/voice/status (lead_id, call_sid)
+        Note over Webhook: Update lead status, duration, recording
     else No Answer
-        Twilio->>Sales: Status callback (no-answer)
-        Sales->>Reactivator: Queue for SMS reactivation
-        Reactivator->>Twilio: Send SMS (24h later)
-        Twilio->>Form: "Hi John, saw you inquired..."
+        Twilio->>Webhook: Status callback (no-answer)
+        Note over Reactivator: Queue for SMS reactivation (e.g. ignite_reactivation)
     end
 ```
 
 #### Agent Roles (The "Conversion Engine")
 
-1. **Webhook Handler** (`/webhooks/lead`)
+1. **Webhook Handler** (`POST /api/webhooks/wordpress` or `POST /api/webhooks/google-ads`)
 
-   - **Input:** Form POST data (name, phone, email, message).
-   - **Action:** Creates `lead` entity with `status=new`, metadata contains raw form data.
-   - **Trigger:** Dispatches `LeadGenManager` with `action=lead_received`.
+   - **Input:** Query param `project_id` (required); body: form POST or JSON (name, phone, email, message). No `POST /api/webhooks/lead` route in codebase; form template may reference it.
+   - **Action:** Normalizes payload, creates `lead` entity with `status=new`, metadata contains raw form data and `source` (e.g. `wordpress_form`, `google_ads`). Optionally `campaign_id` via query.
+   - **Trigger:** Saves lead, then dispatches `LeadGenManager` with `action=lead_received`, `lead_id`, `project_id` (sync or background via `BackgroundTasks`).
 
 2. **Scorer Agent** (LLM Judge)
 
-   - **Input:** Lead entity (id).
+   - **Input:** Lead entity (id); invoked by LeadGenManager for `lead_received`.
    - **Action:**
      - Builds prompt: "Score this lead: Name, Phone, Message. Rules: {scoring_rules from DNA}".
-     - Calls GPT-4: Returns JSON `{ score: 0-100, intent: "high/medium/low", urgency: true/false, reasoning: "..." }`.
-   - **Output:** Updates `metadata.score`, `metadata.intent`, `metadata.urgency`, sets `status=scored`.
-   - **Critical Logic Gates:**
-     - If `score < bridge_threshold` (default 70): skip bridge, set `status=archived`.
-     - If `score >= threshold`: trigger Sales Bridge.
-   - **Scoring Criteria (from DNA `scoring_rules`):**
-     - **Intent Signals:** Keywords like "need", "urgent", "help", "arrested", "how much".
-     - **Urgency Signals:** "now", "asap", "today", "emergency".
-     - **Contact Quality:** Valid phone + email = +10 points.
+     - Calls LLM: Returns JSON `{ score: 0-100, priority: "High/Medium/Low", reasoning: "..." }`.
+   - **Output:** Updates `metadata.score`, `metadata.priority`, `metadata.scorer_reasoning`, sets `status=scored`.
+   - **Critical Logic (in LeadGenManager):**
+     - If `score < min_score_to_ring` (default **90** in `sales_bridge.min_score_to_ring`): skip bridge, return success with message.
+     - If `score >= min_score_to_ring`: send **bridge review email** to `sales_bridge.bridge_review_email`; **do not** auto-trigger Twilio. Boss connects call manually from dashboard.
 
-3. **Sales Bridge Agent** (Instant Call)
+3. **Sales Bridge Agent** (Instant Call — triggered from dashboard)
 
-   - **Input:** Lead entity (id) with `score >= threshold`.
+   - **Input:** Dispatched via `POST /api/run` with `task=sales_agent`, `params={ action: "instant_call", lead_id, project_id }` (e.g. "Connect call" button).
    - **Action:**
-     - Calls Twilio API: `client.calls.create()` with TwiML URL pointing to `/voice/connect`.
-     - TwiML flow:
-       1. Call lead's phone.
-       2. Play whisper: "Press 1 to connect to [Business Name]".
-       3. If press 1 → bridge to `campaign.config.sales_bridge.destination_phone` (client's mobile).
-       4. If no press / voicemail → hang up, trigger reactivation.
+     - Twilio calls **boss** (`sales_bridge.destination_phone`) first, not the lead. TwiML: pause, say whisper (`whisper_text`), Gather 1 digit; on "1" redirect to `/api/voice/connect?target=<customer_phone>`.
+     - `POST /api/voice/connect` (called by Twilio): Dials customer, bridges boss and customer; recording/status callbacks to `/api/voice/status` and `/api/voice/recording-status`.
    - **Output:** Stores `metadata.call_sid`, sets `status=calling`.
-   - **Async Status Callback:** Twilio posts to `/voice/status` with call outcome:
-     - `completed` + `duration > 30s` → `status=connected`.
-     - `no-answer` / `busy` / `failed` → `status=no_answer`, queue for reactivation.
+   - **Async:** Twilio posts to `/api/voice/status` with `lead_id`, `project_id` in query; backend updates lead (status, duration, recording_url, transcription).
 
 4. **Reactivator Agent** (SMS Follow-Up)
-   - **Input:** Leads with `status=no_answer` or manually triggered batch (`action=ignite_reactivation`).
-   - **Action:**
-     - Waits 24h after first attempt (or uses campaign schedule).
-     - Sends personalized SMS: "Hi [Name], saw you inquired about [Service]. Still need help? Call us: [Phone]".
-   - **Output:** Updates `metadata.last_action_ref` (SMS SID), sets `status=reactivate`.
-   - **Critical Logic:**
-     - Max 3 SMS attempts per lead (48h apart).
-     - If no response after 3rd SMS → `status=lost`.
+   - **Input:** Manually triggered: `LeadGenManager` with `action=ignite_reactivation` (e.g. "Send SMS Batch"). Or leads with `no_answer` can be queued for reactivation.
+   - **Action:** Sends SMS via Twilio using `sms_alert_template` (e.g. "New Lead: [Name]").
+   - **Output:** Updates `metadata.last_action_ref` (SMS SID), status as configured.
 
 #### Logic Gates (The "Qualification Engine")
 
-| Condition                                 | Action                                 | Rationale                            |
-| ----------------------------------------- | -------------------------------------- | ------------------------------------ |
-| `score < 70`                              | Skip bridge, archive                   | Low intent = waste of Twilio credits |
-| `score >= 70 && urgency=true`             | Instant bridge + priority SMS          | High intent + urgent = hot lead      |
-| `score >= 70 && urgency=false`            | Instant bridge, standard reactivation  | Qualified but not urgent             |
-| `call_status=no_answer`                   | Queue for SMS reactivation (24h delay) | Second touch point to re-engage      |
-| `call_status=completed && duration < 10s` | Flag for review                        | Likely wrong number or hang-up       |
+| Condition                                      | Action (current implementation)        | Rationale                            |
+| ---------------------------------------------- | -------------------------------------- | ------------------------------------ |
+| `score < min_score_to_ring` (default 90)       | Skip bridge; lead scored only           | Low intent = no bridge               |
+| `score >= min_score_to_ring`                   | Send bridge review email; **no** auto-call | Manual review; boss connects from dashboard |
+| Boss clicks "Connect call" (instant_call)     | SalesAgent calls boss → whisper → 1 → connect to customer | Twilio bridge flow                  |
+| `call_status=no_answer` / busy / failed       | Status callback; can be queued for reactivation | Second touch via SMS (ignite_reactivation) |
+| `call_status=completed`                       | Lead updated with duration, recording, transcription | Voice router + transcription service |
 
 ---
 
@@ -475,7 +513,7 @@ sequenceDiagram
 
 #### 4.1 Entity Management
 
-**`GET /entities?entity_type={type}&project_id={id}`**
+**`GET /api/entities?entity_type={type}&project_id={id}`**
 
 - **Purpose:** Fetch entities with filtering and RLS enforcement.
 - **Query Params:**
@@ -498,10 +536,10 @@ sequenceDiagram
   }
   ```
 - **Frontend Use Case:**
-  - Dashboard: Show lead list with scores (filter `entity_type=lead`, sort by `metadata.score`).
+  - Dashboard: Show lead list with scores (filter `entity_type=lead`, sort by `metadata.score`). Also available: `GET /api/leads` for leads only.
   - pSEO Pipeline: Show drafts by stage (filter `entity_type=page_draft`, group by `metadata.status`).
 
-**`POST /entities`**
+**`POST /api/entities`**
 
 - **Purpose:** Create a new entity (e.g., manual lead entry, anchor override).
 - **Body:**
@@ -516,7 +554,7 @@ sequenceDiagram
   ```
 - **Response:** `{ "success": true, "entity": { ... } }`
 
-**`PUT /entities/{entity_id}`**
+**`PUT /api/entities/{entity_id}`**
 
 - **Purpose:** Update entity (e.g., mark lead as won/lost, approve draft).
 - **Body:**
@@ -529,7 +567,7 @@ sequenceDiagram
   - Lead management: Change status dropdown (won/lost).
   - Draft review: Approve/reject button updates `metadata.status`.
 
-**`DELETE /entities/{entity_id}`**
+**`DELETE /api/entities/{entity_id}`**
 
 - **Purpose:** Soft delete entity (sets hidden flag or moves to archive).
 - **Frontend Use Case:** "Delete Lead" action in lead table.
@@ -654,18 +692,27 @@ sequenceDiagram
 
 #### 4.4 Lead Gen Specific
 
-**`POST /voice/connect`**
+**Connect call (instant bridge)**
 
-- **Purpose:** Manual bridge override (admin triggers instant call to lead).
-- **Body:**
+- **Purpose:** Trigger Twilio bridge for a lead (boss is called first, then customer on press 1). Not a dedicated "Connect" endpoint with body; use agent dispatch.
+- **Request:** `POST /api/run` with body:
   ```json
   {
-    "lead_id": "lead_abc123",
-    "project_id": "niche_bail"
+    "task": "sales_agent",
+    "params": {
+      "action": "instant_call",
+      "lead_id": "lead_abc123",
+      "project_id": "niche_bail",
+      "campaign_id": "cmp_leadgen_01"
+    }
   }
   ```
-- **Response:** `{ "success": true, "call_sid": "CA123...", "message": "Call initiated" }`
-- **Frontend Use Case:** "Call Now" button in lead detail view.
+- **Response:** `{ "status": "success", "data": { "call_sid": "CA123..." }, "message": "Bridge call started." }`
+- **Frontend Use Case:** "Connect call" / "Call Now" in lead table (`connectCall(leadId, projectId)` in `frontend/lib/api.ts`).
+
+**`POST /api/voice/connect`** (Twilio callback, not for frontend)
+
+- **Purpose:** Invoked by Twilio when boss presses 1. Query param `target=<customer_phone>` (E.164). Returns TwiML to dial and bridge. Do not use for manual "Connect call"; use `POST /api/run` with `sales_agent` above.
 
 **`POST /api/run` (Reactivation)**
 
@@ -794,7 +841,7 @@ sequenceDiagram
 
 ---
 
-## 6. Deployment Architecture (Production Recommendations)
+## 7. Deployment Architecture (Production Recommendations)
 
 ### Infrastructure Stack
 
@@ -846,7 +893,7 @@ sequenceDiagram
 
 ---
 
-## 7. Frontend Refactor: Critical UX Flows
+## 8. Frontend Refactor: Critical UX Flows
 
 ### Flow 1: Campaign Creation (The "Genesis")
 
@@ -906,9 +953,9 @@ sequenceDiagram
 
 **API Calls:**
 
-- Load stats: `POST /api/run` → `{ task: "pseo_manager", params: { action: "dashboard_stats" } }`
-- Run agent: `POST /api/run` → `{ task: "scout_anchors", params: { campaign_id } }` (async)
-- Poll progress: `GET /api/context/{context_id}` every 5s until `status=completed`.
+- Load stats: `POST /api/run` → `{ task: "manager", params: { action: "dashboard_stats", project_id, campaign_id } }` (pSEO Manager)
+- Run agent: `POST /api/run` → `{ task: "scout_anchors", params: { campaign_id, project_id } }` or other agent keys (async when heavy)
+- Poll progress: `GET /api/context/{context_id}` every 5s until `data.status=completed` or `data.status=failed`.
 
 ### Flow 3: Lead Management (The "War Room")
 
@@ -941,13 +988,13 @@ sequenceDiagram
 
 **API Calls:**
 
-- Load leads: `GET /entities?entity_type=lead&project_id={id}`
-- Manual call: `POST /voice/connect` → `{ lead_id }`
-- Update status: `PUT /entities/{lead_id}` → `{ metadata: { status: "won" } }`
+- Load leads: `GET /api/entities?entity_type=lead&project_id={id}` or `GET /api/leads`
+- Connect call: `POST /api/run` with `task: "sales_agent"`, `params: { action: "instant_call", lead_id, project_id }` (see `connectCall()` in `frontend/lib/api.ts`)
+- Update status: `PUT /api/entities/{lead_id}` with body `{ metadata: { status: "won" } }`
 
 ---
 
-## 8. Known Limitations & Future Roadmap
+## 9. Known Limitations & Future Roadmap
 
 ### Current Limitations
 
@@ -957,7 +1004,7 @@ sequenceDiagram
 
 2. **No Webhook Testing UI:** Admin can't simulate webhook POST from frontend.
 
-   - **Fix:** Add "Test Webhook" button in Lead Gen dashboard (sends dummy POST to `/webhooks/lead`).
+   - **Fix:** Add "Test Webhook" button in Lead Gen dashboard (sends dummy POST to `POST /api/webhooks/wordpress?project_id={id}` or `/api/webhooks/google-ads?project_id={id}`; note: no `/api/webhooks/lead` route exists).
 
 3. **No Draft Preview:** User can't see generated HTML before publish.
 
@@ -985,22 +1032,31 @@ sequenceDiagram
 
 ## Appendix A: Agent Registry (Complete List)
 
-| Agent Key           | Module   | Purpose                        | Heavy?                |
-| ------------------- | -------- | ------------------------------ | --------------------- |
-| `scout_anchors`     | pSEO     | Scrape Google Maps for anchors | Yes (external API)    |
-| `strategist_run`    | pSEO     | Generate keywords from anchors | Yes (LLM batch)       |
-| `write_pages`       | pSEO     | Generate HTML content          | Yes (LLM per keyword) |
-| `critic_review`     | pSEO     | QA drafts (reject/approve)     | Yes (LLM batch)       |
-| `librarian_link`    | pSEO     | Add internal links             | No                    |
-| `enhance_media`     | pSEO     | Fetch/inject images            | No (cached API)       |
-| `enhance_utility`   | pSEO     | Add forms + schema             | No                    |
-| `publisher_run`     | pSEO     | Deploy to WordPress            | No (REST API)         |
-| `lead_scorer`       | Lead Gen | Score lead intent              | Yes (LLM call)        |
-| `sales_agent`       | Lead Gen | Bridge call via Twilio         | No (async webhook)    |
-| `reactivator_agent` | Lead Gen | Send SMS follow-ups            | No (batch API)        |
-| `onboarding`        | System   | Project setup wizard           | Yes (LLM interview)   |
-| `health_check`      | System   | System diagnostics             | No                    |
-| `janitor`           | System   | Cleanup old contexts           | No                    |
+*Reflects `backend/core/registry.py` AgentRegistry.DIRECTORY. Task names for dispatch are the agent keys below (e.g. `POST /api/run` with `task: "manager"` for pSEO).*
+
+| Agent Key            | Module    | Purpose                                                | Heavy? |
+| -------------------- | --------- | ------------------------------------------------------ | ------ |
+| `manager`            | pSEO      | pSEO orchestrator (dashboard_stats, run pipeline)      | No     |
+| `scout_anchors`      | pSEO      | Scrape Google Maps for anchors                         | Yes    |
+| `strategist_run`     | pSEO      | Generate keywords from anchors                         | Yes    |
+| `write_pages`        | pSEO      | Generate HTML content (Writer)                         | Yes    |
+| `critic_review`      | pSEO      | QA drafts (reject/approve)                             | Yes    |
+| `librarian_link`     | pSEO      | Add internal links                                    | No     |
+| `enhance_media`      | pSEO      | Fetch/inject images                                    | Yes    |
+| `enhance_utility`    | Lead Gen  | Forms + schema (used by pSEO pipeline)                | No     |
+| `publish`            | pSEO      | Deploy to WordPress                                    | Yes    |
+| `analytics_audit`    | pSEO      | Analytics audit                                        | No     |
+| `lead_gen_manager`   | Lead Gen  | Lead Gen orchestrator (lead_received, instant_call, dashboard_stats) | No*  |
+| `lead_scorer`        | Lead Gen  | Score lead intent (LLM Judge)                          | No     |
+| `sales_agent`        | Lead Gen  | Bridge call via Twilio (instant_call, notify_sms)     | Yes    |
+| `reactivator_agent`   | Lead Gen  | Send SMS follow-ups                                    | Yes    |
+| `system_ops_manager` | System    | System ops orchestrator                                | No     |
+| `health_check`       | System    | System diagnostics (Sentinel)                         | No     |
+| `log_usage`          | System    | Usage logging (Accountant)                             | No     |
+| `cleanup`            | System    | Cleanup old contexts (Janitor)                        | No     |
+| `onboarding`         | System    | Project setup wizard                                  | No     |
+
+*Lead Gen Manager runs in background when action is `lead_received`, `ignite_reactivation`, or `instant_call` (HEAVY_ACTIONS_BY_TASK).*
 
 ---
 
@@ -1053,14 +1109,13 @@ The "Titanium" refactor has achieved:
 **Next Steps:**
 
 1. Implement `/campaigns/new` page (split-screen wizard) → **Done in v5 refactor**.
-2. Build `/projects/{id}/pseo` dashboard (metric cards + pipeline table).
-3. Build `/projects/{id}/leads` dashboard (lead table + call/SMS actions).
-4. Add draft preview modal and budget gauge.
+2. pSEO dashboard lives on `/projects/{id}` (overview with pipeline stats + next step).
+3. Lead Gen dashboard at `/projects/{id}/leads` (lead table + Connect call, status).
+4. Add draft preview modal and budget gauge (see Known Limitations).
 
-**Document Status:** Living document. Update as agents evolve or new endpoints are added.
+**Document Status:** Living document. Aligned with codebase as of Feb 2026. See **§6 Implementation Notes** for current API and behavior details.
 
 ---
 
-_Generated by: Principal Software Architect_  
-_Date: February 2, 2026_  
-_Version: 1.0 (Post-Titanium)_
+_Last updated: February 12, 2026_  
+_Version: 1.1 (aligned with current codebase)_

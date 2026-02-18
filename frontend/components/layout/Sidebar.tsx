@@ -4,14 +4,11 @@ import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAppStore } from "@/store/useAppStore";
-import { FolderOpen, LayoutDashboard, Brain, Target, FileText, Users, Settings } from "lucide-react";
+import { FolderOpen, Settings, Users, Rocket } from "lucide-react";
 
 const projectNavItems = [
-  { href: (id: string) => `/projects/${id}`, label: "Overview", icon: LayoutDashboard },
-  { href: (id: string) => `/projects/${id}/intel`, label: "Intel", icon: Brain },
-  { href: (id: string) => `/projects/${id}/strategy`, label: "Strategy", icon: Target },
-  { href: (id: string) => `/projects/${id}/quality`, label: "Quality", icon: FileText },
-  { href: (id: string) => `/projects/${id}/leads`, label: "Leads", icon: Users },
+  { href: (id: string) => `/projects/${id}`, label: "pSEO", icon: Rocket },
+  { href: (id: string) => `/projects/${id}/leads`, label: "Lead Gen", icon: Users },
   { href: (id: string) => `/projects/${id}/settings`, label: "Settings", icon: Settings },
 ];
 

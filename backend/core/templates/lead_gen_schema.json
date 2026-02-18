@@ -1,0 +1,8 @@
+{
+  "@context": "https://schema.org",
+  "@type": "Service",
+  "serviceType": "{{ service_name }}",
+  "provider": { "@type": "LocalBusiness", "name": "{{ brand_name }}" },
+  "areaServed": {{ area_served_json }},
+  "offers": { "@type": "Offer", "priceCurrency": "{{ price_currency }}", "availability": "https://schema.org/InStock" }
+}

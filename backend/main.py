@@ -23,6 +23,7 @@ from backend.modules.system_ops.middleware import security_middleware
 from backend.routers import system
 from backend.routers import auth
 from backend.routers import projects
+from backend.routers import schemas
 from backend.routers import entities
 from backend.routers import agents
 from backend.routers.voice import voice_router
@@ -192,6 +193,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(system.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(projects.router, prefix="/api")
+app.include_router(schemas.router, prefix="/api")
 app.include_router(entities.router, prefix="/api")
 app.include_router(agents.router)
 app.include_router(voice_router, prefix="/api/voice", tags=["voice"])

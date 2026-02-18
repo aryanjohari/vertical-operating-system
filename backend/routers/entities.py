@@ -42,15 +42,34 @@ class LeadResponse(BaseModel):
 async def get_entities(
     entity_type: Optional[str] = None,
     project_id: Optional[str] = None,
+    campaign_id: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
     user_id: str = Depends(get_current_user),
 ):
-    """Get entities from SQL database for a specific user (RLS enforced)."""
+    """Get entities from SQL database for a specific user (RLS enforced). Supports limit, offset, and campaign_id filter. When campaign_id is set, response includes total count."""
     try:
         if project_id and not memory.verify_project_ownership(user_id, project_id):
             raise HTTPException(status_code=403, detail="Project not found or access denied")
 
-        entities = memory.get_entities(tenant_id=user_id, entity_type=entity_type, project_id=project_id)
-        return {"entities": entities}
+        entities = memory.get_entities(
+            tenant_id=user_id,
+            entity_type=entity_type,
+            project_id=project_id,
+            campaign_id=campaign_id,
+            limit=min(limit, 500),
+            offset=offset,
+        )
+        out = {"entities": entities}
+        if campaign_id and project_id:
+            total = memory.get_entities_count(
+                tenant_id=user_id,
+                entity_type=entity_type,
+                project_id=project_id,
+                campaign_id=campaign_id,
+            )
+            out["total"] = total
+        return out
     except HTTPException:
         raise
     except Exception as e:

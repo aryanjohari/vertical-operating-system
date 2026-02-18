@@ -2,10 +2,11 @@
 import asyncio
 import hashlib
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from collections import defaultdict
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
+from backend.core.services.llm_gateway import llm_gateway
 
 # Import async entrypoints to avoid blocking the thread pool
 from backend.core.services.maps_sync import run_scout_async
@@ -126,67 +127,22 @@ class ScoutAgent(BaseAgent):
             except Exception as e:
                 self.logger.warning(f"Error building map queries: {e}", exc_info=True)
 
-            # B. Build Search Queries (Intel)
-            # e.g., "Bail lawyer cost Manukau", "Filing fee Manukau court"
+            # B. Build Search Queries (Intel) from snippet_queries only (Serper snippets + Gemini extraction)
             try:
-                competitor_count = 0
-                regulatory_count = 0
-                
-                # 1. Competitor Queries
-                competitor_config = mining_rules.get('competitor', {})
-                if competitor_config.get('enabled', False):
-                    base_qs = competitor_config.get('queries', [])
-                    self.logger.info(f"🔍 Competitor mining enabled - found {len(base_qs) if isinstance(base_qs, list) else 0} query templates")
-                    if isinstance(base_qs, list) and len(base_qs) > 0:
-                        for q in base_qs:
-                            if isinstance(q, str) and q.strip():
-                                # If query has placeholders, expand for each city
-                                if "{city}" in q or "{service}" in q:
-                                    for city in geo_targets:
-                                        if isinstance(city, str) and city.strip():
-                                            final_query = q.replace("{service}", service).replace("{city}", city.strip())
-                                            search_queries.append({
-                                                "query": final_query,
-                                                "type": "competitor"
-                                            })
-                                            competitor_count += 1
-                                else:
-                                    # Query is already complete, use as-is (no placeholders)
-                                    search_queries.append({
-                                        "query": q.strip(),
-                                        "type": "competitor"
-                                    })
-                                    competitor_count += 1
-                
-                # 2. Regulatory Queries (marked as "fact" type)
-                regulatory_config = mining_rules.get('regulatory', {})
-                if regulatory_config.get('enabled', False):
-                    base_qs = regulatory_config.get('queries', [])
-                    self.logger.info(f"🔍 Regulatory mining enabled - found {len(base_qs) if isinstance(base_qs, list) else 0} query templates")
-                    if isinstance(base_qs, list) and len(base_qs) > 0:
-                        for q in base_qs:
-                            if isinstance(q, str) and q.strip():
-                                # If query has placeholders, expand for each city
-                                if "{city}" in q or "{service}" in q:
-                                    for city in geo_targets:
-                                        if isinstance(city, str) and city.strip():
-                                            final_query = q.replace("{service}", service).replace("{city}", city.strip())
-                                            search_queries.append({
-                                                "query": final_query,
-                                                "type": "fact"
-                                            })
-                                            regulatory_count += 1
-                                else:
-                                    # Query is already complete, use as-is (no placeholders)
-                                    search_queries.append({
-                                        "query": q.strip(),
-                                        "type": "fact"
-                                    })
-                                    regulatory_count += 1
-                
-                self.logger.info(f"✅ Built {len(search_queries)} search queries for intel gathering ({competitor_count} competitors, {regulatory_count} facts)")
+                snippet_qs = mining_rules.get('snippet_queries', [])
+                if isinstance(snippet_qs, list) and len(snippet_qs) > 0:
+                    for q in snippet_qs:
+                        if isinstance(q, str) and q.strip():
+                            if "{city}" in q or "{service}" in q:
+                                for city in geo_targets:
+                                    if isinstance(city, str) and city.strip():
+                                        final_query = q.replace("{service}", service).replace("{city}", city.strip())
+                                        search_queries.append({"query": final_query, "type": "fact"})
+                            else:
+                                search_queries.append({"query": q.strip(), "type": "fact"})
+                    self.logger.info(f"🔍 Snippet mining: {len(search_queries)} queries for Serper + Gemini extraction")
             except Exception as e:
-                self.logger.error(f"❌ Error building search queries: {e}", exc_info=True)
+                self.logger.error(f"❌ Error building snippet queries: {e}", exc_info=True)
 
             # Validate we have at least some queries
             if len(map_queries) == 0 and len(search_queries) == 0:
@@ -276,12 +232,13 @@ class ScoutAgent(BaseAgent):
                 else:
                     self.logger.warning(f"Map sync failed or returned no data: {map_results_raw.get('message', 'Unknown error')}")
                 
-                # Process search results (intel)
+                # Process search results: extract facts via Gemini from snippets, then save as knowledge_fragment
                 if isinstance(search_results_raw, list):
                     if len(search_results_raw) > 0:
-                        self.logger.info(f"💾 Processing {len(search_results_raw)} search results for intel entities...")
-                        saved_intel = self._save_intel(search_results_raw, user_id, project_id, campaign_id)
-                        self.logger.info(f"✅ Saved {saved_intel} intel entities (competitors/facts)")
+                        self.logger.info(f"💾 Extracting facts from {len(search_results_raw)} snippets via Gemini...")
+                        extracted = await self._extract_facts_from_snippets(search_results_raw)
+                        saved_intel = self._save_intel(extracted, user_id, project_id, campaign_id)
+                        self.logger.info(f"✅ Saved {saved_intel} intel entities (extracted facts)")
                     else:
                         self.logger.warning("⚠️ Search results list is empty - no intel to save")
                         saved_intel = 0
@@ -404,6 +361,66 @@ class ScoutAgent(BaseAgent):
         
         self.logger.info(f"Saved {count} anchor locations")
         return count
+
+    async def _extract_facts_from_snippets(self, search_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Group Serper results by query, send snippet text to Gemini to extract market price or key fact,
+        return one item per query for _save_intel (knowledge_fragment).
+        """
+        if not search_results:
+            return []
+        by_query: Dict[str, List[Dict]] = defaultdict(list)
+        for item in search_results:
+            if isinstance(item, dict) and item.get("query"):
+                by_query[item["query"]].append(item)
+        extracted_list = []
+        system_prompt = (
+            "You are a fact extractor. Given search result snippets, extract the market price, cost, or one key factual claim. "
+            "Return only a single sentence or short phrase. No preamble."
+        )
+        for query, items in by_query.items():
+            snippets = []
+            first_link = None
+            for i in items:
+                sn = (i.get("snippet") or "").strip()
+                if sn:
+                    snippets.append(sn)
+                if not first_link and i.get("link"):
+                    first_link = i.get("link")
+            if not snippets:
+                continue
+            text_block = "\n".join(snippets[:5])  # cap to avoid token overflow
+            user_prompt = f"Query: {query}\n\nSnippets:\n{text_block}\n\nExtract market price or key fact:"
+            try:
+                response_text = await asyncio.to_thread(
+                    llm_gateway.generate_content,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model="gemini-2.5-flash",
+                    temperature=0.2,
+                    max_retries=2,
+                )
+                fact = (response_text or "").strip()[:500]
+                if not fact:
+                    fact = text_block[:300]
+                extracted_list.append({
+                    "title": fact[:100] if fact else query[:80],
+                    "link": first_link or "",
+                    "type": "fact",
+                    "query": query,
+                    "snippet": fact,
+                })
+            except Exception as e:
+                self.logger.warning(f"Gemini extraction failed for query '{query[:50]}': {e}")
+                # Fallback: use first snippet as the fact
+                extracted_list.append({
+                    "title": (snippets[0][:80] if snippets else query[:80]),
+                    "link": first_link or "",
+                    "type": "fact",
+                    "query": query,
+                    "snippet": snippets[0][:500] if snippets else "",
+                })
+        return extracted_list
 
     def _save_intel(self, results: List[Dict[str, Any]], user_id: str, project_id: str, campaign_id: str) -> int:
         """

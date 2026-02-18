@@ -25,7 +25,7 @@ class GoogleEmbeddingFunction:
         self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
-        self.model = "text-embedding-004"
+        self.model = "text-embedding-005"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """
@@ -734,33 +734,41 @@ class MemoryManager:
             self.logger.error(f"Unexpected error saving entity {entity.id}: {e}")
             return False
 
-    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None, 
-                     project_id: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
-        self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}")
+    def get_entities(self, tenant_id: str, entity_type: Optional[str] = None,
+                     project_id: Optional[str] = None, campaign_id: Optional[str] = None,
+                     limit: int = 100, offset: int = 0, return_total: bool = False) -> List[Dict]:
+        """
+        Fetch entities with optional filters. Use get_entities_count for total when paginating by campaign_id.
+        """
+        self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}, campaign: {campaign_id}")
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
-                
+
                 query = f"SELECT * FROM entities WHERE tenant_id = {placeholder}"
                 params = [tenant_id]
-                
+
                 if entity_type:
                     query += f" AND entity_type = {placeholder}"
                     params.append(entity_type)
-                
+
                 if project_id:
                     query += f" AND project_id = {placeholder}"
                     params.append(project_id)
-                    
+
+                if campaign_id:
+                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    params.append(campaign_id)
+
                 query += f" ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}"
                 params.extend([limit, offset])
-                
+
                 cursor.execute(query, params)
                 rows = cursor.fetchall()
-                
+
                 results = []
                 for row in rows:
                     item = dict(row)
@@ -770,7 +778,7 @@ class MemoryManager:
                         self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
                         item['metadata'] = {}
                     results.append(item)
-                
+
                 self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
                 return results
             finally:
@@ -782,6 +790,38 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Unexpected error fetching entities for tenant {tenant_id}: {e}")
             return []
+
+    def get_entities_count(self, tenant_id: str, entity_type: Optional[str] = None,
+                           project_id: Optional[str] = None, campaign_id: Optional[str] = None) -> int:
+        """Count entities with same filters as get_entities (no limit/offset)."""
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                query = f"SELECT COUNT(*) FROM entities WHERE tenant_id = {placeholder}"
+                params = [tenant_id]
+                if entity_type:
+                    query += f" AND entity_type = {placeholder}"
+                    params.append(entity_type)
+                if project_id:
+                    query += f" AND project_id = {placeholder}"
+                    params.append(project_id)
+                if campaign_id:
+                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    params.append(campaign_id)
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+                return int(row[0]) if row else 0
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error counting entities for tenant {tenant_id}: {e}")
+            return 0
+        except Exception as e:
+            self.logger.error(f"Unexpected error counting entities for tenant {tenant_id}: {e}")
+            return 0
 
     def get_entity(self, entity_id: str, tenant_id: str) -> Optional[Dict]:
         """

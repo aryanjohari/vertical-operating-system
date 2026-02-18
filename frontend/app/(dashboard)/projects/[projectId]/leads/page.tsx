@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { getEntities, connectCall } from "@/lib/api";
+import { getEntities, getCampaigns, connectCall } from "@/lib/api";
 import type { Lead } from "@/types";
-import { Phone, X } from "lucide-react";
+import { Phone, X, Plus } from "lucide-react";
+import { CreateCampaignDialog } from "@/components/campaigns/CreateCampaignDialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 
@@ -86,19 +87,34 @@ export default function LeadsPage() {
   const projectId = params.projectId as string;
 
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string; module: string; status: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [callingId, setCallingId] = useState<string | null>(null);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
-  const loadLeads = async () => {
+  const loadLeads = useCallback(async () => {
     const data = await getEntities<Lead>("lead", projectId);
     setLeads(data);
-  };
+  }, [projectId]);
+
+  const loadCampaigns = useCallback(async () => {
+    const data = await getCampaigns(projectId, "lead_gen");
+    setCampaigns(data);
+  }, [projectId]);
 
   useEffect(() => {
-    loadLeads()
-      .catch(() => setLeads([]))
-      .finally(() => setLoading(false));
-  }, [projectId]);
+    async function load() {
+      try {
+        await Promise.all([loadLeads(), loadCampaigns()]);
+      } catch {
+        setLeads([]);
+        setCampaigns([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [loadLeads, loadCampaigns]);
 
   const handleCallNow = async (lead: Lead) => {
     const phone = lead.primary_contact ?? lead.metadata?.phone;
@@ -147,9 +163,41 @@ export default function LeadsPage() {
   return (
     <div className="space-y-6">
       <h1 className="acid-text text-2xl font-bold text-foreground">
-        Revenue Center
+        Lead Gen
       </h1>
 
+      <section className="glass-panel rounded-lg border border-border p-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-foreground">Campaigns</h2>
+          <button
+            type="button"
+            onClick={() => setCreateDialogOpen(true)}
+            className="acid-glow flex items-center gap-2 rounded bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" />
+            Create Campaign
+          </button>
+        </div>
+        {campaigns.length === 0 ? (
+          <p className="mt-3 text-sm text-muted-foreground">
+            No Lead Gen campaigns yet. Create one to capture leads.
+          </p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {campaigns.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center justify-between rounded border border-border bg-muted/30 px-3 py-2 text-sm"
+              >
+                <span className="font-medium text-foreground">{c.name}</span>
+                <span className="text-xs text-muted-foreground">{c.status}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <h2 className="text-lg font-semibold text-foreground">Leads</h2>
       {loading ? (
         <TableSkeleton />
       ) : (
@@ -232,6 +280,17 @@ export default function LeadsPage() {
           </div>
         </div>
       )}
+
+      <CreateCampaignDialog
+        isOpen={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+        onSuccess={() => {
+          setCreateDialogOpen(false);
+          loadCampaigns();
+        }}
+        projectId={projectId}
+        module="lead_gen"
+      />
     </div>
   );
 }

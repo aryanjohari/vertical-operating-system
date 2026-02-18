@@ -1,57 +1,21 @@
 "use client";
 
-import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { useAppStore } from "@/store/useAppStore";
 import { Menu, LogOut } from "lucide-react";
 
-function Breadcrumbs() {
-  const pathname = usePathname();
-  const currentProjectId = useAppStore((s) => s.currentProjectId);
-  const projectIdFromPath = pathname.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
-  const projectId = currentProjectId ?? projectIdFromPath;
-
-  const segments: { label: string; href?: string }[] = [{ label: "Projects", href: "/projects" }];
-
-  if (projectId) {
-    const nicheSlug = projectId.replace(/_/g, " ");
-    const nicheLabel = nicheSlug.charAt(0).toUpperCase() + nicheSlug.slice(1);
-    segments.push({ label: nicheLabel, href: `/projects/${projectId}` });
-
-    const routeMap: Record<string, string> = {
-      intel: "Intel",
-      strategy: "Strategy",
-      quality: "Quality",
-      leads: "Leads",
-      settings: "Settings",
-    };
-    const pathParts = pathname.split("/").filter(Boolean);
-    const lastPart = pathParts[pathParts.length - 1];
-    if (lastPart && lastPart !== projectId && routeMap[lastPart]) {
-      segments.push({ label: routeMap[lastPart] });
-    }
-  }
-
+function UserAvatar({ email }: { email: string }) {
+  const initial = email.charAt(0).toUpperCase();
   return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      {segments.map((seg, i) => (
-        <span key={i} className="flex items-center gap-2">
-          {i > 0 && <span>/</span>}
-          {seg.href ? (
-            <Link href={seg.href} className="hover:text-foreground">
-              {seg.label}
-            </Link>
-          ) : (
-            <span className="text-foreground">{seg.label}</span>
-          )}
-        </span>
-      ))}
+    <div
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/20 text-sm font-medium text-primary"
+      aria-hidden
+    >
+      {initial}
     </div>
   );
 }
 
 export function Topbar() {
-  const pathname = usePathname();
   const user = useAppStore((s) => s.user);
   const logout = useAppStore((s) => s.logout);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
@@ -67,10 +31,17 @@ export function Topbar() {
         >
           <Menu className="h-5 w-5" />
         </button>
-        <Breadcrumbs />
+        <h1 className="acid-text text-lg font-semibold text-foreground">
+          Apex OS Control Panel
+        </h1>
       </div>
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground">{user?.id}</span>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          {user?.id && <UserAvatar email={user.id} />}
+          <span className="text-sm text-muted-foreground" title="User Profile">
+            {user?.id}
+          </span>
+        </div>
         <button
           type="button"
           onClick={logout}

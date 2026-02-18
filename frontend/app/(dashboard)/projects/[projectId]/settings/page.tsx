@@ -1,121 +1,67 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import {
-  getProjectConfig,
-  updateProjectConfig,
-} from "@/lib/api";
-import { cn } from "@/lib/utils";
-
-function setNested(
-  obj: Record<string, unknown>,
-  path: string[],
-  value: unknown
-): void {
-  let current: Record<string, unknown> = obj;
-  for (let i = 0; i < path.length - 1; i++) {
-    const key = path[i];
-    if (!(key in current) || typeof current[key] !== "object") {
-      current[key] = {};
-    }
-    current = current[key] as Record<string, unknown>;
-  }
-  current[path[path.length - 1]] = value;
-}
-
-function getNested(
-  obj: Record<string, unknown>,
-  path: string[]
-): unknown {
-  let current: unknown = obj;
-  for (const key of path) {
-    if (current == null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
+import Link from "next/link";
+import { getProjectConfig, getFormSchema, updateProjectConfig } from "@/lib/api";
+import { toast } from "sonner";
+import { DynamicForm } from "@/components/forms/DynamicForm";
+import type { FormSchema } from "@/lib/api";
 
 export default function SettingsPage() {
   const params = useParams();
   const projectId = params.projectId as string;
 
-  const [config, setConfig] = useState<Record<string, unknown>>({});
+  const [schema, setSchema] = useState<FormSchema | null>(null);
+  const [defaults, setDefaults] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  const agencyName =
-    (getNested(config, ["identity", "business_name"]) as string) ?? "";
-  const citiesRaw = getNested(config, ["targeting", "geo_targets", "cities"]);
-  const targetCity = Array.isArray(citiesRaw)
-    ? (citiesRaw[0] as string) ?? ""
-    : (config.target_city as string) ?? "";
-  const twilioNumber =
-    (getNested(config, [
-      "modules",
-      "lead_gen",
-      "sales_bridge",
-      "destination_phone",
-    ]) as string) ?? "";
-
-  const loadConfig = async () => {
-    const data = await getProjectConfig(projectId);
-    setConfig(data);
-  };
-
-  useEffect(() => {
-    loadConfig()
-      .catch(() => setConfig({}))
-      .finally(() => setLoading(false));
+  const loadSchemaAndConfig = useCallback(async () => {
+    if (!projectId) return;
+    setFetchError(null);
+    try {
+      const [schemaRes, config] = await Promise.all([
+        getFormSchema("profile"),
+        getProjectConfig(projectId),
+      ]);
+      setSchema(schemaRes.schema);
+      setDefaults((config && Object.keys(config).length > 0 ? config : schemaRes.defaults ?? {}) as Record<string, unknown>);
+    } catch (e) {
+      setFetchError(e instanceof Error ? e.message : "Failed to load form");
+      setSchema(null);
+      setDefaults({});
+    } finally {
+      setLoading(false);
+    }
   }, [projectId]);
 
-  const updateForm = (
-    agency: string,
-    city: string,
-    twilio: string
-  ) => {
-    const next = JSON.parse(JSON.stringify(config));
-    setNested(next, ["identity", "business_name"], agency);
-    if (!next.identity) next.identity = {};
-    (next.identity as Record<string, unknown>).business_name = agency;
+  useEffect(() => {
+    loadSchemaAndConfig();
+  }, [loadSchemaAndConfig]);
 
-    if (!next.targeting) next.targeting = {};
-    if (!(next.targeting as Record<string, unknown>).geo_targets)
-      (next.targeting as Record<string, unknown>).geo_targets = {};
-    ((next.targeting as Record<string, unknown>).geo_targets as Record<string, unknown>).cities = city ? [city] : [];
-
-    if (!next.modules) next.modules = {};
-    if (!(next.modules as Record<string, unknown>).lead_gen)
-      (next.modules as Record<string, unknown>).lead_gen = {};
-    if (!((next.modules as Record<string, unknown>).lead_gen as Record<string, unknown>).sales_bridge)
-      ((next.modules as Record<string, unknown>).lead_gen as Record<string, unknown>).sales_bridge = {};
-    (((next.modules as Record<string, unknown>).lead_gen as Record<string, unknown>).sales_bridge as Record<string, unknown>).destination_phone = twilio;
-
-    setConfig(next);
-  };
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      await updateProjectConfig(projectId, config);
-      await loadConfig();
-      toast.success("DNA configuration saved.");
-    } catch {
-      toast.error("Failed to save configuration.", {
-        style: {
-          background: "hsl(0 100% 60% / 0.2)",
-          borderColor: "hsl(0 100% 60%)",
-        },
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
+  const handleSave = useCallback(
+    async (values: Record<string, unknown>) => {
+      if (!projectId) return;
+      try {
+        await updateProjectConfig(projectId, values);
+        await loadSchemaAndConfig();
+        toast.success("DNA configuration saved.");
+      } catch {
+        toast.error("Failed to save configuration.", {
+          style: {
+            background: "hsl(0 100% 60% / 0.2)",
+            borderColor: "hsl(0 100% 60%)",
+          },
+        });
+      }
+    },
+    [projectId, loadSchemaAndConfig]
+  );
 
   if (loading) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-6 p-4">
         <div className="h-8 w-48 animate-pulse rounded bg-muted" />
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="glass-panel animate-pulse space-y-4 p-6">
@@ -123,116 +69,49 @@ export default function SettingsPage() {
             <div className="h-10 rounded bg-muted" />
             <div className="h-4 w-28 rounded bg-muted" />
             <div className="h-10 rounded bg-muted" />
-            <div className="h-4 w-32 rounded bg-muted" />
-            <div className="h-10 rounded bg-muted" />
-          </div>
-          <div className="glass-panel animate-pulse p-6">
-            <div className="h-64 rounded bg-muted" />
           </div>
         </div>
       </div>
     );
   }
 
+  if (fetchError) {
+    return (
+      <div className="space-y-4 p-4">
+        <p className="text-destructive">{fetchError}</p>
+        <Link href={`/projects/${projectId}`} className="text-primary hover:underline">
+          Back to project
+        </Link>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-4">
       <div className="flex items-center justify-between">
-        <h1 className="acid-text text-2xl font-bold text-foreground">
-          DNA Lab
-        </h1>
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className="acid-glow rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-60"
+        <h1 className="acid-text text-2xl font-bold text-foreground">DNA Lab</h1>
+        <Link
+          href={`/projects/${projectId}`}
+          className="text-sm text-muted-foreground hover:text-foreground"
         >
-          {saving ? "Saving..." : "Save"}
-        </button>
+          ← Project
+        </Link>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Left: Form */}
-        <div className="glass-panel space-y-4 p-6">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            Project Config
-          </h2>
-          <div>
-            <label
-              htmlFor="agency-name"
-              className="block text-sm font-medium text-foreground"
-            >
-              Agency Name
-            </label>
-            <input
-              id="agency-name"
-              type="text"
-              value={agencyName}
-              onChange={(e) =>
-                updateForm(e.target.value, targetCity, twilioNumber)
-              }
-              placeholder="Acme Digital"
-              className={cn(
-                "mt-1 w-full rounded border border-border bg-muted/50 px-3 py-2 text-foreground placeholder:text-muted-foreground",
-                "focus:outline-none focus:ring-2 focus:ring-primary"
-              )}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="target-city"
-              className="block text-sm font-medium text-foreground"
-            >
-              Target City
-            </label>
-            <input
-              id="target-city"
-              type="text"
-              value={targetCity}
-              onChange={(e) =>
-                updateForm(agencyName, e.target.value, twilioNumber)
-              }
-              placeholder="Auckland"
-              className={cn(
-                "mt-1 w-full rounded border border-border bg-muted/50 px-3 py-2 text-foreground placeholder:text-muted-foreground",
-                "focus:outline-none focus:ring-2 focus:ring-primary"
-              )}
-            />
-          </div>
-          <div>
-            <label
-              htmlFor="twilio-number"
-              className="block text-sm font-medium text-foreground"
-            >
-              Twilio Number
-            </label>
-            <input
-              id="twilio-number"
-              type="tel"
-              value={twilioNumber}
-              onChange={(e) =>
-                updateForm(agencyName, targetCity, e.target.value)
-              }
-              placeholder="+64 21 123 4567"
-              className={cn(
-                "mt-1 w-full rounded border border-border bg-muted/50 px-3 py-2 text-foreground placeholder:text-muted-foreground",
-                "focus:outline-none focus:ring-2 focus:ring-primary"
-              )}
-            />
-            <p className="mt-1 text-xs text-muted-foreground">
-              Client&apos;s mobile for Sales Bridge calls
-            </p>
-          </div>
-        </div>
-
-        {/* Right: Raw JSON */}
-        <div className="glass-panel flex flex-col p-6">
-          <h2 className="mb-3 text-sm font-medium text-muted-foreground">
-            Raw JSON
-          </h2>
-          <pre className="min-h-[300px] flex-1 overflow-auto rounded border border-border bg-muted/30 p-4 font-mono text-xs text-foreground">
-            {JSON.stringify(config, null, 2)}
-          </pre>
-        </div>
+      <div className="glass-panel max-w-3xl space-y-4 p-6">
+        <p className="text-sm text-muted-foreground">
+          Edit project identity, brand voice, and module toggles. All values are saved to DNA (dna.custom.yaml).
+        </p>
+        {schema ? (
+          <DynamicForm
+            schema={schema}
+            defaults={defaults}
+            onSubmit={handleSave}
+            submitLabel="Save DNA"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">No form schema available.</p>
+        )}
       </div>
     </div>
   );
