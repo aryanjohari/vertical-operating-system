@@ -222,6 +222,22 @@ class MemoryManager:
                 )
             ''')
 
+            # 6. ANALYTICS SNAPSHOTS (cached analytics by project/campaign/range/module)
+            cursor.execute(f'''
+                CREATE TABLE IF NOT EXISTS analytics_snapshots (
+                    tenant_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    campaign_id TEXT NOT NULL,
+                    module TEXT NOT NULL,
+                    from_date TEXT NOT NULL,
+                    to_date TEXT NOT NULL,
+                    fetched_at TIMESTAMP NOT NULL,
+                    payload {json_type} NOT NULL,
+                    PRIMARY KEY (tenant_id, project_id, campaign_id, from_date, to_date, module)
+                )
+            ''')
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_lookup ON analytics_snapshots(tenant_id, project_id, campaign_id)")
+
     # ====================================================
     # SECTION A: SECURITY & AUTH
     # ====================================================
@@ -736,9 +752,11 @@ class MemoryManager:
 
     def get_entities(self, tenant_id: str, entity_type: Optional[str] = None,
                      project_id: Optional[str] = None, campaign_id: Optional[str] = None,
-                     limit: int = 100, offset: int = 0, return_total: bool = False) -> List[Dict]:
+                     limit: int = 100, offset: int = 0, return_total: bool = False,
+                     created_after: Optional[str] = None, created_before: Optional[str] = None) -> List[Dict]:
         """
         Fetch entities with optional filters. Use get_entities_count for total when paginating by campaign_id.
+        created_after/created_before: ISO date or datetime strings for time-bound analytics.
         """
         self.logger.debug(f"Fetching entities for tenant {tenant_id}, type: {entity_type}, project: {project_id}, campaign: {campaign_id}")
         try:
@@ -749,7 +767,7 @@ class MemoryManager:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
 
                 query = f"SELECT * FROM entities WHERE tenant_id = {placeholder}"
-                params = [tenant_id]
+                params: List[Any] = [tenant_id]
 
                 if entity_type:
                     query += f" AND entity_type = {placeholder}"
@@ -760,8 +778,18 @@ class MemoryManager:
                     params.append(project_id)
 
                 if campaign_id:
-                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    if self.db_factory.db_type == "postgresql":
+                        query += f" AND metadata->>'campaign_id' = {placeholder}"
+                    else:
+                        query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
                     params.append(campaign_id)
+
+                if created_after:
+                    query += f" AND created_at >= {placeholder}"
+                    params.append(created_after)
+                if created_before:
+                    query += f" AND created_at <= {placeholder}"
+                    params.append(created_before)
 
                 query += f" ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}"
                 params.extend([limit, offset])
@@ -792,15 +820,16 @@ class MemoryManager:
             return []
 
     def get_entities_count(self, tenant_id: str, entity_type: Optional[str] = None,
-                           project_id: Optional[str] = None, campaign_id: Optional[str] = None) -> int:
-        """Count entities with same filters as get_entities (no limit/offset)."""
+                           project_id: Optional[str] = None, campaign_id: Optional[str] = None,
+                           created_after: Optional[str] = None, created_before: Optional[str] = None) -> int:
+        """Count entities with same filters as get_entities (no limit/offset). created_after/created_before for time-bound analytics."""
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 query = f"SELECT COUNT(*) FROM entities WHERE tenant_id = {placeholder}"
-                params = [tenant_id]
+                params: List[Any] = [tenant_id]
                 if entity_type:
                     query += f" AND entity_type = {placeholder}"
                     params.append(entity_type)
@@ -808,8 +837,17 @@ class MemoryManager:
                     query += f" AND project_id = {placeholder}"
                     params.append(project_id)
                 if campaign_id:
-                    query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
+                    if self.db_factory.db_type == "postgresql":
+                        query += f" AND metadata->>'campaign_id' = {placeholder}"
+                    else:
+                        query += " AND json_extract(metadata, '$.campaign_id') = " + placeholder
                     params.append(campaign_id)
+                if created_after:
+                    query += f" AND created_at >= {placeholder}"
+                    params.append(created_after)
+                if created_before:
+                    query += f" AND created_at <= {placeholder}"
+                    params.append(created_before)
                 cursor.execute(query, params)
                 row = cursor.fetchone()
                 return int(row[0]) if row else 0
@@ -822,6 +860,97 @@ class MemoryManager:
         except Exception as e:
             self.logger.error(f"Unexpected error counting entities for tenant {tenant_id}: {e}")
             return 0
+
+    def save_analytics_snapshot(
+        self,
+        tenant_id: str,
+        project_id: str,
+        campaign_id: str,
+        module: str,
+        from_date: str,
+        to_date: str,
+        payload: Dict[str, Any],
+    ) -> bool:
+        """Upsert one analytics snapshot (by tenant, project, campaign, range, module). Caller must validate payload."""
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            fetched_at = datetime.utcnow()
+            payload_json = json.dumps(payload)
+            with self.db_factory.get_cursor() as cursor:
+                if self.db_factory.db_type == "postgresql":
+                    ph = placeholder
+                    cursor.execute(
+                        f"""
+                        INSERT INTO analytics_snapshots
+                        (tenant_id, project_id, campaign_id, module, from_date, to_date, fetched_at, payload)
+                        VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})
+                        ON CONFLICT (tenant_id, project_id, campaign_id, from_date, to_date, module)
+                        DO UPDATE SET fetched_at = EXCLUDED.fetched_at, payload = EXCLUDED.payload
+                        """,
+                        (tenant_id, project_id, campaign_id, module, from_date, to_date, fetched_at, payload_json),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        INSERT OR REPLACE INTO analytics_snapshots
+                        (tenant_id, project_id, campaign_id, module, from_date, to_date, fetched_at, payload)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (tenant_id, project_id, campaign_id, module, from_date, to_date, fetched_at, payload_json),
+                    )
+            self.logger.debug(f"Saved analytics snapshot for {project_id}/{campaign_id} ({module})")
+            return True
+        except DatabaseError as e:
+            self.logger.error(f"Database error saving analytics snapshot: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error saving analytics snapshot: {e}")
+            return False
+
+    def get_analytics_snapshot(
+        self,
+        tenant_id: str,
+        project_id: str,
+        campaign_id: str,
+        from_date: str,
+        to_date: str,
+        module: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Return latest snapshot for (tenant, project, campaign, from, to, module) or None. Keys: fetched_at, payload."""
+        try:
+            placeholder = self.db_factory.get_placeholder()
+            conn = self.db_factory.get_connection()
+            self.db_factory.set_row_factory(conn)
+            try:
+                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor.execute(
+                    f"""
+                    SELECT fetched_at, payload FROM analytics_snapshots
+                    WHERE tenant_id = {placeholder} AND project_id = {placeholder} AND campaign_id = {placeholder}
+                    AND from_date = {placeholder} AND to_date = {placeholder} AND module = {placeholder}
+                    """,
+                    (tenant_id, project_id, campaign_id, from_date, to_date, module),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                out = dict(row)
+                try:
+                    out["payload"] = json.loads(out["payload"]) if out.get("payload") else None
+                except (json.JSONDecodeError, TypeError):
+                    out["payload"] = None
+                if out.get("fetched_at") and hasattr(out["fetched_at"], "isoformat"):
+                    out["fetched_at"] = out["fetched_at"].isoformat()
+                return out
+            finally:
+                cursor.close()
+                self.db_factory.return_connection(conn)
+        except DatabaseError as e:
+            self.logger.error(f"Database error getting analytics snapshot: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected error getting analytics snapshot: {e}")
+            return None
 
     def get_entity(self, entity_id: str, tenant_id: str) -> Optional[Dict]:
         """

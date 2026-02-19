@@ -2,8 +2,8 @@ import logging
 import re
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.core.auth import get_current_user
 from backend.core.config import ConfigLoader
@@ -25,6 +25,14 @@ class ProjectResponse(BaseModel):
     success: bool
     project_id: str
     message: str = "Project created successfully"
+
+
+class RefetchAnalyticsBody(BaseModel):
+    campaign_id: Optional[str] = None
+    from_date: Optional[str] = Field(None, alias="from")
+    to_date: Optional[str] = Field(None, alias="to")
+    module: str  # "lead_gen" | "pseo"
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @router.post("/projects", response_model=ProjectResponse)
@@ -134,6 +142,326 @@ async def update_dna_config(
     except Exception as e:
         logger.error(f"Update DNA config error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update DNA configuration")
+
+
+# ---------------------------------------------------------------------------
+# Analytics: snapshot (DB read) + refetch (background). Redis can be used for
+# a distributed task queue (e.g. Celery) if refetch should run in a worker.
+# ---------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/analytics/snapshot")
+async def get_analytics_snapshot(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+    campaign_id: Optional[str] = Query(None),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+    module: Optional[str] = Query(None),
+):
+    """Return last saved analytics snapshot from DB (no GSC or entity aggregation)."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        if not module or module not in ("lead_gen", "pseo", "pseo_whole_site"):
+            raise HTTPException(status_code=400, detail="module must be 'lead_gen', 'pseo', or 'pseo_whole_site'")
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        to_d = to_date or now.strftime("%Y-%m-%d")
+        from_d = from_date or (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        cid = campaign_id or ""
+
+        row = memory.get_analytics_snapshot(
+            tenant_id=user_id,
+            project_id=project_id,
+            campaign_id=cid,
+            from_date=from_d,
+            to_date=to_d,
+            module=module,
+        )
+        if not row:
+            return {"fetched_at": None, "payload": None}
+        return {"fetched_at": row.get("fetched_at"), "payload": row.get("payload")}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Analytics snapshot error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load analytics snapshot")
+
+
+@router.get("/projects/{project_id}/analytics/gsc_status")
+async def get_gsc_status(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+):
+    """Whether GSC credentials (service account file) are present and valid."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        from backend.modules.pseo.agents.analytics import gsc_connected
+        return {"connected": gsc_connected()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"GSC status error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to check GSC status")
+
+
+@router.get("/projects/{project_id}/analytics/lead_gen")
+async def get_lead_gen_analytics_endpoint(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+    campaign_id: Optional[str] = None,
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+):
+    """Time-bound Lead Gen analytics: webhooks received, avg score, scheduled bridge %."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        to_d = to_date or now.strftime("%Y-%m-%d")
+        from_d = from_date or (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        from backend.modules.lead_gen.agents.analytics import get_lead_gen_analytics
+        data = get_lead_gen_analytics(
+            tenant_id=user_id,
+            project_id=project_id,
+            campaign_id=campaign_id,
+            from_date=from_d,
+            to_date=to_d,
+        )
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Lead Gen analytics error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load Lead Gen analytics")
+
+
+@router.get("/projects/{project_id}/analytics/pseo")
+async def get_pseo_analytics(
+    project_id: str,
+    user_id: str = Depends(get_current_user),
+    campaign_id: Optional[str] = None,
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+):
+    """GSC organic sessions and CTR filtered by DB live_urls (published page_drafts)."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        to_d = to_date or now.strftime("%Y-%m-%d")
+        from_d = from_date or (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        from backend.modules.pseo.agents.analytics import (
+            gsc_connected,
+            get_gsc_site_url_from_config,
+            get_live_urls_for_project,
+            fetch_gsc_analytics_filtered_by_live_urls,
+        )
+        config_loader = ConfigLoader()
+        config = config_loader.load(project_id)
+        if config.get("error"):
+            raise HTTPException(status_code=404, detail=config.get("error", "Config not found"))
+        site_url = get_gsc_site_url_from_config(config)
+        if not site_url:
+            return {
+                "from": from_d,
+                "to": to_d,
+                "gsc_connected": gsc_connected(),
+                "organic_clicks": 0,
+                "organic_impressions": 0,
+                "ctr": 0.0,
+                "filtered_pages_count": 0,
+                "per_page": [],
+            }
+        live_urls = get_live_urls_for_project(user_id, project_id, campaign_id)
+        live_url_set = {u.rstrip("/") for u in live_urls}
+        gsc_data = fetch_gsc_analytics_filtered_by_live_urls(
+            site_url=site_url,
+            live_url_set=live_url_set,
+            from_date=from_d,
+            to_date=to_d,
+        )
+        return {
+            "from": from_d,
+            "to": to_d,
+            "gsc_connected": gsc_connected(),
+            "organic_clicks": gsc_data["organic_clicks"],
+            "organic_impressions": gsc_data["organic_impressions"],
+            "ctr": gsc_data["ctr"],
+            "filtered_pages_count": gsc_data["filtered_pages_count"],
+            "per_page": gsc_data.get("per_page", []),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"pSEO analytics error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to load pSEO analytics")
+
+
+def _run_analytics_refetch(
+    tenant_id: str,
+    project_id: str,
+    campaign_id: str,
+    from_date: str,
+    to_date: str,
+    module: str,
+) -> None:
+    """
+    Sync helper run in a background task: compute analytics, validate, save snapshot.
+    Redis can be used for a distributed task queue (e.g. Celery) if refetch should run in a worker.
+    """
+    try:
+        if module == "lead_gen":
+            from backend.modules.lead_gen.agents.analytics import get_lead_gen_analytics
+            from backend.schemas.analytics import validate_lead_gen_payload
+            raw = get_lead_gen_analytics(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                campaign_id=campaign_id or None,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            payload = validate_lead_gen_payload(raw)
+        elif module == "pseo":
+            from backend.modules.pseo.agents.analytics import (
+                gsc_connected,
+                get_gsc_site_url_from_config,
+                get_live_urls_for_project,
+                fetch_gsc_analytics_filtered_by_live_urls,
+            )
+            from backend.schemas.analytics import validate_pseo_payload
+            config_loader = ConfigLoader()
+            config = config_loader.load(project_id)
+            if config.get("error"):
+                logger.warning(f"Refetch pSEO: config error for {project_id}, skipping save")
+                return
+            site_url = get_gsc_site_url_from_config(config)
+            if not site_url:
+                raw = {
+                    "from": from_date,
+                    "to": to_date,
+                    "gsc_connected": gsc_connected(),
+                    "organic_clicks": 0,
+                    "organic_impressions": 0,
+                    "ctr": 0.0,
+                    "filtered_pages_count": 0,
+                    "per_page": [],
+                }
+            else:
+                live_urls = get_live_urls_for_project(tenant_id, project_id, campaign_id or None)
+                live_url_set = {u.rstrip("/") for u in live_urls}
+                gsc_data = fetch_gsc_analytics_filtered_by_live_urls(
+                    site_url=site_url,
+                    live_url_set=live_url_set,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+                raw = {
+                    "from": from_date,
+                    "to": to_date,
+                    "gsc_connected": gsc_connected(),
+                    "organic_clicks": gsc_data["organic_clicks"],
+                    "organic_impressions": gsc_data["organic_impressions"],
+                    "ctr": gsc_data["ctr"],
+                    "filtered_pages_count": gsc_data["filtered_pages_count"],
+                    "per_page": gsc_data.get("per_page", []),
+                }
+            payload = validate_pseo_payload(raw)
+        elif module == "pseo_whole_site":
+            from backend.modules.pseo.agents.analytics import (
+                gsc_connected,
+                get_gsc_site_url_from_config,
+                fetch_gsc_analytics_whole_site,
+            )
+            from backend.schemas.analytics import validate_pseo_payload
+            config_loader = ConfigLoader()
+            config = config_loader.load(project_id)
+            if config.get("error"):
+                logger.warning(f"Refetch pSEO whole site: config error for {project_id}, skipping save")
+                return
+            site_url = get_gsc_site_url_from_config(config)
+            if not site_url:
+                raw = {
+                    "from": from_date,
+                    "to": to_date,
+                    "gsc_connected": gsc_connected(),
+                    "organic_clicks": 0,
+                    "organic_impressions": 0,
+                    "ctr": 0.0,
+                    "filtered_pages_count": 0,
+                    "per_page": [],
+                }
+            else:
+                gsc_data = fetch_gsc_analytics_whole_site(
+                    site_url=site_url,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+                raw = {
+                    "from": from_date,
+                    "to": to_date,
+                    "gsc_connected": gsc_connected(),
+                    "organic_clicks": gsc_data["organic_clicks"],
+                    "organic_impressions": gsc_data["organic_impressions"],
+                    "ctr": gsc_data["ctr"],
+                    "filtered_pages_count": gsc_data["filtered_pages_count"],
+                    "per_page": gsc_data.get("per_page", []),
+                }
+            payload = validate_pseo_payload(raw)
+        else:
+            logger.warning(f"Refetch unknown module: {module}")
+            return
+        memory.save_analytics_snapshot(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            campaign_id=campaign_id or "",
+            module=module,
+            from_date=from_date,
+            to_date=to_date,
+            payload=payload,
+        )
+        logger.info(f"Analytics refetch saved for {project_id}/{campaign_id} ({module})")
+    except Exception as e:
+        logger.error(f"Analytics refetch failed: {e}", exc_info=True)
+
+
+@router.post("/projects/{project_id}/analytics/refetch", status_code=202)
+async def refetch_analytics(
+    project_id: str,
+    body: RefetchAnalyticsBody,
+    background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
+):
+    """Start a background refetch of analytics; returns 202 Accepted immediately."""
+    try:
+        if not memory.verify_project_ownership(user_id, project_id):
+            raise HTTPException(status_code=403, detail="Project not found or access denied")
+        if body.module not in ("lead_gen", "pseo", "pseo_whole_site"):
+            raise HTTPException(status_code=400, detail="module must be 'lead_gen', 'pseo', or 'pseo_whole_site'")
+        from datetime import datetime, timedelta
+        now = datetime.utcnow()
+        to_d = body.to_date or now.strftime("%Y-%m-%d")
+        from_d = body.from_date or (now - timedelta(days=30)).strftime("%Y-%m-%d")
+        cid = body.campaign_id or ""
+
+        background_tasks.add_task(
+            _run_analytics_refetch,
+            tenant_id=user_id,
+            project_id=project_id,
+            campaign_id=cid,
+            from_date=from_d,
+            to_date=to_d,
+            module=body.module,
+        )
+        return {"message": "Refetch started", "status": 202}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Refetch trigger error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to start refetch")
 
 
 class CampaignCreateInput(BaseModel):

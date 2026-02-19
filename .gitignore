@@ -66,3 +66,5 @@ htmlcov/
 *.tmp
 *.temp
 .cache/
+
+backend/secrets/

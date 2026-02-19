@@ -4,12 +4,20 @@ import { useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAppStore } from "@/store/useAppStore";
-import { FolderOpen, Settings, Users, Rocket } from "lucide-react";
+import { BarChart2, FolderOpen, Settings, Users, Rocket } from "lucide-react";
 
 const projectNavItems = [
   { href: (id: string) => `/projects/${id}`, label: "pSEO", icon: Rocket },
-  { href: (id: string) => `/projects/${id}/leads`, label: "Lead Gen", icon: Users },
-  { href: (id: string) => `/projects/${id}/settings`, label: "Settings", icon: Settings },
+  {
+    href: (id: string) => `/projects/${id}/leads`,
+    label: "Lead Gen",
+    icon: Users,
+  },
+  {
+    href: (id: string) => `/projects/${id}/settings`,
+    label: "Settings",
+    icon: Settings,
+  },
 ];
 
 export function Sidebar() {
@@ -43,20 +51,35 @@ export function Sidebar() {
           <FolderOpen className="h-4 w-4" />
           All Projects
         </Link>
+        <Link
+          href="/analytics"
+          className={`flex items-center gap-2 rounded px-3 py-2 text-sm font-medium transition-colors ${
+            pathname === "/analytics"
+              ? "bg-primary/20 text-primary"
+              : "text-foreground hover:bg-muted"
+          }`}
+        >
+          <BarChart2 className="h-4 w-4" />
+          Analytics
+        </Link>
 
         {effectiveProjectId && (
           <>
             <div className="my-2 h-px bg-border" />
             {projectNavItems.map(({ href, label, icon: Icon }) => {
               const targetHref = href(effectiveProjectId);
-              const isActive = pathname === targetHref || pathname.startsWith(targetHref + "/");
+              const isActive =
+                pathname === targetHref ||
+                pathname.startsWith(targetHref + "/");
               return (
                 <Link
                   key={targetHref}
                   href={targetHref}
                   onClick={() => setProject(effectiveProjectId)}
                   className={`flex items-center gap-2 rounded px-3 py-2 text-sm font-medium transition-colors ${
-                    isActive ? "bg-primary/20 text-primary" : "text-foreground hover:bg-muted"
+                    isActive
+                      ? "bg-primary/20 text-primary"
+                      : "text-foreground hover:bg-muted"
                   }`}
                 >
                   <Icon className="h-4 w-4" />

@@ -1,49 +1,245 @@
 import os
 import datetime
+from typing import Any, Dict, List, Optional, Set
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.memory import memory
+from backend.core.config import ConfigLoader
+
+# Default GSC credentials path (used by gsc_connected, fetch_gsc_*, and AnalyticsAgent)
+DEFAULT_GSC_CREDENTIALS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+    "secrets",
+    "gcp-sercret.json",
+)
+
+
+def gsc_connected(credentials_path: str = DEFAULT_GSC_CREDENTIALS_PATH) -> bool:
+    """Return True if GSC credentials file exists and can be loaded."""
+    if not credentials_path or not os.path.exists(credentials_path):
+        return False
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+        )
+        return creds is not None
+    except Exception:
+        return False
+
+
+def get_gsc_site_url_from_config(config: Dict[str, Any]) -> str:
+    """Resolve GSC property from config: identity.gsc_site_url (e.g. sc-domain:example.com) or identity.website."""
+    identity = config.get("identity") or {}
+    return (identity.get("gsc_site_url") or identity.get("website") or "").strip() or ""
+
+
+def get_live_urls_for_project(
+    tenant_id: str,
+    project_id: str,
+    campaign_id: Optional[str] = None,
+) -> List[str]:
+    """Return list of live_url from published page_drafts for the project (optional campaign)."""
+    drafts = memory.get_entities(
+        tenant_id=tenant_id,
+        entity_type="page_draft",
+        project_id=project_id,
+        campaign_id=campaign_id,
+        limit=5000,
+        offset=0,
+    )
+    urls = []
+    for d in drafts:
+        meta = d.get("metadata") or {}
+        if meta.get("status") != "published":
+            continue
+        live = meta.get("live_url")
+        if live:
+            urls.append(live)
+    return urls
+
+
+def fetch_gsc_analytics_filtered_by_live_urls(
+    site_url: str,
+    live_url_set: Set[str],
+    from_date: str,
+    to_date: str,
+    credentials_path: str = DEFAULT_GSC_CREDENTIALS_PATH,
+) -> Dict[str, Any]:
+    """
+    Query GSC by page, keep only rows whose URL is in live_url_set.
+    Return organic_clicks, organic_impressions, ctr, filtered_pages_count, per_page.
+    """
+    if not live_url_set or not os.path.exists(credentials_path):
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+        )
+        service = build("searchconsole", "v1", credentials=creds)
+    except Exception:
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    request_body = {
+        "startDate": from_date,
+        "endDate": to_date,
+        "dimensions": ["page"],
+        "rowLimit": 25000,
+    }
+    try:
+        response = service.searchanalytics().query(
+            siteUrl=site_url.strip("/"), body=request_body
+        ).execute()
+    except Exception:
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    rows = response.get("rows", [])
+    total_clicks = 0
+    total_impressions = 0
+    per_page: List[Dict[str, Any]] = []
+    for r in rows:
+        url = (r.get("keys") or [""])[0]
+        url_norm = url.rstrip("/")
+        if url_norm not in live_url_set:
+            continue
+        clicks = int(r.get("clicks", 0))
+        impressions = int(r.get("impressions", 0))
+        total_clicks += clicks
+        total_impressions += impressions
+        ctr = (clicks / impressions * 100) if impressions else 0.0
+        per_page.append({"url": url, "clicks": clicks, "impressions": impressions, "ctr": round(ctr, 2)})
+    ctr = (total_clicks / total_impressions * 100) if total_impressions else 0.0
+    return {
+        "organic_clicks": total_clicks,
+        "organic_impressions": total_impressions,
+        "ctr": round(ctr, 2),
+        "filtered_pages_count": len(per_page),
+        "per_page": per_page,
+    }
+
+
+def fetch_gsc_analytics_whole_site(
+    site_url: str,
+    from_date: str,
+    to_date: str,
+    credentials_path: str = DEFAULT_GSC_CREDENTIALS_PATH,
+) -> Dict[str, Any]:
+    """
+    Query GSC for the whole site (no filtering by our DB). Returns all organic data
+    from the Search Console API for the date range (e.g. monthly overall metrics).
+    Same return shape as fetch_gsc_analytics_filtered_by_live_urls: organic_clicks,
+    organic_impressions, ctr, filtered_pages_count (total pages in GSC), per_page.
+    """
+    if not os.path.exists(credentials_path):
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+        )
+        service = build("searchconsole", "v1", credentials=creds)
+    except Exception:
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    request_body = {
+        "startDate": from_date,
+        "endDate": to_date,
+        "dimensions": ["page"],
+        "rowLimit": 25000,
+    }
+    try:
+        response = service.searchanalytics().query(
+            siteUrl=site_url.strip("/"), body=request_body
+        ).execute()
+    except Exception:
+        return {
+            "organic_clicks": 0,
+            "organic_impressions": 0,
+            "ctr": 0.0,
+            "filtered_pages_count": 0,
+            "per_page": [],
+        }
+    rows = response.get("rows", [])
+    total_clicks = 0
+    total_impressions = 0
+    per_page: List[Dict[str, Any]] = []
+    for r in rows:
+        url = (r.get("keys") or [""])[0]
+        clicks = int(r.get("clicks", 0))
+        impressions = int(r.get("impressions", 0))
+        total_clicks += clicks
+        total_impressions += impressions
+        ctr = (clicks / impressions * 100) if impressions else 0.0
+        per_page.append({"url": url, "clicks": clicks, "impressions": impressions, "ctr": round(ctr, 2)})
+    ctr = (total_clicks / total_impressions * 100) if total_impressions else 0.0
+    return {
+        "organic_clicks": total_clicks,
+        "organic_impressions": total_impressions,
+        "ctr": round(ctr, 2),
+        "filtered_pages_count": len(per_page),
+        "per_page": per_page,
+    }
+
 
 class AnalyticsAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="DataScientist")
-        self.scopes = ['https://www.googleapis.com/auth/webmasters.readonly']
-        # This file must exist on your server (can be overridden via env var)
-        self.service_account_file = os.getenv('GSC_SERVICE_ACCOUNT_FILE', 'service_account.json')
+        self.scopes = ["https://www.googleapis.com/auth/webmasters.readonly"]
+        self.service_account_file = os.environ.get("GSC_SERVICE_ACCOUNT_FILE") or DEFAULT_GSC_CREDENTIALS_PATH
+        self.config_loader = ConfigLoader()
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        # Validate injected context (Titanium Standard)
-        if not self.project_id or not self.user_id:
-            self.logger.error("Missing injected context: project_id or user_id")
-            return AgentOutput(status="error", message="Agent context not properly initialized.")
+        user_id = input_data.user_id
+        project = memory.get_user_project(user_id)
+        if not project: return AgentOutput(status="error", message="No project.")
         
-        if not self.config:
-            self.logger.error("Missing injected config")
-            return AgentOutput(status="error", message="Configuration not loaded.")
+        project_id = project['project_id']
         
-        project_id = self.project_id
-        user_id = self.user_id
-        
-        # Verify project ownership (security: defense-in-depth)
-        if not memory.verify_project_ownership(user_id, project_id):
-            self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
-            return AgentOutput(status="error", message="Project not found or access denied.")
-        
-        # 1. USE INJECTED CONFIG (Dynamic Site URL, loaded by kernel)
-        config = self.config
-        site_url = config.get('identity', {}).get('website')
-        
+        # 1. LOAD CONFIG (GSC property: gsc_site_url e.g. sc-domain:example.com, or website)
+        config = self.config_loader.load(project_id)
+        site_url = get_gsc_site_url_from_config(config)
         if not site_url:
-            return AgentOutput(status="skipped", message="No website URL in config.")
+            return AgentOutput(status="skipped", message="No GSC site URL in config (set identity.gsc_site_url or identity.website).")
 
         # 2. CONNECT TO GSC
         if not os.path.exists(self.service_account_file):
-            self.logger.warning(f"GSC credentials not found at {self.service_account_file}")
-            return AgentOutput(status="skipped", message=f"No GSC Credentials at {self.service_account_file}.")
+            return AgentOutput(status="skipped", message="No GSC Credentials.")
 
         try:
-            creds = service_account.Credentials.from_service_account_file(self.service_account_file, scopes=self.scopes)
+            creds = service_account.Credentials.from_service_account_file(
+                self.service_account_file, scopes=self.scopes
+            )
             service = build('searchconsole', 'v1', credentials=creds)
         except Exception as e:
             return AgentOutput(status="error", message=f"GSC Auth Failed: {e}")
@@ -91,10 +287,12 @@ class AnalyticsAgent(BaseAgent):
                 new_meta['rewrite_reason'] = "low_ctr_high_impressions"
                 new_meta['quality_score'] = 0 # Force re-evaluation
                 
-                memory.update_entity(match['id'], new_meta, self.user_id)
+                memory.update_entity(match['id'], new_meta)
+                
+                # Also reset the keyword so the Writer picks it up
                 kw_id = match['metadata'].get('keyword_id')
                 if kw_id:
-                    memory.update_entity(kw_id, {"status": "pending"}, self.user_id)
+                    memory.update_entity(kw_id, {"status": "pending"})
                     
                 actions += 1
 
