@@ -4,18 +4,16 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 /**
- * Redirects from the root path (/) to the main dashboard (projects list).
+ * Dashboard root: redirect to Analytics.
  */
-export function RedirectHome() {
+export default function DashboardRootPage() {
   const router = useRouter();
-
   useEffect(() => {
-    router.replace("/projects");
+    router.replace("/analytics");
   }, [router]);
-
   return (
     <div className="flex min-h-[40vh] items-center justify-center">
-      <p className="text-muted-foreground">Redirecting…</p>
+      <p className="text-muted-foreground">Redirecting to Analytics…</p>
     </div>
   );
 }

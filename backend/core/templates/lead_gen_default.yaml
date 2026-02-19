@@ -55,3 +55,13 @@ webhook_base_url: ""
 
 # Optional custom rules for LLM scorer
 scoring_rules: {}
+
+# Nurturing (e.g. missed-call SMS via voice router)
+nurturing:
+  enabled: false
+  missed_call_sms: ""   # SMS body when call is busy/no-answer; leave empty to disable
+
+# Reactivation (batch SMS from CSV; used by ReactivatorAgent)
+reactivation:
+  enabled: false
+  offer_text: ""        # e.g. "Hi [Name], [Business Name] has a special offer for you."

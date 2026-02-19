@@ -4,7 +4,15 @@
  */
 
 import axios, { type AxiosInstance } from "axios";
-import type { Entity, SeoKeyword, PageDraft, Lead, Project } from "@/types";
+import type {
+  Entity,
+  LeadGenAnalytics,
+  PseoAnalytics,
+  Project,
+  SeoKeyword,
+  PageDraft,
+  Lead,
+} from "@/types";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -53,7 +61,7 @@ const createClient = (): AxiosInstance => {
         }
       }
       return Promise.reject(error);
-    }
+    },
   );
 
   return client;
@@ -77,7 +85,7 @@ export type EntityType = "seo_keyword" | "page_draft" | "lead" | string;
  */
 export async function login(
   email: string,
-  password: string
+  password: string,
 ): Promise<{ success: boolean; user_id: string | null; token: string | null }> {
   const { data } = await api.post<{
     success: boolean;
@@ -156,6 +164,10 @@ export interface FormSchemaField {
   required?: boolean;
   default?: unknown;
   label?: string;
+  /** Sub-group within section (e.g. "Local Seo" under "Modules") so YAML structure is visible. */
+  group?: string;
+  /** Render string as textarea (small vs big input). */
+  multiline?: boolean;
   /** For array of object: schema for one item (sub-fields with relative paths). */
   itemSchema?: FormSchemaField[];
 }
@@ -175,7 +187,7 @@ export interface FormSchemaResponse {
  * GET /api/schemas/profile | /api/schemas/campaign/pseo | /api/schemas/campaign/lead_gen
  */
 export async function getFormSchema(
-  type: "profile" | "pseo" | "lead_gen"
+  type: "profile" | "pseo" | "lead_gen",
 ): Promise<FormSchemaResponse> {
   const path =
     type === "profile"
@@ -191,7 +203,7 @@ export async function getFormSchema(
  */
 export async function createProject(
   name: string,
-  niche: string
+  niche: string,
 ): Promise<{ success: boolean; project_id: string }> {
   const { data } = await api.post<{
     success: boolean;
@@ -206,7 +218,7 @@ export async function createProject(
  * POST /api/projects
  */
 export async function createProjectWithProfile(
-  profile: Record<string, unknown>
+  profile: Record<string, unknown>,
 ): Promise<{ success: boolean; project_id: string }> {
   const { data } = await api.post<{
     success: boolean;
@@ -230,10 +242,10 @@ export async function getProject(projectId: string): Promise<Project | null> {
  * GET /api/projects/{projectId}/dna
  */
 export async function getProjectConfig(
-  projectId: string
+  projectId: string,
 ): Promise<Record<string, unknown>> {
   const { data } = await api.get<{ config: Record<string, unknown> }>(
-    `/api/projects/${projectId}/dna`
+    `/api/projects/${projectId}/dna`,
   );
   return data.config ?? {};
 }
@@ -244,13 +256,62 @@ export async function getProjectConfig(
  */
 export async function updateProjectConfig(
   projectId: string,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
 ): Promise<{ success: boolean }> {
   const { data } = await api.put<{ success: boolean }>(
     `/api/projects/${projectId}/dna`,
-    config
+    config,
   );
   return data;
+}
+
+/**
+ * Get last saved analytics snapshot from DB (fast; no GSC or entity aggregation).
+ * GET /api/projects/{projectId}/analytics/snapshot
+ */
+export async function getAnalyticsSnapshot(
+  projectId: string,
+  opts: {
+    campaignId?: string;
+    from?: string;
+    to?: string;
+    module: "lead_gen" | "pseo" | "pseo_whole_site";
+  },
+): Promise<{
+  fetched_at: string | null;
+  payload: LeadGenAnalytics | PseoAnalytics | null;
+}> {
+  const params = new URLSearchParams();
+  params.set("module", opts.module);
+  if (opts.campaignId) params.set("campaign_id", opts.campaignId);
+  if (opts.from) params.set("from", opts.from);
+  if (opts.to) params.set("to", opts.to);
+  const { data } = await api.get<{
+    fetched_at: string | null;
+    payload: LeadGenAnalytics | PseoAnalytics | null;
+  }>(`/api/projects/${projectId}/analytics/snapshot?${params.toString()}`);
+  return data;
+}
+
+/**
+ * Start background analytics refetch. Returns 202 immediately.
+ * POST /api/projects/{projectId}/analytics/refetch
+ */
+export async function refetchAnalytics(
+  projectId: string,
+  body: {
+    campaign_id?: string;
+    from?: string;
+    to?: string;
+    module: "lead_gen" | "pseo" | "pseo_whole_site";
+  },
+): Promise<void> {
+  await api.post(`/api/projects/${projectId}/analytics/refetch`, {
+    campaign_id: body.campaign_id ?? null,
+    from: body.from ?? null,
+    to: body.to ?? null,
+    module: body.module,
+  });
 }
 
 /**
@@ -285,7 +346,7 @@ export async function saveSettings(credentials: {
       wp_url: credentials.wp_url ?? "",
       wp_user: credentials.wp_user ?? "",
       wp_password: credentials.wp_password ?? "",
-    }
+    },
   );
   return data;
 }
@@ -301,7 +362,7 @@ export async function saveSettings(credentials: {
 export async function getEntities<T extends Entity = Entity>(
   type: EntityType,
   projectId?: string | null,
-  opts?: { campaignId?: string; limit?: number; offset?: number }
+  opts?: { campaignId?: string; limit?: number; offset?: number },
 ): Promise<T[]> {
   const params: Record<string, string | number> = { entity_type: type };
   if (projectId) params.project_id = projectId;
@@ -322,7 +383,7 @@ export async function getCampaignDrafts(
   projectId: string,
   campaignId: string,
   page: number = 1,
-  pageSize: number = 20
+  pageSize: number = 20,
 ): Promise<{ entities: PageDraft[]; total: number }> {
   const offset = (page - 1) * pageSize;
   const params: Record<string, string | number> = {
@@ -334,7 +395,7 @@ export async function getCampaignDrafts(
   };
   const { data } = await api.get<{ entities: PageDraft[]; total?: number }>(
     "/api/entities",
-    { params }
+    { params },
   );
   return {
     entities: data.entities ?? [],
@@ -348,11 +409,11 @@ export async function getCampaignDrafts(
  */
 export async function updateEntity(
   entityId: string,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
 ): Promise<{ success: boolean }> {
   const { data } = await api.put<{ success: boolean }>(
     `/api/entities/${entityId}`,
-    { metadata }
+    { metadata },
   );
   return data;
 }
@@ -362,10 +423,10 @@ export async function updateEntity(
  * DELETE /api/entities/{entity_id}
  */
 export async function deleteEntity(
-  entityId: string
+  entityId: string,
 ): Promise<{ success: boolean }> {
   const { data } = await api.delete<{ success: boolean }>(
-    `/api/entities/${entityId}`
+    `/api/entities/${entityId}`,
   );
   return data;
 }
@@ -375,7 +436,7 @@ export async function deleteEntity(
  * POST /api/entities
  */
 export async function createEntity<
-  T extends Record<string, unknown> = Record<string, unknown>
+  T extends Record<string, unknown> = Record<string, unknown>,
 >(
   type: EntityType,
   data: {
@@ -383,7 +444,7 @@ export async function createEntity<
     primary_contact?: string | null;
     metadata?: Record<string, unknown>;
     project_id?: string | null;
-  }
+  },
 ): Promise<{ success: boolean; entity: T & Entity }> {
   const { data: response } = await api.post<{
     success: boolean;
@@ -404,7 +465,7 @@ export async function createEntity<
  */
 export async function getCampaigns(
   projectId: string,
-  module?: string
+  module?: string,
 ): Promise<
   {
     id: string;
@@ -444,10 +505,10 @@ export type Campaign = {
  */
 export async function getCampaign(
   projectId: string,
-  campaignId: string
+  campaignId: string,
 ): Promise<Campaign> {
   const { data } = await api.get<{ campaign: Campaign }>(
-    `/api/projects/${projectId}/campaigns/${campaignId}`
+    `/api/projects/${projectId}/campaigns/${campaignId}`,
   );
   return data.campaign;
 }
@@ -460,14 +521,12 @@ export async function updateCampaignConfig(
   projectId: string,
   campaignId: string,
   config: Record<string, unknown>,
-  options?: { merge?: boolean }
+  options?: { merge?: boolean },
 ): Promise<Campaign> {
-  const body = options?.merge
-    ? { config_partial: config }
-    : { config };
+  const body = options?.merge ? { config_partial: config } : { config };
   const { data } = await api.patch<{ campaign: Campaign }>(
     `/api/projects/${projectId}/campaigns/${campaignId}`,
-    body
+    body,
   );
   return data.campaign;
 }
@@ -480,11 +539,11 @@ export async function createCampaignWithForm(
   projectId: string,
   module: "pseo" | "lead_gen",
   formData: Record<string, unknown>,
-  name?: string
+  name?: string,
 ): Promise<{ campaign_id: string }> {
   const { data } = await api.post<{ campaign_id: string }>(
     `/api/projects/${projectId}/campaigns`,
-    { name: name ?? "", module, form_data: formData }
+    { name: name ?? "", module, form_data: formData },
   );
   return { campaign_id: data.campaign_id };
 }
@@ -495,7 +554,7 @@ export async function createCampaignWithForm(
  */
 export async function dispatchTask(
   taskName: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
 ): Promise<{
   status: string;
   data: unknown;
@@ -521,7 +580,7 @@ export async function dispatchTask(
  */
 export async function getPseoStats(
   projectId: string,
-  campaignId: string
+  campaignId: string,
 ): Promise<{
   stats: Record<string, unknown>;
   next_step: {
@@ -562,7 +621,7 @@ export async function runPseoStep(
   projectId: string,
   campaignId: string,
   step: string,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
 ): Promise<{
   status: string;
   message: string;
@@ -607,7 +666,7 @@ export async function runPseoStep(
 export async function runNextForDraft(
   projectId: string,
   campaignId: string,
-  draftId: string
+  draftId: string,
 ): Promise<{
   status: string;
   message: string;
@@ -643,7 +702,7 @@ export async function runNextForDraft(
 export async function runNextForLead(
   projectId: string,
   campaignId: string,
-  leadId: string
+  leadId: string,
 ): Promise<{
   status: string;
   message: string;
@@ -677,7 +736,7 @@ export async function runNextForLead(
  */
 export async function connectCall(
   leadId: string,
-  projectId: string
+  projectId: string,
 ): Promise<{
   status: string;
   data?: { call_sid?: string };

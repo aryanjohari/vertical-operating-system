@@ -110,7 +110,17 @@ export function DynamicForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await onSubmit(values);
+    // Convert array-of-string fields that are stored as string (from textarea) back to array for API
+    let payload: Record<string, unknown> = JSON.parse(JSON.stringify(values));
+    if (schema?.fields) {
+      for (const f of schema.fields) {
+        if (f.type === "array" && f.itemType === "string") {
+          const v = getAtPath(payload, f.path);
+          if (typeof v === "string") payload = setAtPath(payload, f.path, v.split("\n"));
+        }
+      }
+    }
+    await onSubmit(payload);
   };
 
   if (fetchError) {
@@ -130,25 +140,46 @@ export function DynamicForm({
 
   const sections = schema.sections ?? {};
 
+  /** Group section fields by field.group so YAML structure (e.g. Local SEO, Lead Gen) is visible. */
+  function groupFields(fields: FormSchemaField[]): { group: string; fields: FormSchemaField[] }[] {
+    const byGroup = new Map<string, FormSchemaField[]>();
+    for (const f of fields) {
+      const g = f.group ?? "";
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g)!.push(f);
+    }
+    const order = Array.from(byGroup.keys()).sort((a, b) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+    return order.map((group) => ({ group, fields: byGroup.get(group)! }));
+  }
+
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-6">
       {Object.entries(sections).map(([sectionKey, sectionFields]) => (
-        <section key={sectionKey} className="space-y-3">
+        <section key={sectionKey} className="space-y-4">
           <h3 className="text-sm font-semibold text-foreground">
             {sectionKey.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
           </h3>
-          <div className="space-y-2">
-            {sectionFields.map((f) => (
-              <Field
-                key={f.path}
-                field={f}
-                value={getAtPath(values, f.path)}
-                onChange={(v) => update(f.path, v)}
-                disabled={loading}
-                inputClass={inputClass}
-              />
-            ))}
-          </div>
+          {groupFields(sectionFields).map(({ group, fields: groupFieldsList }) => (
+            <div key={group || "_"} className="space-y-2">
+              {group && (
+                <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  {group}
+                </h4>
+              )}
+              <div className={group ? "ml-2 space-y-2 border-l-2 border-border/50 pl-3" : "space-y-2"}>
+                {groupFieldsList.map((f) => (
+                  <Field
+                    key={f.path}
+                    field={f}
+                    value={getAtPath(values, f.path)}
+                    onChange={(v) => update(f.path, v)}
+                    disabled={loading}
+                    inputClass={inputClass}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
         </section>
       ))}
       {extraFields}
@@ -222,8 +253,13 @@ function Field({
   }
 
   if (field.type === "array" && field.itemType === "string") {
-    const arr = Array.isArray(value) ? value : toList(value ?? def);
-    const str = Array.isArray(arr) ? arr.join("\n") : String(arr ?? "");
+    // Preserve blank lines: if value is string (user typing), show as-is; else derive from array
+    const str =
+      typeof value === "string"
+        ? value
+        : Array.isArray(value)
+          ? (value as string[]).join("\n")
+          : toList(value ?? def).join("\n");
     return (
       <div>
         <label className="block text-xs font-medium text-muted-foreground">
@@ -232,7 +268,7 @@ function Field({
         <textarea
           value={str}
           onChange={(e) => onChange(e.target.value)}
-          rows={3}
+          rows={4}
           disabled={disabled}
           className={cn(inputClass, "mt-1 font-mono text-sm")}
         />
@@ -332,6 +368,25 @@ function Field({
             </div>
           ))}
         </div>
+      </div>
+    );
+  }
+
+  if (field.type === "string" && field.multiline) {
+    const str = String(value ?? def ?? "");
+    return (
+      <div>
+        <label className="block text-xs font-medium text-muted-foreground">
+          {label} {field.required ? "*" : ""}
+        </label>
+        <textarea
+          value={str}
+          onChange={(e) => onChange(e.target.value)}
+          rows={5}
+          disabled={disabled}
+          placeholder={field.required ? "Required" : ""}
+          className={cn(inputClass, "mt-1 min-h-[100px]")}
+        />
       </div>
     );
   }
