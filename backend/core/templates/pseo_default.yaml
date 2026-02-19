@@ -63,21 +63,22 @@ pseo_settings:
   speed_profile: "balanced"
   min_word_count: 600
 
-# Optional: Writer overrides (campaign-level)
-# writer:
-#   min_word_count: 600
+# Writer overrides (campaign-level; used by WriterAgent)
+writer:
+  min_word_count: 600
+  word_target: 600
 
-# Optional: Librarian (run only when all pages validated; deterministic link order)
-# librarian:
-#   run_only_when_all_validated: true
-#   max_internal_links: 3
-#   max_intel_sources: 2
+# Librarian (run only when all pages validated; used by LibrarianAgent)
+librarian:
+  run_only_when_all_validated: true
+  max_internal_links: 3
+  max_intel_sources: 2
 
-# Optional: Critic (deterministic structure checks before LLM)
-# critic:
-#   required_placeholders: ["form_capture", "image_main"]
-#   check_form_webhook: false
-#   check_tel_link: false
-#   check_json_ld: false
-#   check_metadata: true
-#   run_llm_after_checks: true
+# Critic (structure checks before LLM; used by CriticAgent)
+critic:
+  required_placeholders: ["form_capture", "image_main"]
+  check_form_webhook: false
+  check_tel_link: false
+  check_json_ld: false
+  check_metadata: true
+  run_llm_after_checks: true

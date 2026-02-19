@@ -45,6 +45,18 @@ def load_yaml_template(template_name: str) -> dict:
     return data
 
 
+def _is_multiline_key(key: str, value: Any) -> bool:
+    """Whether a string field should use a multiline (textarea) input."""
+    key_lower = key.lower()
+    if "\n" in str(value or ""):
+        return True
+    if any(part in key_lower for part in ("template", "script", "html", "description", "address", "text", "nuggets", "objections", "forbidden", "rules")):
+        return True
+    if isinstance(value, str) and len(value) > 100:
+        return True
+    return False
+
+
 def _walk_yaml(
     obj: Any,
     path: str = "",
@@ -65,7 +77,8 @@ def _walk_yaml(
                         "itemType": "object",
                         "required": False,
                         "default": v,
-                        "label": _path_to_label(k),
+                        "label": _path_to_display_label(p),
+                        "group": _path_to_group(p),
                         "itemSchema": item_schema,
                     })
                 else:
@@ -74,8 +87,9 @@ def _walk_yaml(
                         "type": "array",
                         "itemType": "string",
                         "required": False,
-                        "default": v,
-                        "label": _path_to_label(k),
+                        "default": v if v is not None else [],
+                        "label": _path_to_display_label(p),
+                        "group": _path_to_group(p),
                     })
             elif isinstance(v, bool):
                 fields.append({
@@ -83,7 +97,8 @@ def _walk_yaml(
                     "type": "boolean",
                     "required": False,
                     "default": v,
-                    "label": _path_to_label(k),
+                    "label": _path_to_display_label(p),
+                    "group": _path_to_group(p),
                 })
             elif isinstance(v, (int, float)):
                 fields.append({
@@ -91,17 +106,21 @@ def _walk_yaml(
                     "type": "number",
                     "required": False,
                     "default": v,
-                    "label": _path_to_label(k),
+                    "label": _path_to_display_label(p),
+                    "group": _path_to_group(p),
                 })
             else:
                 s = str(v) if v is not None else ""
                 required = s.strip() == "REQUIRED"
+                multiline = _is_multiline_key(k, v)
                 fields.append({
                     "path": p,
                     "type": "string",
                     "required": required,
                     "default": "" if required else s,
-                    "label": _path_to_label(k),
+                    "label": _path_to_display_label(p),
+                    "group": _path_to_group(p),
+                    "multiline": multiline,
                 })
     return fields
 
@@ -109,6 +128,24 @@ def _walk_yaml(
 def _path_to_label(key: str) -> str:
     """Convert snake_case to Title Case."""
     return key.replace("_", " ").title()
+
+
+def _path_to_display_label(path: str) -> str:
+    """Build unambiguous label from full path so 'modules.local_seo.enabled' -> 'Local Seo › Enabled'."""
+    parts = path.split(".")
+    if not parts:
+        return ""
+    # Skip first segment (section name) so we don't repeat it; use rest for label
+    segs = parts[1:] if len(parts) > 1 else parts
+    return " › ".join(_path_to_label(p) for p in segs)
+
+
+def _path_to_group(path: str) -> str:
+    """Second path segment as humanized group name for sub-grouping in UI (e.g. 'modules.local_seo.enabled' -> 'Local Seo')."""
+    parts = path.split(".")
+    if len(parts) < 2:
+        return ""
+    return _path_to_label(parts[1])
 
 
 def yaml_to_form_schema(yaml_doc: dict) -> dict:

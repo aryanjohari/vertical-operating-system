@@ -156,6 +156,10 @@ export interface FormSchemaField {
   required?: boolean;
   default?: unknown;
   label?: string;
+  /** Sub-group within section (e.g. "Local Seo" under "Modules") so YAML structure is visible. */
+  group?: string;
+  /** Render string as textarea (small vs big input). */
+  multiline?: boolean;
   /** For array of object: schema for one item (sub-fields with relative paths). */
   itemSchema?: FormSchemaField[];
 }
