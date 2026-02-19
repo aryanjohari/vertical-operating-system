@@ -20,13 +20,13 @@ export function PreviewModal({
   onApprove,
   onReject,
 }: PreviewModalProps) {
-  const [title, setTitle] = useState(draft.metadata?.title ?? draft.name ?? "");
-  const [slug, setSlug] = useState((draft.metadata?.slug as string) ?? "");
+  const [title, setTitle] = useState(String(draft.metadata?.title ?? draft.name ?? ""));
+  const [slug, setSlug] = useState(String((draft.metadata?.slug as string) ?? ""));
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setTitle(draft.metadata?.title ?? draft.name ?? "");
-    setSlug((draft.metadata?.slug as string) ?? "");
+    setTitle(String(draft.metadata?.title ?? draft.name ?? ""));
+    setSlug(String((draft.metadata?.slug as string) ?? ""));
   }, [draft.id, draft.metadata?.title, draft.metadata?.slug, draft.name]);
 
   if (!isOpen) return null;

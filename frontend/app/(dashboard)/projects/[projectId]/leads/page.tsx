@@ -276,7 +276,7 @@ export default function LeadsPage() {
                         {lead.name}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
-                        {lead.primary_contact ?? lead.metadata?.phone ?? "—"}
+                        {String(lead.primary_contact ?? lead.metadata?.phone ?? "—")}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground max-w-[200px] truncate">
                         {getServiceRequested(lead)}
@@ -303,7 +303,7 @@ export default function LeadsPage() {
                           </button>
                         )}
                         {(lead.metadata?.status as string) !== "spam_blocked" &&
-                          (lead.primary_contact ?? lead.metadata?.phone) && (
+                          Boolean(lead.primary_contact ?? lead.metadata?.phone) && (
                             <button
                               type="button"
                               onClick={() => handleCallNow(lead)}

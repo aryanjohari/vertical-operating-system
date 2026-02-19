@@ -2,6 +2,11 @@
  * Data layer types — contract with FastAPI backend.
  */
 
+// Auth
+export interface User {
+  id: string;
+}
+
 // Auth & Projects
 export interface Project {
   project_id: string;

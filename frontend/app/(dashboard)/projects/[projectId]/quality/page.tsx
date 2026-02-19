@@ -38,10 +38,10 @@ function KanbanColumn({
             className="glass-panel group rounded border border-border p-4 text-left transition-all hover:border-primary/40 hover:shadow-[0_0_12px_2px_hsl(0_100%_60%/0.06)]"
           >
             <p className="font-medium text-foreground line-clamp-1">
-              {draft.metadata?.title ?? draft.name ?? "Untitled"}
+              {String(draft.metadata?.title ?? draft.name ?? "Untitled")}
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
-              {(draft.metadata?.status as string) ?? "—"}
+              {String((draft.metadata?.status as string) ?? "—")}
             </p>
           </button>
         ))}
