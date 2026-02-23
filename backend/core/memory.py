@@ -358,22 +358,27 @@ class MemoryManager:
 
     def get_user_project(self, user_id):
         self.logger.debug(f"Fetching user project for user {user_id}")
+        cursor = None
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
-                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor = conn.cursor()
                 cursor.execute(f"SELECT * FROM projects WHERE user_id = {placeholder} ORDER BY created_at DESC LIMIT 1", (user_id,))
                 row = cursor.fetchone()
-                result = dict(row) if row else None
+                if row and cursor.description:
+                    result = dict(zip([d[0] for d in cursor.description], row))
+                else:
+                    result = dict(row) if row else None
                 if result:
                     self.logger.debug(f"Found project {result.get('project_id')} for user {user_id}")
                 else:
                     self.logger.debug(f"No project found for user {user_id}")
                 return result
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching user project for user {user_id}: {e}")
@@ -391,10 +396,14 @@ class MemoryManager:
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
-                cursor = self.db_factory.get_cursor_with_row_factory(conn)
+                cursor = conn.cursor()
                 cursor.execute(f"SELECT * FROM projects WHERE user_id = {placeholder} ORDER BY created_at DESC", (user_id,))
                 rows = cursor.fetchall()
-                results = [dict(row) for row in rows]
+                if cursor.description:
+                    columns = [d[0] for d in cursor.description]
+                    results = [dict(zip(columns, row)) for row in rows]
+                else:
+                    results = [dict(row) for row in rows]
                 self.logger.debug(f"Found {len(results)} projects for user {user_id}")
                 return results
             finally:
