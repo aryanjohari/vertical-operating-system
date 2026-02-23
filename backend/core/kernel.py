@@ -235,6 +235,8 @@ class Kernel:
 
             if is_system_agent:
                 self.logger.debug(f"System agent detected: {agent_key} - bypassing DNA loading")
+                agent = self.agents[agent_key]
+                agent.user_id = packet.user_id
                 if needs_context:
                     # Extract project_id from params
                     niche = None
@@ -280,14 +282,16 @@ class Kernel:
                         )
                     
                     # Inject context (but not config - system agents don't need DNA)
-                    agent = self.agents[agent_key]
                     agent.project_id = niche
-                    agent.user_id = packet.user_id
                     agent.config = {}  # Empty config for system agents
                     self.logger.debug(f"Injected context for system agent {agent_key}: project={niche}, user={packet.user_id}")
+                else:
+                    agent.project_id = None
+                    agent.config = {}
+                    self.logger.debug(f"Injected context for system agent {agent_key}: user={packet.user_id} (no project)")
                 
                 try:
-                    return await self.agents[agent_key].run(packet)
+                    return await agent.run(packet)
                 except Exception as e:
                     self.logger.error(f"System agent {agent_key} execution failed: {e}", exc_info=True)
                     return AgentOutput(
