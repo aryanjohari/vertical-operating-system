@@ -385,6 +385,7 @@ class MemoryManager:
     def get_projects(self, user_id: str) -> List[Dict]:
         """Get all projects for a specific user."""
         self.logger.debug(f"Fetching all projects for user {user_id}")
+        cursor = None
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
@@ -397,7 +398,8 @@ class MemoryManager:
                 self.logger.debug(f"Found {len(results)} projects for user {user_id}")
                 return results
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching projects for user {user_id}: {e}")
