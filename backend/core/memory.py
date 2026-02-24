@@ -522,13 +522,13 @@ class MemoryManager:
         Returns None if not found or access denied.
         """
         self.logger.debug(f"Fetching campaign {campaign_id} for user {user_id}")
+        cursor = None
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
-                cursor = self.db_factory.get_cursor_with_row_factory(conn)
-                # Join with projects to verify ownership
+                cursor = conn.cursor()
                 cursor.execute(f'''
                     SELECT c.*, p.user_id 
                     FROM campaigns c
@@ -537,8 +537,11 @@ class MemoryManager:
                 ''', (campaign_id, user_id))
                 row = cursor.fetchone()
                 
-                if row:
-                    result = dict(row)
+                if row and cursor.description:
+                    result = dict(zip([d[0] for d in cursor.description], row))
+                else:
+                    result = dict(row) if row else None
+                if result:
                     # Parse JSON fields
                     if result.get('config'):
                         result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
@@ -552,7 +555,8 @@ class MemoryManager:
                     self.logger.debug(f"Campaign {campaign_id} not found or access denied")
                     return None
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching campaign {campaign_id}: {e}")
@@ -567,6 +571,7 @@ class MemoryManager:
         Returns empty list if project not found or access denied.
         """
         self.logger.debug(f"Fetching campaigns for project {project_id}, module={module}")
+        cursor = None
         try:
             # Verify project ownership
             if not self.verify_project_ownership(user_id, project_id):
@@ -577,8 +582,7 @@ class MemoryManager:
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
             try:
-                cursor = self.db_factory.get_cursor_with_row_factory(conn)
-                
+                cursor = conn.cursor()
                 if module:
                     cursor.execute(f'''
                         SELECT * FROM campaigns 
@@ -593,9 +597,13 @@ class MemoryManager:
                     ''', (project_id,))
                 
                 rows = cursor.fetchall()
+                if cursor.description:
+                    columns = [d[0] for d in cursor.description]
+                    raw_results = [dict(zip(columns, row)) for row in rows]
+                else:
+                    raw_results = [dict(row) for row in rows]
                 results = []
-                for row in rows:
-                    result = dict(row)
+                for result in raw_results:
                     # Parse JSON fields
                     if result.get('config'):
                         result['config'] = json.loads(result['config']) if isinstance(result['config'], str) else result['config']
@@ -606,7 +614,8 @@ class MemoryManager:
                 self.logger.debug(f"Found {len(results)} campaigns for project {project_id}")
                 return results
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching campaigns: {e}")
