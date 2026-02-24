@@ -356,13 +356,14 @@ function Field({
               <div className="grid gap-2">
                 {itemSchema.map((sub) => {
                   const subPath = `${basePath}.${i}.${sub.path}`;
+                  const item = arr[i] ?? {};
                   return (
                     <Field
                       key={subPath}
                       field={sub}
                       value={getAtPath(
-                        { [basePath]: arr } as Record<string, unknown>,
-                        `${basePath}.${i}.${sub.path}`
+                        item as Record<string, unknown>,
+                        sub.path
                       )}
                       onChange={(v: unknown) => {
                         const next = JSON.parse(JSON.stringify(arr));
