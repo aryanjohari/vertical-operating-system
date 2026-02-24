@@ -16,8 +16,10 @@ import {
   getFormSchema,
 } from "@/lib/api";
 import { toast } from "sonner";
+import yaml from "js-yaml";
 import { DynamicForm } from "@/components/forms/DynamicForm";
 import type { FormSchema } from "@/lib/api";
+import { cn } from "@/lib/utils";
 import type { PageDraft } from "@/types";
 
 const PAGE_SIZE = 20;
@@ -106,8 +108,11 @@ export default function CampaignDashboardPage() {
   const [editH1, setEditH1] = useState("");
   const [editKeywords, setEditKeywords] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"form" | "raw">("form");
   const [settingsSchema, setSettingsSchema] = useState<FormSchema | null>(null);
   const [settingsDefaults, setSettingsDefaults] = useState<Record<string, unknown>>({});
+  const [rawYamlContent, setRawYamlContent] = useState("");
+  const [rawSaving, setRawSaving] = useState(false);
 
   const loadCampaign = useCallback(async () => {
     if (!projectId || !campaignId) return;
@@ -178,12 +183,15 @@ export default function CampaignDashboardPage() {
   const openSettings = useCallback(async () => {
     if (!projectId || !campaignId) return;
     setSettingsOpen(true);
+    setSettingsTab("form");
     try {
       const fullCampaign = await getCampaign(projectId, campaignId);
       const schemaType = fullCampaign.module === "lead_gen" ? "lead_gen" : "pseo";
       const schemaRes = await getFormSchema(schemaType);
+      const config = (fullCampaign.config ?? schemaRes.defaults ?? {}) as Record<string, unknown>;
       setSettingsSchema(schemaRes.schema);
-      setSettingsDefaults((fullCampaign.config ?? schemaRes.defaults ?? {}) as Record<string, unknown>);
+      setSettingsDefaults(config);
+      setRawYamlContent(yaml.dump(config, { indent: 2 }));
       setCampaign((c) => (c ? { ...c, config: fullCampaign.config } : null));
     } catch {
       toast.error("Failed to load settings");
@@ -204,6 +212,26 @@ export default function CampaignDashboardPage() {
     },
     [projectId, campaignId, loadCampaign]
   );
+
+  const handleSaveRawSettings = useCallback(async () => {
+    if (!projectId || !campaignId) return;
+    setRawSaving(true);
+    try {
+      const parsed = yaml.load(rawYamlContent);
+      if (parsed === undefined || parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        toast.error("Invalid YAML: config must be an object.");
+        return;
+      }
+      await updateCampaignConfig(projectId, campaignId, parsed as Record<string, unknown>);
+      toast.success("Campaign settings saved.");
+      setSettingsOpen(false);
+      await loadCampaign();
+    } catch {
+      toast.error("Invalid YAML. Check syntax and try again.");
+    } finally {
+      setRawSaving(false);
+    }
+  }, [projectId, campaignId, rawYamlContent, loadCampaign]);
 
   const getPrimaryAction = () => {
     const anchors = (stats?.anchors as number) ?? 0;
@@ -536,16 +564,74 @@ export default function CampaignDashboardPage() {
                 ×
               </button>
             </div>
-            {settingsSchema ? (
-              <DynamicForm
-                schema={settingsSchema}
-                defaults={settingsDefaults}
-                onSubmit={handleSaveSettings}
-                submitLabel="Save settings"
-                onCancel={() => setSettingsOpen(false)}
-              />
+            <div className="mb-4 flex gap-2 border-b border-border">
+              <button
+                type="button"
+                onClick={() => setSettingsTab("form")}
+                className={cn(
+                  "border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                  settingsTab === "form"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Form
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettingsTab("raw")}
+                className={cn(
+                  "border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                  settingsTab === "raw"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Raw YAML
+              </button>
+            </div>
+            {settingsTab === "form" ? (
+              settingsSchema ? (
+                <DynamicForm
+                  schema={settingsSchema}
+                  defaults={settingsDefaults}
+                  onSubmit={handleSaveSettings}
+                  submitLabel="Save settings"
+                  onCancel={() => setSettingsOpen(false)}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">Loading form…</p>
+              )
             ) : (
-              <p className="text-sm text-muted-foreground">Loading form…</p>
+              <div className="space-y-4">
+                <p className="text-xs text-muted-foreground">
+                  Edit campaign config as YAML. Save replaces the full config.
+                </p>
+                <textarea
+                  value={rawYamlContent}
+                  onChange={(e) => setRawYamlContent(e.target.value)}
+                  rows={20}
+                  className="w-full rounded border border-border bg-muted/50 px-3 py-2 font-mono text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 focus:ring-offset-background"
+                  spellCheck={false}
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(false)}
+                    className="rounded border border-border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveRawSettings}
+                    disabled={rawSaving}
+                    className="acid-glow rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {rawSaving ? "Saving…" : "Save settings"}
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </div>
