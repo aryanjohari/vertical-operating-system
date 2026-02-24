@@ -602,6 +602,9 @@ async def patch_campaign(
         if not memory.update_campaign_config(campaign_id=campaign_id, user_id=user_id, new_config=new_config):
             raise HTTPException(status_code=500, detail="Failed to update campaign config")
 
+        config_loader = ConfigLoader()
+        config_loader.save_campaign(project_id, campaign_id, new_config)
+
         updated = memory.get_campaign(campaign_id, user_id)
         return {"campaign": updated}
     except HTTPException:
