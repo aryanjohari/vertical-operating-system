@@ -163,7 +163,12 @@ export default function ProjectDashboardPage() {
                 key={c.id}
                 className="flex items-center justify-between rounded border border-border bg-muted/30 px-3 py-2 text-sm"
               >
-                <span className="font-medium text-foreground">{c.name}</span>
+                <Link
+                  href={`/projects/${projectId}/campaigns/${c.id}`}
+                  className="font-medium text-foreground hover:underline"
+                >
+                  {c.name}
+                </Link>
                 <span className="text-xs text-muted-foreground">{c.status}</span>
               </li>
             ))}
