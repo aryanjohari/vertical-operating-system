@@ -402,7 +402,8 @@ export default function CampaignDashboardPage() {
         </>
       )}
 
-      {/* Data grid: Page drafts (pSEO shows drafts; lead_gen can use same table if needed) */}
+      {/* Data grid: Page drafts (pSEO only); lead_gen uses Campaign settings above */}
+      {campaign.module === "pseo" ? (
       <section className="glass-panel rounded-lg border border-border p-4">
         <h2 className="mb-4 text-lg font-semibold text-foreground">Page drafts</h2>
         {drafts.entities.length === 0 ? (
@@ -544,6 +545,13 @@ export default function CampaignDashboardPage() {
           </>
         )}
       </section>
+      ) : (
+      <section className="glass-panel rounded-lg border border-border p-4">
+        <p className="text-sm text-muted-foreground">
+          Configure this campaign via <strong>Campaign settings</strong> above (Form or Raw YAML).
+        </p>
+      </section>
+      )}
 
       {/* Settings drawer */}
       {settingsOpen && (
