@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { cn } from "@/lib/utils";
 import type { FormSchema, FormSchemaField } from "@/lib/api";
 
@@ -77,6 +77,10 @@ export function DynamicForm({
   );
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const appliedRef = useRef<{ schema: FormSchema | null; defaults: Record<string, unknown> | null }>({
+    schema: null,
+    defaults: null,
+  });
 
   const loadSchema = useCallback(async () => {
     if (!schemaType) return;
@@ -94,9 +98,23 @@ export function DynamicForm({
 
   useEffect(() => {
     if (schemaProp) setSchema(schemaProp);
-    if (defaultsProp) {
-      setDefaults(defaultsProp as Record<string, unknown>);
-      setValues(defaultsProp as Record<string, unknown>);
+    const nextDefaults =
+      defaultsProp != null &&
+      typeof defaultsProp === "object" &&
+      !Array.isArray(defaultsProp)
+        ? (defaultsProp as Record<string, unknown>)
+        : null;
+    if (nextDefaults) {
+      if (
+        appliedRef.current.schema !== schemaProp ||
+        appliedRef.current.defaults !== defaultsProp
+      ) {
+        appliedRef.current = { schema: schemaProp ?? null, defaults: nextDefaults };
+        setDefaults(nextDefaults);
+        setValues(nextDefaults);
+      }
+    } else {
+      appliedRef.current = { schema: null, defaults: null };
     }
   }, [schemaProp, defaultsProp]);
 
