@@ -37,7 +37,7 @@ The client rarely needs to log in; value is routed to their phone.
 | **Backend**         | Python 3.9+, FastAPI, Uvicorn                | REST API, agent orchestration                        |
 | **Frontend**        | Next.js, TypeScript, Tailwind                | Dashboard, campaigns, entities                       |
 | **Database**        | PostgreSQL / SQLite (DatabaseFactory)        | Users, projects, campaigns, entities, usage          |
-| **Vector**          | ChromaDB + Google `text-embedding-004`       | RAG (brand brain, knowledge fragments)               |
+| **Vector**          | ChromaDB + Google `gemini-embedding-001`     | RAG (brand brain, knowledge fragments)               |
 | **Cache / context** | Redis (optional)                             | Short-lived agent context (TTL tickets)              |
 | **AI**              | Google Gemini (LLM Gateway)                  | Content, analysis, embeddings                        |
 | **Comms**           | Twilio                                       | Voice, SMS, bridge calls, recording                  |
@@ -203,7 +203,7 @@ draft ──Critic PASS──► validated ──Librarian──► ready_for_me
 ### MemoryManager RAG (ChromaDB)
 
 - **Collection:** `apex_context`.
-- **Embeddings:** `GoogleEmbeddingFunction` via LLM Gateway (`text-embedding-004`).
+- **Embeddings:** `GoogleEmbeddingFunction` via LLM Gateway (`gemini-embedding-001`).
 - **`save_context`** / **`query_context`** filter by `tenant_id`, optional `project_id`, optional `campaign_id`.
 - Used for brand brain, knowledge nuggets, and Writer RAG over `knowledge_fragment`-style content.
 
@@ -3114,7 +3114,7 @@ def **init**(self): # Import here to avoid circular dependency
 from backend.core.services.llm_gateway import llm_gateway
 self.llm_gateway = llm_gateway # ChromaDB requires a 'name' attribute for embedding functions
 self.name = "google_embedding_function"
-self.model = "text-embedding-004"
+self.model = "gemini-embedding-001"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """
@@ -4315,7 +4315,7 @@ CATALOG = {
 "agents": ["scout", "strategist", "writer", "critic", "librarian", "media", "publisher", "analytics"],
 "config_required": [
 "anchor_entities",
- "geo_scope"
+"geo_scope"
 ]
 },
 "lead_gen": {
@@ -4324,7 +4324,7 @@ CATALOG = {
 "agents": ["utility", "twilio"],
 "config_required": [
 "operations.voice_agent.forwarding_number"
- ]
+]
 }
 }
 
@@ -4604,7 +4604,7 @@ Centralized LLM gateway for all model calls.
     def generate_embeddings(
         self,
         texts: list[str],
-        model: str = "text-embedding-004",
+        model: str = "gemini-embedding-001",
         max_retries: int = 3,
     ) -> list[list[float]]:
         """
@@ -4612,7 +4612,7 @@ Centralized LLM gateway for all model calls.
 
         Args:
             texts: List of text strings to embed
-            model: Embedding model to use (default: text-embedding-004)
+            model: Embedding model to use (default: gemini-embedding-001)
             max_retries: Maximum number of retry attempts
 
         Returns:
