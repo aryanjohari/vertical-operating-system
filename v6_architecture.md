@@ -147,14 +147,14 @@ vertical-operating-system/
 
 ## 4. Core Backend Components
 
-| Component | Path | Role |
-|-----------|------|------|
-| **Kernel** | `core/kernel.py` | Resolves task → agent, loads config, injects context, runs agent. Single place that connects HTTP to agent code. |
-| **Memory** | `core/memory.py` | Entities (CRUD), projects, campaigns, client_secrets, usage ledger; ChromaDB RAG (save_context, query_context). Uses DB factory from `core/db.py`. |
-| **ConfigLoader** | `core/config.py` | Loads DNA from `data/profiles/{project_id}/` (dna.generated.yaml, dna.custom.yaml), merges campaign config from DB; caches 300s. `merge_config(dna, campaign_config)` shallow-merges campaign into DNA. |
-| **Context** | `core/context.py` | Short-lived run state for async tasks. Redis `context:{context_id}` with TTL (default 3600s); fallback in-memory dict if Redis unavailable. |
-| **Auth** | `core/auth.py` | JWT validation, `get_current_user` for protected routes. |
-| **Agent base** | `core/agent_base.py` | `BaseAgent.run(input_data)` validates context then calls `_execute(input_data)`; subclasses implement `_execute`. |
+| Component        | Path                 | Role                                                                                                                                                                                                    |
+| ---------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Kernel**       | `core/kernel.py`     | Resolves task → agent, loads config, injects context, runs agent. Single place that connects HTTP to agent code.                                                                                        |
+| **Memory**       | `core/memory.py`     | Entities (CRUD), projects, campaigns, client_secrets, usage ledger; ChromaDB RAG (save_context, query_context). Uses DB factory from `core/db.py`.                                                      |
+| **ConfigLoader** | `core/config.py`     | Loads DNA from `data/profiles/{project_id}/` (dna.generated.yaml, dna.custom.yaml), merges campaign config from DB; caches 300s. `merge_config(dna, campaign_config)` shallow-merges campaign into DNA. |
+| **Context**      | `core/context.py`    | Short-lived run state for async tasks. Redis `context:{context_id}` with TTL (default 3600s); fallback in-memory dict if Redis unavailable.                                                             |
+| **Auth**         | `core/auth.py`       | JWT validation, `get_current_user` for protected routes.                                                                                                                                                |
+| **Agent base**   | `core/agent_base.py` | `BaseAgent.run(input_data)` validates context then calls `_execute(input_data)`; subclasses implement `_execute`.                                                                                       |
 
 ---
 
@@ -167,9 +167,9 @@ vertical-operating-system/
 
 **Registered agents (task key → module):**
 
-- onboarding, manager, scout_anchors, strategist_run, write_pages, critic_review, librarian_link, enhance_media, enhance_utility, publish, analytics_audit  
-- lead_gen_manager, sales_agent, reactivator_agent, lead_scorer  
-- system_ops_manager, health_check, log_usage, cleanup  
+- onboarding, manager, scout_anchors, strategist_run, write_pages, critic_review, librarian_link, enhance_media, enhance_utility, publish, analytics_audit
+- lead_gen_manager, sales_agent, reactivator_agent, lead_scorer
+- system_ops_manager, health_check, log_usage, cleanup
 
 ---
 
@@ -192,7 +192,7 @@ vertical-operating-system/
   `get_client_secrets`, `save_client_secrets`  
   `verify_project_ownership`, `get_user_project`  
   `save_context`, `query_context` (ChromaDB RAG)  
-  `get_monthly_spend`, usage ledger helpers  
+  `get_monthly_spend`, usage ledger helpers
 
 - **ChromaDB (vector):** Used for RAG. Embeddings via `llm_gateway.generate_embeddings` (Google). `save_context` is called by Scout and Genesis; `query_context` is used by Writer to pull knowledge fragments for a keyword. Filtered by tenant_id, project_id, campaign_id.
 
@@ -225,9 +225,9 @@ vertical-operating-system/
 
 ### System ops
 
-- **SentinelAgent:** health_check.  
-- **AccountantAgent:** log_usage.  
-- **JanitorAgent:** cleanup (scheduled).  
+- **SentinelAgent:** health_check.
+- **AccountantAgent:** log_usage.
+- **JanitorAgent:** cleanup (scheduled).
 
 ---
 
@@ -235,24 +235,24 @@ vertical-operating-system/
 
 ### pSEO (phase-based, row control)
 
-1. **Scout** → anchors + intel (and RAG `save_context`).  
-2. **Strategist** → keywords / drafts (`pending_writer`).  
-3. **Writer** → draft (status `draft`).  
-4. **Critic** → `validated` or `rejected`.  
-5. **Librarian** → `ready_for_media`.  
-6. **Media** → `ready_for_utility`.  
-7. **Utility** → `ready_to_publish` or `utility_validation_failed`.  
+1. **Scout** → anchors + intel (and RAG `save_context`).
+2. **Strategist** → keywords / drafts (`pending_writer`).
+3. **Writer** → draft (status `draft`).
+4. **Critic** → `validated` or `rejected`.
+5. **Librarian** → `ready_for_media`.
+6. **Media** → `ready_for_utility`.
+7. **Utility** → `ready_to_publish` or `utility_validation_failed`.
 8. **Publisher** → `published`.
 
 - **Run next for draft:** Manager action `run_next_for_draft` with `draft_id`; manager maps status → step and dispatches that agent with `draft_id` so only that row is processed.
-- **Run step:** Single agent run for the whole campaign (first eligible item) via `run_step` + `step` (e.g. `critic_review`).  
+- **Run step:** Single agent run for the whole campaign (first eligible item) via `run_step` + `step` (e.g. `critic_review`).
 - **Auto-orchestrate:** Scout/Strategist if needed, then batch runs Writer → Critic → Librarian → Media → Utility → Publisher (each up to N times).
 
 ### Lead Gen (event + phase-based)
 
-1. **Webhook** (e.g. `/api/webhooks/lead`, WordPress, Google Ads) creates **lead** entity.  
-2. **lead_received** (or **run_next_for_lead** for “Score”): LeadScorer runs; if score ≥ `min_score_to_ring`, set `scheduled_bridge_at` = now + `bridge_delay_minutes`, `bridge_status = "scheduled"`, send email.  
-3. **process_scheduled_bridges** (cron or API): Find leads with `scheduled_bridge_at <= now`, `bridge_status == "scheduled"`, within business_hours + days_of_week; dispatch **instant_call** for each; set `bridge_attempted`.  
+1. **Webhook** (e.g. `/api/webhooks/lead`, WordPress, Google Ads) creates **lead** entity.
+2. **lead_received** (or **run_next_for_lead** for “Score”): LeadScorer runs; if score ≥ `min_score_to_ring`, set `scheduled_bridge_at` = now + `bridge_delay_minutes`, `bridge_status = "scheduled"`, send email.
+3. **process_scheduled_bridges** (cron or API): Find leads with `scheduled_bridge_at <= now`, `bridge_status == "scheduled"`, within business_hours + days_of_week; dispatch **instant_call** for each; set `bridge_attempted`.
 4. **instant_call** (or “Run next (Bridge)”): SalesAgent runs Twilio bridge.
 
 - **Business hours:** `core/services/business_hours.py` — `within_business_hours(config)` uses `modules.lead_gen.sales_bridge.business_hours` (timezone, start_hour, end_hour, **days_of_week**) and optional holidays.
@@ -261,18 +261,18 @@ vertical-operating-system/
 
 ## 10. API Surface
 
-| Area | Endpoints | Notes |
-|------|-----------|--------|
-| **Agents** | `POST /api/run`, `GET /api/context/{context_id}` | Single entry for all agent work; context for async polling. |
-| **Auth** | `POST /api/auth/verify`, `POST /api/auth/register` | JWT + user creation. |
-| **Projects** | `GET/POST /api/projects`, `GET/PUT /api/projects/{id}/dna`, `POST /api/projects/{id}/lead-gen/process-scheduled-bridges` | Projects CRUD, DNA, scheduled bridges. |
-| **Campaigns** | `GET/POST /api/projects/{id}/campaigns`, `GET/PATCH /api/projects/{id}/campaigns/{cid}` | Campaign list, single get, config update. |
-| **Entities** | `GET /api/entities`, `PATCH /api/entities/{id}`, `DELETE /api/entities/{id}` | Filter by type, project; update/delete. |
-| **Schemas** | `GET /api/schemas/campaign/lead_gen` | Form schema from lead_gen_default.yaml. |
-| **System** | `GET /api/health` | Component status (Redis, DB, Twilio). |
-| **Voice** | `POST /api/voice/connect`, status, recording-status | Twilio webhooks. |
-| **Webhooks** | `POST /api/webhooks/lead`, google-ads, wordpress | Inbound lead/form ingestion. |
-| **Settings** | `GET/POST /api/settings` | WordPress credentials (client_secrets). |
+| Area          | Endpoints                                                                                                                | Notes                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| **Agents**    | `POST /api/run`, `GET /api/context/{context_id}`                                                                         | Single entry for all agent work; context for async polling. |
+| **Auth**      | `POST /api/auth/verify`, `POST /api/auth/register`                                                                       | JWT + user creation.                                        |
+| **Projects**  | `GET/POST /api/projects`, `GET/PUT /api/projects/{id}/dna`, `POST /api/projects/{id}/lead-gen/process-scheduled-bridges` | Projects CRUD, DNA, scheduled bridges.                      |
+| **Campaigns** | `GET/POST /api/projects/{id}/campaigns`, `GET/PATCH /api/projects/{id}/campaigns/{cid}`                                  | Campaign list, single get, config update.                   |
+| **Entities**  | `GET /api/entities`, `PATCH /api/entities/{id}`, `DELETE /api/entities/{id}`                                             | Filter by type, project; update/delete.                     |
+| **Schemas**   | `GET /api/schemas/campaign/lead_gen`                                                                                     | Form schema from lead_gen_default.yaml.                     |
+| **System**    | `GET /api/health`                                                                                                        | Component status (Redis, DB, Twilio).                       |
+| **Voice**     | `POST /api/voice/connect`, status, recording-status                                                                      | Twilio webhooks.                                            |
+| **Webhooks**  | `POST /api/webhooks/lead`, google-ads, wordpress                                                                         | Inbound lead/form ingestion.                                |
+| **Settings**  | `GET/POST /api/settings`                                                                                                 | WordPress credentials (client_secrets).                     |
 
 - All under `/api` except `/` and `/health`. Auth: Bearer token; `get_current_user` on protected routes.
 
@@ -295,18 +295,18 @@ vertical-operating-system/
 
 ## 12. External Dependencies
 
-| Dependency | Purpose | Where used |
-|------------|---------|------------|
-| **SQLite / PostgreSQL** | Entities, projects, campaigns, users, secrets, usage | memory.py, db.py |
-| **Redis** | Context for async task polling (TTL) | context.py; optional, fallback in-memory |
-| **ChromaDB** | Vector store for RAG | memory.py (save_context, query_context); Writer, Scout, Genesis |
-| **Google Gemini** | LLM (generate_content), embeddings (text-embedding-004) | llm_gateway.py; Writer, Critic, Scorer, Scout, etc. |
-| **Twilio** | Voice (bridge), SMS (reactivator) | voice.py, lead_gen/agents/sales.py, reactivator.py |
-| **Serper** | Search snippets for Scout | search_sync.py, config SERPER_API_KEY |
-| **Google Maps** | Scout map queries | maps_sync.py |
-| **Unsplash** | Images for Media agent | pseo/agents/media.py |
-| **SMTP** | Bridge review email, notifications | core/services/email.py |
-| **WordPress** | Publish target (CMS) | publisher.py, client_secrets (wp_url, wp_user, wp_password) |
+| Dependency              | Purpose                                                   | Where used                                                      |
+| ----------------------- | --------------------------------------------------------- | --------------------------------------------------------------- |
+| **SQLite / PostgreSQL** | Entities, projects, campaigns, users, secrets, usage      | memory.py, db.py                                                |
+| **Redis**               | Context for async task polling (TTL)                      | context.py; optional, fallback in-memory                        |
+| **ChromaDB**            | Vector store for RAG                                      | memory.py (save_context, query_context); Writer, Scout, Genesis |
+| **Google Gemini**       | LLM (generate_content), embeddings (gemini-embedding-001) | llm_gateway.py; Writer, Critic, Scorer, Scout, etc.             |
+| **Twilio**              | Voice (bridge), SMS (reactivator)                         | voice.py, lead_gen/agents/sales.py, reactivator.py              |
+| **Serper**              | Search snippets for Scout                                 | search_sync.py, config SERPER_API_KEY                           |
+| **Google Maps**         | Scout map queries                                         | maps_sync.py                                                    |
+| **Unsplash**            | Images for Media agent                                    | pseo/agents/media.py                                            |
+| **SMTP**                | Bridge review email, notifications                        | core/services/email.py                                          |
+| **WordPress**           | Publish target (CMS)                                      | publisher.py, client_secrets (wp_url, wp_user, wp_password)     |
 
 - **requirements.txt:** fastapi, uvicorn, pydantic, google-genai, chromadb, sqlalchemy, aiosqlite, psycopg2-binary, redis, pyjwt, pyyaml, jinja2, twilio, httpx, apscheduler, etc.
 
@@ -314,20 +314,20 @@ vertical-operating-system/
 
 ## 13. Environment & Run
 
-- **Backend:** `.env` in project root. Key vars: `SERPER_API_KEY`, `GOOGLE_API_KEY` (or Gemini), `REDIS_URL`, `REDIS_TTL_SECONDS`, `DATABASE_URL` (or SQLite via path), `TWILIO_*`, `UNSPLASH_ACCESS_KEY`, `NEXT_PUBLIC_APP_URL` / `APP_URL`, etc.  
-- **Run:** `uvicorn backend.main:app --reload` (default port 8000).  
-- **Startup (lifespan):** Create usage table, init DB factory, start APScheduler (health check interval, cleanup daily at 3 AM).  
+- **Backend:** `.env` in project root. Key vars: `SERPER_API_KEY`, `GOOGLE_API_KEY` (or Gemini), `REDIS_URL`, `REDIS_TTL_SECONDS`, `DATABASE_URL` (or SQLite via path), `TWILIO_*`, `UNSPLASH_ACCESS_KEY`, `NEXT_PUBLIC_APP_URL` / `APP_URL`, etc.
+- **Run:** `uvicorn backend.main:app --reload` (default port 8000).
+- **Startup (lifespan):** Create usage table, init DB factory, start APScheduler (health check interval, cleanup daily at 3 AM).
 - **Frontend:** Next.js dev server (e.g. port 3000); `NEXT_PUBLIC_API_URL` points to backend.
 
 ---
 
 ## Quick Reference: What Depends on What
 
-- **Kernel** depends on: Registry, ConfigLoader, Memory (verify_project_ownership, get_user_project), TASK_SCHEMA_MAP.  
-- **Agents** depend on: Memory (get_entities, save_entity, update_entity, query_context, …), Config (injected), LLM gateway (Writer, Critic, Scorer, …), business_hours (LeadGenManager), email (LeadGenManager).  
-- **Manager** actions depend on: Kernel (dispatch), Memory (get_campaign, get_entities, update_entity, …), Config (campaign + DNA).  
-- **Frontend** depends on: Backend API (all endpoints above); no direct DB/Redis/ChromaDB.  
-- **Config** depends on: `data/profiles/`, YAML files, campaign config in DB.  
+- **Kernel** depends on: Registry, ConfigLoader, Memory (verify_project_ownership, get_user_project), TASK_SCHEMA_MAP.
+- **Agents** depend on: Memory (get_entities, save_entity, update_entity, query_context, …), Config (injected), LLM gateway (Writer, Critic, Scorer, …), business_hours (LeadGenManager), email (LeadGenManager).
+- **Manager** actions depend on: Kernel (dispatch), Memory (get_campaign, get_entities, update_entity, …), Config (campaign + DNA).
+- **Frontend** depends on: Backend API (all endpoints above); no direct DB/Redis/ChromaDB.
+- **Config** depends on: `data/profiles/`, YAML files, campaign config in DB.
 - **Memory** depends on: DB factory (SQLite/PostgreSQL), ChromaDB (and embedding function via LLM gateway).
 
 This document is the v6 working architecture and flow reference for the repo.

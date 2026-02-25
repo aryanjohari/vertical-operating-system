@@ -25,7 +25,7 @@ class LLMGateway:
 
         self.client = genai.Client(api_key=api_key)
         self.default_model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash")
-        self.default_embedding_model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-004")
+        self.default_embedding_model = os.getenv("APEX_EMBEDDING_MODEL", "gemini-embedding-001")
 
     def generate_content(
         self,
@@ -86,7 +86,7 @@ class LLMGateway:
         
         Args:
             texts: List of text strings to embed
-            model: Embedding model (default: APEX_EMBEDDING_MODEL or text-embedding-004)
+            model: Embedding model (default: APEX_EMBEDDING_MODEL or gemini-embedding-001)
             max_retries: Maximum number of retry attempts
             
         Returns:
