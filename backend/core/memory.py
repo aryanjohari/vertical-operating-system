@@ -876,7 +876,10 @@ class MemoryManager:
                 if not row:
                     return 0
                 # Key-based access for DictRow/RealDictRow; fallback for plain cursor
-                count_val = row.get("cnt", row[0]) if hasattr(row, "get") else row[0]
+                if hasattr(row, "keys"):
+                    count_val = row.get("cnt", 0)
+                else:
+                    count_val = row[0]
                 return int(count_val)
             finally:
                 if cursor is not None:
