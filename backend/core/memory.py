@@ -25,7 +25,7 @@ class GoogleEmbeddingFunction:
         self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
-        self.model = "text-embedding-005"
+        self.model = "text-embedding-004"
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """
@@ -783,6 +783,7 @@ class MemoryManager:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
+            cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
 
@@ -830,7 +831,8 @@ class MemoryManager:
                 self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
                 return results
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching entities for tenant {tenant_id}: {e}")
@@ -846,6 +848,7 @@ class MemoryManager:
         try:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
+            cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 query = f"SELECT COUNT(*) FROM entities WHERE tenant_id = {placeholder}"
@@ -872,7 +875,8 @@ class MemoryManager:
                 row = cursor.fetchone()
                 return int(row[0]) if row else 0
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error counting entities for tenant {tenant_id}: {e}")
@@ -941,6 +945,7 @@ class MemoryManager:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
+            cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 cursor.execute(
@@ -963,7 +968,8 @@ class MemoryManager:
                     out["fetched_at"] = out["fetched_at"].isoformat()
                 return out
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error getting analytics snapshot: {e}")
@@ -981,6 +987,7 @@ class MemoryManager:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
+            cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 cursor.execute(
@@ -997,7 +1004,8 @@ class MemoryManager:
                     entity["metadata"] = {}
                 return entity
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error fetching entity {entity_id}: {e}")
@@ -1109,6 +1117,7 @@ class MemoryManager:
             placeholder = self.db_factory.get_placeholder()
             conn = self.db_factory.get_connection()
             self.db_factory.set_row_factory(conn)
+            cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
                 cursor.execute(f"SELECT wp_url, wp_user, wp_auth_hash FROM client_secrets WHERE user_id = {placeholder}", (user_id,))
@@ -1132,7 +1141,8 @@ class MemoryManager:
                 self.logger.debug(f"No client secrets found for user {user_id}")
                 return None
             finally:
-                cursor.close()
+                if cursor is not None:
+                    cursor.close()
                 self.db_factory.return_connection(conn)
         except DatabaseError as e:
             self.logger.error(f"Database error retrieving client secrets for user {user_id}: {e}")
