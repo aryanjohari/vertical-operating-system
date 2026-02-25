@@ -118,24 +118,26 @@ async def _create_and_trigger_lead(
         logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
         raise HTTPException(status_code=403, detail="Project access denied")
     
-    # Create Entity
+    meta = {
+        "source": source,
+        "status": "new",
+        "project_id": project_id,
+        "data": {
+            "name": normalized_data['name'],
+            "phone": normalized_data.get('phone'),
+            "email": normalized_data.get('email'),
+            "message": normalized_data.get('message')
+        },
+        "raw_payload": normalized_data.get('raw_data', {}),
+    }
+    if campaign_id:
+        meta["campaign_id"] = campaign_id
     lead_entity = Entity(
         tenant_id=user_id,
         entity_type="lead",
         name=normalized_data['name'],
         primary_contact=normalized_data['primary_contact'],
-        metadata={
-            "source": source,
-            "status": "new",
-            "project_id": project_id,
-            "data": {
-                "name": normalized_data['name'],
-                "phone": normalized_data.get('phone'),
-                "email": normalized_data.get('email'),
-                "message": normalized_data.get('message')
-            },
-            "raw_payload": normalized_data.get('raw_data', {})
-        },
+        metadata=meta,
         created_at=datetime.now()
     )
     
@@ -394,4 +396,86 @@ async def handle_wordpress_webhook(request: Request, background_tasks: Backgroun
         raise
     except Exception as e:
         logger.error(f"❌ WordPress webhook error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+
+
+# --- 3. LEAD FORM WEBHOOK (embedded form / lead magnet) ---
+@webhook_router.options("/lead")
+async def handle_lead_webhook_options(request: Request):
+    """Handle CORS preflight for lead form webhook."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
+@webhook_router.post("/lead")
+async def handle_lead_webhook(request: Request, background_tasks: BackgroundTasks):
+    """
+    Receives leads from embedded lead gen forms (lead_gen_form.html).
+    Requires project_id (and optional campaign_id) in query params or form body.
+    Accepts both JSON and form-encoded data.
+    """
+    try:
+        # Pre-read body for project_id/campaign_id from form (so we can get from body if not in query)
+        project_id = request.query_params.get("project_id")
+        campaign_id = request.query_params.get("campaign_id")
+
+        content_type = request.headers.get("content-type", "").lower()
+        if "application/json" in content_type:
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {}
+            if not project_id and payload.get("project_id"):
+                project_id = str(payload.get("project_id", "")).strip()
+            if not campaign_id and payload.get("campaign_id"):
+                campaign_id = str(payload.get("campaign_id", "")).strip()
+        else:
+            form_data = await request.form()
+            payload = dict(form_data)
+            if not project_id and payload.get("project_id"):
+                v = payload.get("project_id")
+                project_id = v.strip() if hasattr(v, "strip") else str(v)
+            if not campaign_id and payload.get("campaign_id"):
+                v = payload.get("campaign_id")
+                campaign_id = v.strip() if hasattr(v, "strip") else str(v)
+
+        if not project_id:
+            logger.error("Missing project_id in lead webhook (query or form body)")
+            raise HTTPException(status_code=400, detail="project_id is required (query parameter or hidden form field)")
+
+        if not _validate_project_id(project_id):
+            raise HTTPException(status_code=400, detail="Invalid project_id format.")
+
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_PAYLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="Payload too large. Maximum size is 10MB.")
+
+        project_owner = _get_user_id_from_project(project_id)
+        if not project_owner:
+            logger.warning(f"Project {project_id} not found in database")
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        normalized_data = _normalize_lead_data(payload, "form")
+
+        result = await _create_and_trigger_lead(
+            normalized_data,
+            "form",
+            project_id,
+            user_id=project_owner,
+            campaign_id=campaign_id,
+            background_tasks=background_tasks,
+        )
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Lead webhook error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")

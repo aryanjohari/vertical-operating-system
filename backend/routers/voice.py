@@ -403,21 +403,24 @@ Return only valid JSON, no markdown formatting."""
         elif not lead_id:
             recording_url = form_data.get("RecordingUrl", "")
             if recording_url and project_id:
-                # Get project owner for tenant_id (security: use actual owner, not hardcoded admin)
                 project_owner = _get_user_id_from_project(project_id) or "system"
+                campaign_id = request.query_params.get("campaign_id")
+                meta = {
+                    "source": "call",
+                    "recording_url": recording_url,
+                    "call_sid": call_sid,
+                    "call_status": call_status,
+                    "project_id": project_id,
+                    "status": "new",
+                }
+                if campaign_id and _validate_project_id(campaign_id):
+                    meta["campaign_id"] = campaign_id
                 lead_entity = Entity(
                     tenant_id=project_owner,
                     entity_type="lead",
                     name="Inbound Call",
                     primary_contact=from_number,
-                    metadata={
-                        "source": "voice_call",
-                        "recording_url": recording_url,
-                        "call_sid": call_sid,
-                        "call_status": call_status,
-                        "project_id": project_id,
-                        "status": "new"
-                    }
+                    metadata=meta,
                 )
                 memory.save_entity(lead_entity, project_id=project_id)
                 logger.info(f"💾 Saved Inbound Call Recording for Call {call_sid}")

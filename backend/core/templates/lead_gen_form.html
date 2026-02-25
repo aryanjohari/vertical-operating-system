@@ -1,4 +1,4 @@
-<form class="lead-gen-form" method="post" action="/api/webhooks/lead">
+<form class="lead-gen-form" method="post" action="{{ form_action_url }}">
   {% for field in fields %}
   <label for="{{ field.name }}">{{ field.label }}</label>
   {% if field.type == "select" %}

@@ -17,6 +17,7 @@ DEFAULT_FORM_FIELDS = [
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "core", "templates")
 _DEFAULT_FORM_TEMPLATE_PATH = os.path.join(_TEMPLATE_DIR, "lead_gen_form.html")
+_DEFAULT_CALL_BLOCK_PATH = os.path.join(_TEMPLATE_DIR, "lead_gen_call.html")
 _DEFAULT_SCHEMA_TEMPLATE = '''{
   "@context": "https://schema.org",
   "@type": "Service",
@@ -74,6 +75,18 @@ def _load_call_button_template(lead_gen_cfg: Optional[Dict] = None) -> str:
     return _DEFAULT_CALL_BUTTON
 
 
+def _load_call_block_template(lead_gen_cfg: Optional[Dict] = None) -> str:
+    """Load embedded call CTA block (lead_gen_call.html); vars: tel_link, phone."""
+    if lead_gen_cfg:
+        t = lead_gen_cfg.get("call_block_template")
+        if t and isinstance(t, str) and t.strip():
+            return t.strip()
+    if os.path.exists(_DEFAULT_CALL_BLOCK_PATH):
+        with open(_DEFAULT_CALL_BLOCK_PATH, "r") as f:
+            return f.read()
+    return '<div class="call-cta-wrapper"><a href="{{ tel_link }}">📞 {{ phone }}</a></div>'
+
+
 def _validate_final_lead_gen_assets(
     html_content: str,
     config: Dict[str, Any],
@@ -89,16 +102,15 @@ def _validate_final_lead_gen_assets(
         return False, "Missing form or form action."
     if expected_webhook_path not in html_content:
         return False, f"Form action must point to webhook (expected path containing '{expected_webhook_path}')."
-    # Tel link if destination_phone is set
-    destination_phone = (
-        (config.get("modules") or {}).get("lead_gen", {}).get("sales_bridge", {}).get("destination_phone")
-        or (config.get("lead_gen_integration") or {}).get("destination_phone")
-        or config.get("destination_phone")
-        or ""
-    )
-    if destination_phone and str(destination_phone).strip() != "REQUIRED":
+    # Tel link if destination_phone or twilio_phone is set (call CTA)
+    lead_gen = (config.get("modules") or {}).get("lead_gen", {}) or (config.get("lead_gen_integration") or {})
+    sb = lead_gen.get("sales_bridge", {})
+    destination_phone = sb.get("destination_phone") or lead_gen.get("destination_phone") or ""
+    twilio_phone = (sb.get("twilio_phone") or "").strip()
+    any_phone = destination_phone or twilio_phone
+    if any_phone and str(any_phone).strip() != "REQUIRED":
         if "tel:" not in html_content:
-            return False, "Missing tel: link for destination_phone (call button)."
+            return False, "Missing tel: link for call button (destination_phone or twilio_phone)."
     # JSON-LD script present and valid
     ld_match = re.search(
         r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>([^<]+)</script>',
@@ -124,6 +136,14 @@ class UtilityAgent(BaseAgent):
 
     def _get_destination_phone(self, lead_gen_cfg: dict) -> str:
         return (lead_gen_cfg or {}).get("sales_bridge", {}).get("destination_phone") or ""
+
+    def _get_display_phone_for_call_cta(self, lead_gen_cfg: dict) -> str:
+        """Phone number shown on call CTA (lead_gen_call.html). Prefer twilio_phone; fallback to destination_phone."""
+        sb = (lead_gen_cfg or {}).get("sales_bridge", {})
+        twilio = (sb.get("twilio_phone") or "").strip()
+        if twilio:
+            return twilio
+        return sb.get("destination_phone") or ""
 
     def _get_schema_data(self, draft: dict, config: dict) -> Dict[str, Any]:
         """Build schema data dict from config + draft (deterministic, no LLM)."""
@@ -151,20 +171,36 @@ class UtilityAgent(BaseAgent):
             "price_currency": "NZD",
         }
 
-    def _get_form_action_url(self, lead_gen_cfg: Optional[Dict] = None) -> str:
-        """Full URL for form action so WordPress-hosted pages POST to deployed backend (e.g. Railway)."""
+    def _get_form_action_url(
+        self,
+        lead_gen_cfg: Optional[Dict] = None,
+        project_id: Optional[str] = None,
+        campaign_id: Optional[str] = None,
+    ) -> str:
+        """Full URL for form action; appends project_id and optional campaign_id for /api/webhooks/lead."""
         base = (lead_gen_cfg or {}).get("webhook_base_url") or os.getenv("WEBHOOK_BASE_URL") or os.getenv("API_URL") or ""
         path = (lead_gen_cfg or {}).get("form_webhook_path") or "/api/webhooks/lead"
-        if base:
-            return f"{base.rstrip('/')}{path}"
-        return path
+        url = f"{base.rstrip('/')}{path}" if base else path
+        if project_id:
+            from urllib.parse import urlencode
+            params = {"project_id": project_id}
+            if campaign_id:
+                params["campaign_id"] = campaign_id
+            url = f"{url}?{urlencode(params)}"
+        return url
 
-    def _render_form_html(self, fields: List[Dict[str, Any]], lead_gen_cfg: Optional[Dict] = None) -> str:
+    def _render_form_html(
+        self,
+        fields: List[Dict[str, Any]],
+        lead_gen_cfg: Optional[Dict] = None,
+        project_id: Optional[str] = None,
+        campaign_id: Optional[str] = None,
+    ) -> str:
         """Render form HTML via Jinja2 template (campaign-specific or default)."""
         template_str = _load_form_template(lead_gen_cfg)
         env = Environment(loader=BaseLoader(), autoescape=True)
         template = env.from_string(template_str)
-        form_action_url = self._get_form_action_url(lead_gen_cfg)
+        form_action_url = self._get_form_action_url(lead_gen_cfg, project_id, campaign_id)
         return template.render(fields=fields, form_action_url=form_action_url)
 
     def _render_schema_script(self, draft: dict, full_config: dict, lead_gen_cfg: Optional[Dict] = None) -> str:
@@ -179,6 +215,13 @@ class UtilityAgent(BaseAgent):
     def _render_call_button(self, tel_link: str, phone_display: str, lead_gen_cfg: Optional[Dict] = None) -> str:
         """Render call button HTML via Jinja2 template (vars: tel_link, phone)."""
         template_str = _load_call_button_template(lead_gen_cfg)
+        env = Environment(loader=BaseLoader(), autoescape=True)
+        template = env.from_string(template_str)
+        return template.render(tel_link=tel_link, phone=phone_display)
+
+    def _render_call_block(self, tel_link: str, phone_display: str, lead_gen_cfg: Optional[Dict] = None) -> str:
+        """Render embedded call CTA block (lead_gen_call.html) with vars tel_link, phone."""
+        template_str = _load_call_block_template(lead_gen_cfg)
         env = Environment(loader=BaseLoader(), autoescape=True)
         template = env.from_string(template_str)
         return template.render(tel_link=tel_link, phone=phone_display)
@@ -204,6 +247,28 @@ class UtilityAgent(BaseAgent):
             return AgentOutput(status="error", message="Campaign not found.")
         config = campaign.get("config", {})
 
+        # When PSEO campaign: resolve lead_gen campaign so form/call use its config and webhook gets campaign_id
+        lead_gen_campaign_id: Optional[str] = None
+        if campaign.get("module") != "lead_gen":
+            lead_gen_campaign_id = (
+                input_data.params.get("lead_gen_campaign_id")
+                or (config or {}).get("lead_gen_campaign_id")
+            )
+            if not lead_gen_campaign_id:
+                lead_gen_campaigns = memory.get_campaigns_by_project(user_id, project_id, module="lead_gen")
+                if lead_gen_campaigns:
+                    lead_gen_campaign_id = lead_gen_campaigns[0].get("id")
+
+        lead_gen_cfg = _lead_gen_section(campaign, config, self.config or {})
+        full_config = dict(self.config or {})
+        if lead_gen_campaign_id:
+            lg_campaign = memory.get_campaign(lead_gen_campaign_id, user_id)
+            if lg_campaign and lg_campaign.get("module") == "lead_gen":
+                lead_gen_cfg = lg_campaign.get("config", {})
+                if "modules" not in full_config:
+                    full_config["modules"] = {}
+                full_config["modules"]["lead_gen"] = lead_gen_cfg
+
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         utility_ready_drafts = [
             d for d in all_drafts
@@ -223,9 +288,6 @@ class UtilityAgent(BaseAgent):
 
         self.logger.info(f"UTILITY: Building technical assets for '{keyword}' (Jinja2)")
 
-        lead_gen_cfg = _lead_gen_section(campaign, config, self.config or {})
-        full_config = self.config or {}
-
         schema_script = self._render_schema_script(target_draft, full_config, lead_gen_cfg)
         schema_json = self._get_schema_data(target_draft, full_config)
         schema_json["area_served_json"] = json.loads(schema_json["area_served_json"])
@@ -239,7 +301,18 @@ class UtilityAgent(BaseAgent):
         }
 
         fields = self._get_form_fields(lead_gen_cfg)
-        form_html = self._render_form_html(fields, lead_gen_cfg)
+        form_html = self._render_form_html(
+            fields, lead_gen_cfg, project_id=project_id, campaign_id=lead_gen_campaign_id
+        )
+
+        destination_phone = self._get_destination_phone(lead_gen_cfg)
+        display_phone = self._get_display_phone_for_call_cta(lead_gen_cfg)
+        call_block_html = ""
+        if display_phone and display_phone != "REQUIRED":
+            phone_clean = "".join(c for c in display_phone if c.isdigit() or c in "+")
+            tel_link = f"tel:{html_module.escape(phone_clean)}"
+            phone_display = html_module.escape(display_phone.strip())
+            call_block_html = self._render_call_block(tel_link, phone_display, lead_gen_cfg)
 
         keyword_safe = (draft_meta.get("keyword") or "").strip() or "Support"
         anchor_used = (draft_meta.get("anchor_used") or "").strip()
@@ -248,10 +321,11 @@ class UtilityAgent(BaseAgent):
         else:
             headline = f"Immediate {html_module.escape(keyword_safe)} Support in Your Area"
 
+        conversion_inner = form_html + (f'<div class="call-cta-block">{call_block_html}</div>' if call_block_html else '')
         conversion_block = (
             '<div class="conversion-block">'
             f'<h3 class="conversion-headline">{headline}</h3>'
-            f'<div class="conversion-inner">{form_html}</div>'
+            f'<div class="conversion-inner">{conversion_inner}</div>'
             "</div>"
         )
 
@@ -273,10 +347,11 @@ class UtilityAgent(BaseAgent):
             final_html += f"\n{schema_script}"
 
         destination_phone = self._get_destination_phone(lead_gen_cfg)
-        if destination_phone and destination_phone != "REQUIRED":
-            phone_clean = "".join(c for c in destination_phone if c.isdigit() or c in "+")
+        display_phone = self._get_display_phone_for_call_cta(lead_gen_cfg)
+        if display_phone and display_phone != "REQUIRED":
+            phone_clean = "".join(c for c in display_phone if c.isdigit() or c in "+")
             tel_link = f"tel:{html_module.escape(phone_clean)}"
-            phone_display = html_module.escape(destination_phone.strip())
+            phone_display = html_module.escape(display_phone.strip())
             call_html = self._render_call_button(tel_link, phone_display, lead_gen_cfg)
             sticky_css = (
                 '<style>.sticky-footer{position:fixed;bottom:0;left:0;right:0;'
