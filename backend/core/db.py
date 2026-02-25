@@ -220,7 +220,7 @@ class DatabaseFactory:
         """
         if self.db_type == "postgresql":
             # PostgreSQL: use RealDictRow cursor factory
-            return conn.cursor(cursor_factory=self.psycopg2_extras.RealDictRow)
+            return conn.cursor(cursor_factory=self.psycopg2_extras.RealDictCursor)
         else:
             # SQLite: row factory is set on connection, just get cursor
             return conn.cursor()
