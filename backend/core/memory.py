@@ -25,7 +25,7 @@ class GoogleEmbeddingFunction:
         self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
-        self.model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-005")
+        self.model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-004")
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """

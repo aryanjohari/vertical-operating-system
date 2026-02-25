@@ -86,7 +86,7 @@ class LLMGateway:
         
         Args:
             texts: List of text strings to embed
-            model: Embedding model (default: APEX_EMBEDDING_MODEL or text-embedding-005)
+            model: Embedding model (default: APEX_EMBEDDING_MODEL or text-embedding-004)
             max_retries: Maximum number of retry attempts
             
         Returns:

@@ -41,8 +41,10 @@ class DatabaseFactory:
             try:
                 import psycopg2
                 import psycopg2.extras
+                import psycopg2.pool
                 self.psycopg2 = psycopg2
                 self.psycopg2_extras = psycopg2.extras
+                self.pool = psycopg2.pool
                 database_url = os.getenv("DATABASE_URL")
                 if database_url:
                     try:
