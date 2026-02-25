@@ -25,7 +25,7 @@ class LLMGateway:
 
         self.client = genai.Client(api_key=api_key)
         self.default_model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash")
-        self.default_embedding_model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-005")
+        self.default_embedding_model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-004")
 
     def generate_content(
         self,
