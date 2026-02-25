@@ -25,7 +25,7 @@ class GoogleEmbeddingFunction:
         self.llm_gateway = llm_gateway
         # ChromaDB requires a 'name' attribute for embedding functions
         self.name = "google_embedding_function"
-        self.model = "text-embedding-004"
+        self.model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-005")
 
     def __call__(self, input: List[str]) -> List[List[float]]:
         """
@@ -815,7 +815,7 @@ class MemoryManager:
                 query += f" ORDER BY created_at DESC LIMIT {placeholder} OFFSET {placeholder}"
                 params.extend([limit, offset])
 
-                cursor.execute(query, params)
+                cursor.execute(query, tuple(params))
                 rows = cursor.fetchall()
 
                 results = []
@@ -851,7 +851,7 @@ class MemoryManager:
             cursor = None
             try:
                 cursor = self.db_factory.get_cursor_with_row_factory(conn)
-                query = f"SELECT COUNT(*) FROM entities WHERE tenant_id = {placeholder}"
+                query = f"SELECT COUNT(*) AS cnt FROM entities WHERE tenant_id = {placeholder}"
                 params: List[Any] = [tenant_id]
                 if entity_type:
                     query += f" AND entity_type = {placeholder}"
@@ -871,9 +871,13 @@ class MemoryManager:
                 if created_before:
                     query += f" AND created_at <= {placeholder}"
                     params.append(created_before)
-                cursor.execute(query, params)
+                cursor.execute(query, tuple(params))
                 row = cursor.fetchone()
-                return int(row[0]) if row else 0
+                if not row:
+                    return 0
+                # Key-based access for DictRow/RealDictRow; fallback for plain cursor
+                count_val = row.get("cnt", row[0]) if hasattr(row, "get") else row[0]
+                return int(count_val)
             finally:
                 if cursor is not None:
                     cursor.close()
