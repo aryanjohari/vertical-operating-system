@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { getEntities, getCampaigns, connectCall, runNextForLead } from "@/lib/api";
 import type { Lead } from "@/types";
-import { Phone, X, Plus } from "lucide-react";
+import { Phone, X, Plus, PhoneCall, FileText } from "lucide-react";
 import { CreateCampaignDialog } from "@/components/campaigns/CreateCampaignDialog";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -28,6 +28,32 @@ function AiScoreBadge({ score }: { score: number | undefined }) {
   return (
     <span className="inline-flex items-center rounded border border-border px-2 py-0.5 text-xs font-medium text-foreground">
       {s}
+    </span>
+  );
+}
+
+function SourceBadge({ source }: { source: string | undefined }) {
+  const s = (source ?? "").toLowerCase();
+  if (s === "call" || s === "voice_call") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-blue-500/20 px-2 py-0.5 text-xs font-medium text-blue-400">
+        <PhoneCall className="h-3 w-3" />
+        Call
+      </span>
+    );
+  }
+  if (s === "form" || s === "wordpress_form" || s === "google_ads") {
+    const label = s === "google_ads" ? "Google Ads" : "Form";
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400">
+        <FileText className="h-3 w-3" />
+        {label}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
+      {source || "—"}
     </span>
   );
 }
@@ -246,6 +272,9 @@ export default function LeadsPage() {
                     Phone
                   </th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Source
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
                     Service Requested
                   </th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
@@ -262,7 +291,7 @@ export default function LeadsPage() {
               <tbody>
                 {leads.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-12 text-center text-muted-foreground">
+                    <td colSpan={7} className="py-12 text-center text-muted-foreground">
                       No leads yet.
                     </td>
                   </tr>
@@ -277,6 +306,9 @@ export default function LeadsPage() {
                       </td>
                       <td className="px-4 py-3 text-muted-foreground">
                         {String(lead.primary_contact ?? lead.metadata?.phone ?? "—")}
+                      </td>
+                      <td className="px-4 py-3">
+                        <SourceBadge source={lead.metadata?.source as string} />
                       </td>
                       <td className="px-4 py-3 text-muted-foreground max-w-[200px] truncate">
                         {getServiceRequested(lead)}

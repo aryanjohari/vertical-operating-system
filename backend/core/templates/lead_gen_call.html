@@ -1,0 +1,31 @@
+<style>
+  .embedded-call-btn {
+    display: block;
+    width: 100%;
+    background-color: #d9230f; /* High-urgency red */
+    color: #ffffff;
+    text-align: center;
+    padding: 16px;
+    font-size: 20px;
+    font-weight: bold;
+    text-decoration: none;
+    border-radius: 8px; /* Soften the edges to match standard form inputs */
+    margin: 20px 0; /* Adds breathing room above and below the button */
+    box-sizing: border-box;
+    font-family: sans-serif;
+    border: 2px solid #b51c0c;
+  }
+
+  .embedded-call-btn:hover {
+    background-color: #b51c0c;
+    color: #ffffff;
+    text-decoration: none;
+  }
+</style>
+
+<div class="call-cta-wrapper">
+  <p style="text-align: center; margin-bottom: 8px; font-weight: bold;">Need immediate approval? Call now:</p>
+  <a href="{{ tel_link }}" class="embedded-call-btn" aria-label="Call {{ phone }}">
+    📞 {{ phone }}
+  </a>
+</div>

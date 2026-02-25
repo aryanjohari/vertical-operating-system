@@ -191,6 +191,14 @@ class ManagerAgent(BaseAgent):
         campaign = memory.get_campaign(campaign_id, user_id)
         pseo_settings = self._get_pseo_settings(campaign) if campaign else {}
         writer_batch_size = max(1, min(50, int(pseo_settings.get("batch_size", 5))))
+        # So enhance_utility uses the project's lead gen campaign (form/call templates and webhook campaign_id)
+        lead_gen_campaign_id = (campaign.get("config") or {}).get("lead_gen_campaign_id") if campaign else None
+        if not lead_gen_campaign_id:
+            lead_gen_campaigns = memory.get_campaigns_by_project(user_id, project_id, module="lead_gen")
+            if lead_gen_campaigns:
+                lead_gen_campaign_id = lead_gen_campaigns[0].get("id")
+        if lead_gen_campaign_id:
+            base_params["lead_gen_campaign_id"] = lead_gen_campaign_id
 
         for task_name, label in [
             ("write_pages", "WRITER"),
@@ -339,6 +347,15 @@ class ManagerAgent(BaseAgent):
             "campaign_id": campaign_id,
             **input_data.params,
         }
+        if step == "enhance_utility":
+            campaign = memory.get_campaign(campaign_id, user_id)
+            lg_cid = (campaign.get("config") or {}).get("lead_gen_campaign_id") if campaign else None
+            if not lg_cid:
+                lead_gen_campaigns = memory.get_campaigns_by_project(user_id, project_id, module="lead_gen")
+                if lead_gen_campaigns:
+                    lg_cid = lead_gen_campaigns[0].get("id")
+            if lg_cid:
+                base_params["lead_gen_campaign_id"] = lg_cid
         try:
             result = await self._dispatch(kernel, step, base_params)
         except asyncio.TimeoutError:

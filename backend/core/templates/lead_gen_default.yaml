@@ -24,7 +24,8 @@ form_settings:
 
 # Sales bridge (speed-to-lead)
 sales_bridge:
-  destination_phone: "REQUIRED" # Client's mobile; also used for sticky Call button
+  destination_phone: "REQUIRED" # Client's mobile; used for bridge connection and fallback for call CTA
+  twilio_phone: ""               # Number shown on site (lead_gen_call.html); lead calls this. Typically your Twilio number. Leave empty to use destination_phone.
   whisper_text: "Apex Lead Alert. Press 1 to connect."
   sms_alert_template: "New Lead: [Name]"
   # Manual review: only high-score leads get bridge-review email; no auto-bridge
@@ -47,6 +48,8 @@ form_template: ""
 schema_template: ""
 # Call button: vars 'tel_link', 'phone'. Leave empty for default sticky "Call Now".
 call_button_template: ""
+# Embedded call CTA block (lead_gen_call.html): vars 'tel_link', 'phone'. Leave empty to use core/templates/lead_gen_call.html.
+call_block_template: ""
 # Optional: expected webhook path for post-Utility validation (default /api/webhooks/lead)
 form_webhook_path: "/api/webhooks/lead"
 # For deployed backend (e.g. Railway): full base URL so forms on WordPress POST to your API.
