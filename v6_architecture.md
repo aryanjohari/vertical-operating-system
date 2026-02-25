@@ -300,7 +300,7 @@ vertical-operating-system/
 | **SQLite / PostgreSQL** | Entities, projects, campaigns, users, secrets, usage | memory.py, db.py |
 | **Redis** | Context for async task polling (TTL) | context.py; optional, fallback in-memory |
 | **ChromaDB** | Vector store for RAG | memory.py (save_context, query_context); Writer, Scout, Genesis |
-| **Google Gemini** | LLM (generate_content), embeddings (text-embedding-005) | llm_gateway.py; Writer, Critic, Scorer, Scout, etc. |
+| **Google Gemini** | LLM (generate_content), embeddings (text-embedding-004) | llm_gateway.py; Writer, Critic, Scorer, Scout, etc. |
 | **Twilio** | Voice (bridge), SMS (reactivator) | voice.py, lead_gen/agents/sales.py, reactivator.py |
 | **Serper** | Search snippets for Scout | search_sync.py, config SERPER_API_KEY |
 | **Google Maps** | Scout map queries | maps_sync.py |
