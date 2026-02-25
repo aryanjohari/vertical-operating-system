@@ -25,6 +25,7 @@ class LLMGateway:
 
         self.client = genai.Client(api_key=api_key)
         self.default_model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash")
+        self.default_embedding_model = os.getenv("APEX_EMBEDDING_MODEL", "text-embedding-005")
 
     def generate_content(
         self,
@@ -77,7 +78,7 @@ class LLMGateway:
     def generate_embeddings(
         self,
         texts: list[str],
-        model: str = "text-embedding-004",
+        model: Optional[str] = None,
         max_retries: int = 3,
     ) -> list[list[float]]:
         """
@@ -85,7 +86,7 @@ class LLMGateway:
         
         Args:
             texts: List of text strings to embed
-            model: Embedding model to use (default: text-embedding-004)
+            model: Embedding model (default: APEX_EMBEDDING_MODEL or text-embedding-005)
             max_retries: Maximum number of retry attempts
             
         Returns:
@@ -94,22 +95,33 @@ class LLMGateway:
         if not texts:
             return []
         
+        target_model = model or self.default_embedding_model
+        # Optional: fix output dims for Chroma compatibility (e.g. 768 for existing collections)
+        output_dims = 768 if "gemini-embedding" in target_model else None
+        config = types.EmbedContentConfig(output_dimensionality=output_dims) if output_dims else None
+        
         last_error = None
         
         for attempt in range(1, max_retries + 1):
             try:
                 self.logger.debug(
-                    f"Embedding request attempt {attempt}/{max_retries} | model={model} | texts={len(texts)}"
+                    f"Embedding request attempt {attempt}/{max_retries} | model={target_model} | texts={len(texts)}"
                 )
                 
-                response = self.client.models.embed_content(
-                    model=model,
-                    contents=texts
-                )
+                # SDK may accept single content per call; batch by iterating to avoid API quirks
+                embeddings: list[list[float]] = []
+                for text in texts:
+                    response = self.client.models.embed_content(
+                        model=target_model,
+                        contents=text,
+                        config=config,
+                    )
+                    if response.embeddings:
+                        embeddings.append(response.embeddings[0].values)
+                    else:
+                        raise ValueError("Empty embedding response for one text")
                 
-                embeddings = [e.values for e in response.embeddings]
-                
-                if not embeddings or len(embeddings) != len(texts):
+                if len(embeddings) != len(texts):
                     raise ValueError(f"Embedding count mismatch: expected {len(texts)}, got {len(embeddings)}")
                 
                 return embeddings
