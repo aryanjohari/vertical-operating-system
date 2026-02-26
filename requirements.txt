@@ -21,7 +21,6 @@ psycopg2-binary>=2.9.9  # PostgreSQL support for Supabase
 redis>=5.0.0  # For short-term memory (Context/RAM)
 
 # AGENT TOOLS (The Hands)
-playwright>=1.41.0
 aiohttp>=3.9.1
 requests>=2.31.0
 beautifulsoup4>=4.12.3

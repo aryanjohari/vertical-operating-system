@@ -96,7 +96,7 @@ Return ONLY a JSON object with these exact keys:
                 llm_gateway.generate_content,
                 system_prompt="You are a lead scoring judge. Return only valid JSON with keys: score (0-100), priority (Low/Medium/High), reasoning. No markdown, no extra text.",
                 user_prompt=user_prompt,
-                model="gemini-2.5-flash",
+                model="gemini-2.5-flashlite",
                 temperature=0.3,
                 max_retries=2,
             )

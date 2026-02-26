@@ -29,7 +29,7 @@ class TranscriptionService:
             raise ValueError("GOOGLE_API_KEY environment variable is not set.")
         
         self.gemini_client = genai.Client(api_key=google_api_key)
-        self.model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash")
+        self.model = os.getenv("APEX_LLM_MODEL", "gemini-2.5-flash-lite")
         
         # Initialize Twilio client (for deleting recordings)
         twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")

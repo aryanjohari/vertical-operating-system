@@ -3,128 +3,127 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from playwright.sync_api import sync_playwright
+import httpx
+from backend.core.config import settings
 
 logger = logging.getLogger("Apex.Scout")
+
+PLACES_URL = "https://google.serper.dev/places"
+
+
+def _map_place_to_item(place: Dict[str, Any], source_query: str) -> Dict[str, Any]:
+    """Map a Serper place object to our standard shape: name, address, phoneNumber, website (+ optional fields for scout)."""
+    name = place.get("title") or place.get("name") or ""
+    address = place.get("address")
+    phone = place.get("phone")
+    website = place.get("link") or place.get("website") or place.get("url")
+    hours = place.get("hours")
+    # Serper may return a maps link or place_id link
+    google_maps_url = place.get("link") or place.get("place_id")
+    if google_maps_url and not google_maps_url.startswith("http"):
+        google_maps_url = f"https://www.google.com/maps/place/?q=place_id:{google_maps_url}" if place.get("place_id") else None
+
+    return {
+        "name": name,
+        "address": address,
+        "phoneNumber": phone,
+        "website": website,
+        "phone": phone,
+        "source_query": source_query,
+        "google_maps_url": google_maps_url,
+        "working_hours": hours,
+    }
+
+
+def _filter_by_keywords(item: Dict[str, Any], allow_kws: List[str], block_kws: List[str]) -> bool:
+    """Return True if item passes allow/block keyword filters (by name)."""
+    name = (item.get("name") or "").lower()
+    if allow_kws and not any(k in name for k in allow_kws):
+        return False
+    if block_kws and any(k in name for k in block_kws):
+        return False
+    return True
 
 
 async def run_scout_async(
     queries: list,
     allow_kws: Optional[List[str]] = None,
     block_kws: Optional[List[str]] = None,
+    geo_suffix: str = "New Zealand",
 ) -> Dict[str, Any]:
     """
-    Async Maps scout using playwright.async_api.
+    Async Maps scout using Serper Places API (httpx).
     Same return shape: {"success", "agent_name", "message", "data"}.
+    Appends ", {geo_suffix}" to each query for geolocation (from profile identity.geo_target.city).
     """
-    from playwright.async_api import async_playwright
-
     allow_kws = [k.lower() for k in (allow_kws or [])]
     block_kws = [k.lower() for k in (block_kws or [])]
-    logger.info(f"SCOUT ASYNC: Initializing for {len(queries)} queries...")
-    master_data = []
-    seen_ids = set()
+
+    if not settings.SERPER_API_KEY or not settings.SERPER_API_KEY.strip():
+        logger.error("SERPER_API_KEY not configured.")
+        return {
+            "success": False,
+            "agent_name": "scout_anchors",
+            "message": "SERPER_API_KEY not configured",
+            "data": None,
+        }
+
+    logger.info(f"SCOUT ASYNC: Initializing for {len(queries)} queries (geo_suffix={geo_suffix})...")
+    master_data: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    headers = {
+        "X-API-KEY": settings.SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            page = await context.new_page()
-            try:
-                for query in queries:
-                    try:
-                        logger.info(f"Scouting: {query}...")
-                        url = f"https://www.google.co.nz/maps/search/{query.replace(' ', '+')}"
-                        await page.goto(url, timeout=60000)
-                        try:
-                            await page.locator('button[aria-label="Accept all"]').first.click(timeout=3000)
-                        except Exception as e:
-                            logger.debug(f"Could not click accept button for {query}: {e}")
-
-                        is_list = False
-                        try:
-                            await page.wait_for_selector("div[role='feed'], h1", timeout=5000)
-                            if await page.locator("div[role='feed']").count() > 0:
-                                is_list = True
-                        except Exception as e:
-                            logger.debug(f"Could not detect list for {query}: {e}")
-
-                        if is_list:
-                            logger.debug(f"Scrolling for query: {query}")
-                            last_count = 0
-                            no_change_ticks = 0
-                            while True:
-                                await page.hover("div[role='feed']")
-                                await page.mouse.wheel(0, 5000)
-                                await asyncio.sleep(1.5)
-                                current_count = await page.locator("a[href*='/maps/place/']").count()
-                                if current_count == last_count:
-                                    no_change_ticks += 1
-                                else:
-                                    no_change_ticks = 0
-                                last_count = current_count
-                                if no_change_ticks >= 3 or current_count > 50:
-                                    break
-                            logger.info(f"Found {last_count} targets for query: {query}")
-
-                            for i in range(last_count):
-                                try:
-                                    links = page.locator("a[href*='/maps/place/']")
-                                    link_count = await links.count()
-                                    if i >= link_count:
-                                        break
-                                    target = links.nth(i)
-                                    href = await target.get_attribute("href")
-                                    raw_name = await target.get_attribute("aria-label")
-                                    if not raw_name or "Search" in raw_name:
-                                        continue
-                                    if allow_kws and not any(k in raw_name.lower() for k in allow_kws):
-                                        continue
-                                    if block_kws and any(k in raw_name.lower() for k in block_kws):
-                                        continue
-                                    await target.click()
-                                    await asyncio.sleep(2)
-                                    data = await extract_details_async(page, query, raw_name, href)
-                                    unique_id = f"{data['name']}-{data.get('address','')[:10]}"
-                                    if unique_id not in seen_ids:
-                                        master_data.append(data)
-                                        seen_ids.add(unique_id)
-                                        logger.info(f"Captured: {raw_name} | Phone: {data['phone']}")
-                                    if await page.locator('button[aria-label="Back"]').count() > 0:
-                                        await page.locator('button[aria-label="Back"]').click()
-                                    else:
-                                        await page.goto(url)
-                                        await page.wait_for_selector("div[role='feed']")
-                                    await asyncio.sleep(1)
-                                except Exception as e:
-                                    logger.warning(f"Error processing item {i} for query {query}: {e}")
-                                    continue
-                        else:
-                            if await page.locator("h1").count() > 0:
-                                raw_name = await page.locator("h1").first.inner_text()
-                                valid = True
-                                if allow_kws and not any(k in raw_name.lower() for k in allow_kws):
-                                    valid = False
-                                if block_kws and any(k in raw_name.lower() for k in block_kws):
-                                    valid = False
-                                if valid:
-                                    logger.info(f"Single Result: {raw_name}")
-                                    await asyncio.sleep(2)
-                                    data = await extract_details_async(page, query, raw_name, page.url)
-                                    unique_id = f"{data['name']}-{data.get('address','')[:10]}"
-                                    if unique_id not in seen_ids:
-                                        master_data.append(data)
-                                        seen_ids.add(unique_id)
-                                        logger.info(f"Captured: {raw_name} | Phone: {data.get('phone', 'N/A')}")
-                    except Exception as e:
-                        logger.error(f"Error processing query {query}: {e}", exc_info=True)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for idx, query in enumerate(queries, 1):
+                try:
+                    query_str = str(query).strip() if not isinstance(query, dict) else (query.get("query") or query.get("q") or "").strip()
+                    if not query_str:
+                        logger.warning(f"Skipping empty query at index {idx}")
                         continue
-            finally:
-                await browser.close()
-                logger.debug("Browser closed successfully")
+
+                    query_with_geo = f"{query_str}, {geo_suffix}"
+                    logger.info(f"Scouting [{idx}/{len(queries)}]: {query_with_geo}...")
+
+                    payload = {"q": query_with_geo, "gl": "nz"}
+                    response = await client.post(PLACES_URL, headers=headers, json=payload)
+
+                    if response.status_code != 200:
+                        logger.error(f"Places API error {response.status_code} for '{query_str}': {response.text[:200]}")
+                        continue
+
+                    data = response.json()
+                    # Serper may return "places" or "place_results" (single object with list inside)
+                    places = data.get("places") or data.get("place_results")
+                    if isinstance(places, dict):
+                        places = places.get("places", places.get("results", []) if isinstance(places.get("results"), list) else [])
+                    if not isinstance(places, list):
+                        places = []
+
+                    logger.info(f"Query '{query_str}' returned {len(places)} places")
+
+                    for place in places:
+                        if not isinstance(place, dict):
+                            continue
+                        item = _map_place_to_item(place, source_query=query_str)
+                        if not item.get("name") or (item.get("name") or "").strip() == "":
+                            continue
+                        if not _filter_by_keywords(item, allow_kws, block_kws):
+                            continue
+                        unique_id = f"{item['name']}-{(item.get('address') or '')[:10]}"
+                        if unique_id in seen_ids:
+                            continue
+                        seen_ids.add(unique_id)
+                        master_data.append(item)
+                        logger.info(f"Captured: {item['name']} | Phone: {item.get('phone') or item.get('phoneNumber') or 'N/A'}")
+
+                except Exception as e:
+                    logger.error(f"Error processing query {query}: {e}", exc_info=True)
+                    continue
 
         return {
             "success": True,
@@ -133,99 +132,24 @@ async def run_scout_async(
             "data": master_data,
         }
     except Exception as outer_e:
-        logger.error(f"Scraper initialization failed: {outer_e}", exc_info=True)
+        logger.error(f"Scout failed: {outer_e}", exc_info=True)
         return {
             "success": False,
             "agent_name": "scout_anchors",
-            "message": f"Scraper initialization failed: {str(outer_e)}",
+            "message": f"Scout failed: {str(outer_e)}",
             "data": None,
         }
-
-
-async def extract_details_async(page, source_query: str, name: str, source_url: str) -> Dict[str, Any]:
-    """Async extraction for use with playwright async_api page."""
-    data = {
-        "name": name,
-        "source_query": source_query,
-        "google_maps_url": source_url,
-        "address": None,
-        "phone": None,
-        "website": None,
-        "working_hours": None,
-    }
-    try:
-        if await page.locator('button[data-item-id="address"]').count() > 0:
-            addr = await page.locator('button[data-item-id="address"]').first.get_attribute("aria-label")
-            if addr:
-                data["address"] = addr.replace("Address: ", "").strip()
-        if await page.locator('button[data-item-id*="phone"]').count() > 0:
-            ph = await page.locator('button[data-item-id*="phone"]').first.get_attribute("aria-label")
-            if ph:
-                data["phone"] = ph.replace("Phone: ", "").strip()
-        if await page.locator('a[data-item-id="authority"]').count() > 0:
-            data["website"] = await page.locator('a[data-item-id="authority"]').first.get_attribute("href")
-        try:
-            if await page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').count() > 0:
-                hours_button = page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').first
-                working_hours_text = await hours_button.get_attribute("aria-label")
-                if working_hours_text:
-                    data["working_hours"] = working_hours_text.replace("Hours: ", "").replace("Opening hours: ", "").strip()
-            if not data.get("working_hours"):
-                for selector in ['div[data-value*="hours"]', 'div:has-text("Open")', 'span:has-text("AM")']:
-                    if await page.locator(selector).count() > 0:
-                        working_hours_text = await page.locator(selector).first.inner_text()
-                        if working_hours_text and len(working_hours_text) < 200:
-                            data["working_hours"] = working_hours_text
-                            break
-        except Exception as hours_e:
-            logger.debug(f"Could not extract working hours for {name}: {hours_e}")
-    except Exception as e:
-        logger.debug(f"Error extracting details for {name}: {e}")
-    return data
-
-
-# --- Synchronous API (backward compatibility) ---
-import time
 
 
 def run_scout_sync(
     queries: list,
     allow_kws: Optional[List[str]] = None,
     block_kws: Optional[List[str]] = None,
+    geo_suffix: str = "New Zealand",
 ) -> Dict[str, Any]:
     """Sync wrapper: runs run_scout_async via anyio.run or asyncio.run."""
     try:
         import anyio
-        return anyio.run(run_scout_async, queries, allow_kws, block_kws)
+        return anyio.run(run_scout_async, queries, allow_kws, block_kws, geo_suffix)
     except ImportError:
-        return asyncio.run(run_scout_async(queries, allow_kws, block_kws))
-
-
-def extract_details(page, source_query: str, name: str, source_url: str) -> Dict[str, Any]:
-    """Sync extraction for sync_playwright page (backward compatibility)."""
-    data = {"name": name, "source_query": source_query, "google_maps_url": source_url, "address": None, "phone": None, "website": None, "working_hours": None}
-    try:
-        if page.locator('button[data-item-id="address"]').count() > 0:
-            data["address"] = page.locator('button[data-item-id="address"]').first.get_attribute("aria-label").replace("Address: ", "").strip()
-        if page.locator('button[data-item-id*="phone"]').count() > 0:
-            data["phone"] = page.locator('button[data-item-id*="phone"]').first.get_attribute("aria-label").replace("Phone: ", "").strip()
-        if page.locator('a[data-item-id="authority"]').count() > 0:
-            data["website"] = page.locator('a[data-item-id="authority"]').first.get_attribute("href")
-        try:
-            if page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').count() > 0:
-                hours_button = page.locator('button[data-item-id*="hours"], button[data-item-id*="opening"]').first
-                working_hours_text = hours_button.get_attribute("aria-label")
-                if working_hours_text:
-                    data["working_hours"] = working_hours_text.replace("Hours: ", "").replace("Opening hours: ", "").strip()
-            if not data.get("working_hours"):
-                for selector in ['div[data-value*="hours"]', 'div:has-text("Open")', 'span:has-text("AM")']:
-                    if page.locator(selector).count() > 0:
-                        working_hours_text = page.locator(selector).first.inner_text()
-                        if working_hours_text and len(working_hours_text) < 200:
-                            data["working_hours"] = working_hours_text
-                            break
-        except Exception as hours_e:
-            logger.debug(f"Could not extract working hours for {name}: {hours_e}")
-    except Exception as e:
-        logger.debug(f"Error extracting details for {name}: {e}")
-    return data
+        return asyncio.run(run_scout_async(queries, allow_kws, block_kws, geo_suffix))

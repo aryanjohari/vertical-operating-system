@@ -20,6 +20,9 @@ identity:
     linkedin: ""
     google_maps_cid: ""           # Critical for Local SEO verification
 
+  geo_target:
+    city: "New Zealand"            # Default location/country for Maps Scout (e.g. "New Zealand", "Auckland, NZ")
+
 brand_brain:
   # The Voice: Controls the AI Writer's personality
   voice_tone: "Professional, Authoritative, Empathetic" 
