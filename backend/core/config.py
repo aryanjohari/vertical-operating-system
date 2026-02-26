@@ -246,13 +246,16 @@ class ConfigLoader:
     def save_campaign(self, project_id: str, campaign_id: str, config: Dict[str, Any]) -> None:
         """
         Saves campaign config to profiles_dir/project_id/campaigns/{campaign_id}.yaml.
-        Creates campaign dir if needed.
+        Creates campaign dir if needed. Invalidates cache for (project_id, campaign_id).
         """
         campaign_dir = os.path.join(self.profiles_dir, project_id, "campaigns")
         os.makedirs(campaign_dir, exist_ok=True)
         campaign_path = os.path.join(campaign_dir, f"{campaign_id}.yaml")
         with open(campaign_path, "w", encoding="utf-8") as f:
             yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        k = (project_id, campaign_id)
+        if k in ConfigLoader._cache:
+            del ConfigLoader._cache[k]
         self.logger.debug(f"Saved campaign config for {campaign_id} in project {project_id}")
 
     def load_campaign_config(self, campaign_id: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
