@@ -4,6 +4,7 @@ import hashlib
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
+from backend.core.config import ConfigLoader
 from backend.core.models import Entity
 from backend.core.memory import memory
 from backend.core.services.llm_gateway import llm_gateway
@@ -88,6 +89,17 @@ class ScoutAgent(BaseAgent):
                     data={}
                 )
             
+            # Load merged config (DNA + campaign) to read profile-level identity.geo_target.city for maps_sync
+            geo_suffix = "New Zealand"
+            try:
+                merged = ConfigLoader().load(project_id, campaign_id)
+                if isinstance(merged, dict) and not merged.get("error"):
+                    gt = (merged.get("identity") or {}).get("geo_target") or {}
+                    if isinstance(gt, dict):
+                        geo_suffix = gt.get("city") or geo_suffix
+            except Exception as e:
+                self.logger.debug(f"Using default geo_suffix (ConfigLoader: {e})")
+
             # Extract from targeting section (campaign config structure)
             targeting = config.get('targeting', {})
             service = targeting.get('service_focus', config.get('service_focus', 'Service'))
@@ -168,7 +180,7 @@ class ScoutAgent(BaseAgent):
                     self.logger.info(f"📍 STEP 1/2: Running map_sync for {len(map_queries)} anchor queries...")
                     self.logger.info(f"📍 Map queries: {map_queries[:3]}{'...' if len(map_queries) > 3 else ''}")
                     try:
-                        map_results_raw = await run_scout_async(map_queries)
+                        map_results_raw = await run_scout_async(map_queries, geo_suffix=geo_suffix)
                         self.logger.info(f"✅ Map sync completed: {map_results_raw.get('message', 'Unknown status')}")
                     except Exception as e:
                         map_error = str(e)
@@ -396,7 +408,7 @@ class ScoutAgent(BaseAgent):
                     llm_gateway.generate_content,
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-flash-lite",
                     temperature=0.2,
                     max_retries=2,
                 )

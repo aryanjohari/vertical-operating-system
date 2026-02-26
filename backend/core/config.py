@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     Uses Pydantic BaseSettings for automatic .env file loading.
     """
     SERPER_API_KEY: str = ""
+    JINJA_API_KEY: str = ""  # Jina Reader API (r.jina.ai) for universal scraper
     # Billing: prices (USD) and default project limit; overridable via .env
     BILLING_TWILIO_VOICE: float = 0.05
     BILLING_GEMINI_TOKEN: float = 0.001

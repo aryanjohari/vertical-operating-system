@@ -821,11 +821,15 @@ class MemoryManager:
                 results = []
                 for row in rows:
                     item = dict(row)
-                    try:
-                        item['metadata'] = json.loads(item['metadata'])
-                    except (json.JSONDecodeError, TypeError) as e:
-                        self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
-                        item['metadata'] = {}
+                    meta_raw = item.get('metadata')
+                    if isinstance(meta_raw, str):
+                        try:
+                            item['metadata'] = json.loads(meta_raw)
+                        except (json.JSONDecodeError, TypeError) as e:
+                            self.logger.warning(f"Failed to parse metadata JSON for entity {item.get('id', 'unknown')}: {e}")
+                            item['metadata'] = {}
+                    else:
+                        item['metadata'] = meta_raw if meta_raw is not None else {}
                     results.append(item)
 
                 self.logger.debug(f"Found {len(results)} entities for tenant {tenant_id}")
@@ -967,10 +971,14 @@ class MemoryManager:
                 if not row:
                     return None
                 out = dict(row)
-                try:
-                    out["payload"] = json.loads(out["payload"]) if out.get("payload") else None
-                except (json.JSONDecodeError, TypeError):
-                    out["payload"] = None
+                p = out.get("payload")
+                if isinstance(p, str):
+                    try:
+                        out["payload"] = json.loads(p)
+                    except (json.JSONDecodeError, TypeError):
+                        out["payload"] = None
+                else:
+                    out["payload"] = p if p is not None else None
                 if out.get("fetched_at") and hasattr(out["fetched_at"], "isoformat"):
                     out["fetched_at"] = out["fetched_at"].isoformat()
                 return out
@@ -1005,10 +1013,14 @@ class MemoryManager:
                 if not row:
                     return None
                 entity = dict(row)
-                try:
-                    entity["metadata"] = json.loads(entity["metadata"]) if entity.get("metadata") else {}
-                except (json.JSONDecodeError, TypeError):
-                    entity["metadata"] = {}
+                meta = entity.get("metadata")
+                if isinstance(meta, str):
+                    try:
+                        entity["metadata"] = json.loads(meta)
+                    except (json.JSONDecodeError, TypeError):
+                        entity["metadata"] = {}
+                else:
+                    entity["metadata"] = meta if meta is not None else {}
                 return entity
             finally:
                 if cursor is not None:
@@ -1073,11 +1085,15 @@ class MemoryManager:
                 if not row:
                     self.logger.warning(f"Entity {entity_id} not found or access denied for tenant {tenant_id}")
                     return False
-                try:
-                    current_meta = json.loads(row[0])
-                except (json.JSONDecodeError, TypeError) as e:
-                    self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
-                    current_meta = {}
+                raw = row[0]
+                if isinstance(raw, str):
+                    try:
+                        current_meta = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        self.logger.warning(f"Failed to parse existing metadata JSON for entity {entity_id}: {e}")
+                        current_meta = {}
+                else:
+                    current_meta = raw if raw is not None else {}
                 current_meta.update(new_metadata)
                 cursor.execute(
                     f"UPDATE entities SET metadata = {placeholder} WHERE id = {placeholder} AND tenant_id = {placeholder}",

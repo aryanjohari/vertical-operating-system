@@ -45,7 +45,7 @@ class OnboardingAgent(BaseAgent):
             "templates",
             "profile_template.yaml",
         )
-        self.model = "gemini-2.5-flash"
+        self.model = "gemini-2.5-flash-lite"
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
         action = input_data.params.get("action", "compile_profile")
