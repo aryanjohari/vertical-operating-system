@@ -310,10 +310,11 @@ class ManagerAgent(BaseAgent):
     ]
 
     # Draft status -> next pipeline step (for run_next_for_draft / phase-based UI)
+    # Note: "rejected" sends the draft back to Writer so the same entity can be rewritten.
     DRAFT_STATUS_TO_NEXT_STEP = {
         "pending_writer": "write_pages",
         "draft": "critic_review",
-        "rejected": "critic_review",
+        "rejected": "write_pages",
         "validated": "librarian_link",
         "ready_for_media": "enhance_media",
         "ready_for_utility": "enhance_utility",

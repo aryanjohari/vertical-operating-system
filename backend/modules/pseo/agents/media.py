@@ -132,10 +132,15 @@ class MediaAgent(BaseAgent):
                 <figcaption><small>{html.escape(credit_text)}</small></figcaption>
             </figure>
             """
-        if "{{image_main}}" in html_content:
+        if "{{image_main_placeholder}}" in html_content:
+            html_content = html_content.replace("{{image_main_placeholder}}", img_tag)
+        elif "{{image_main}}" in html_content:
             html_content = html_content.replace("{{image_main}}", img_tag)
         else:
-            html_content = html_content.replace("</h1>", f"</h1>\n{img_tag}")
+            if "</header>" in html_content:
+                html_content = html_content.replace("</header>", f"</header>\n{img_tag}", 1)
+            else:
+                html_content = html_content.replace("</h1>", f"</h1>\n{img_tag}", 1)
 
         target_draft["metadata"]["content"] = html_content
         target_draft["metadata"]["status"] = "ready_for_utility"

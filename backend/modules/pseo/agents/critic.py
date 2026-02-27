@@ -14,7 +14,7 @@ def _run_deterministic_structure_checks(
     draft_meta: Dict[str, Any],
     config: Dict[str, Any],
 ) -> Tuple[bool, str]:
-    """Run deterministic checks (placeholders, h1, form, tel, json-ld, metadata). Returns (passed, failure_reason)."""
+    """Run deterministic checks (placeholders, h1, form, tel, metadata). Returns (passed, failure_reason). Schema/JSON-LD is injected later by Utility."""
     critic_cfg = config.get("critic") or config.get("modules", {}).get("pseo", {}).get("critic") or {}
     required_placeholders = critic_cfg.get("required_placeholders") or ["form_capture", "image_main"]
     check_form_webhook = critic_cfg.get("check_form_webhook", False)
@@ -48,15 +48,6 @@ def _run_deterministic_structure_checks(
         )
         if destination_phone and destination_phone != "REQUIRED" and "tel:" not in html_content:
             return False, "Missing tel: link for destination_phone."
-
-    if critic_cfg.get("check_json_ld"):
-        ld_match = re.search(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>([^<]+)</script>', html_content, re.DOTALL | re.IGNORECASE)
-        if not ld_match:
-            return False, "Missing JSON-LD script block."
-        try:
-            json.loads(ld_match.group(1).strip())
-        except (json.JSONDecodeError, ValueError):
-            return False, "Invalid JSON in application/ld+json script."
 
     if critic_cfg.get("check_metadata", True):
         if not (draft_meta.get("meta_title") or "").strip():
@@ -150,9 +141,10 @@ class CriticAgent(BaseAgent):
 
         --- THE RULES (STRICT) ---
         1. **Brand Voice:** Must be "{brand_voice}".
-        2. **Local Accuracy:** If an Anchor Location ({draft_meta.get('anchor_used', 'General City')}) was assigned, it MUST be mentioned in the text.
-        3. **Forbidden Topics:** The text MUST NOT promise or discuss: {forbidden_topics}.
+        2. **Local Accuracy:** If an Anchor Location ({draft_meta.get('anchor_used', 'General City')}) was assigned, it must be naturally mentioned in the text (referenced in a natural way, not necessarily the exact config string).
+        3. **Forbidden Topics:** The text MUST NOT promise or discuss: {forbidden_topics}. If you fail the draft for a Forbidden Topic, you MUST quote the exact sentence from the draft in your reason. Do not fail unless there is an explicit mention.
         4. **Structure:** Must contain an <h1> and placeholders like {{{{form_capture}}}}.
+        5. **Formatting:** Fail the draft if there are massive walls of text. Paragraphs over 100 words should be penalized.
 
         --- THE DRAFT CONTENT ---
         {html_content[:3000]} ... (truncated)

@@ -107,9 +107,28 @@ class LibrarianAgent(BaseAgent):
         # Deterministic: sort by name/url and take first max_intel_sources
         campaign_intel_sorted = sorted(campaign_intel, key=lambda i: (i.get("name") or "", i.get("metadata", {}).get("url") or ""))
 
-        # 4. EXECUTE LINKING STRATEGY (Regex Injection)
+        # 4. EXECUTE LINKING STRATEGY (Safe regex: only match term in text, not inside HTML tags)
         linked_html = html_content
         links_added = 0
+
+        def _replace_first_term_outside_tags(html: str, term: str, replacement: str) -> str:
+            """Replace first occurrence of term only in text content (not inside <...>)."""
+            if not term:
+                return html
+            parts = re.split(r"(<[^>]+>)", html)
+            for i, part in enumerate(parts):
+                if part.startswith("<"):
+                    continue
+                if re.search(re.escape(term), part, re.IGNORECASE):
+                    new_part = re.sub(
+                        re.compile(re.escape(term), re.IGNORECASE),
+                        lambda m: replacement,
+                        part,
+                        count=1,
+                    )
+                    parts[i] = new_part
+                    return "".join(parts)
+            return html
 
         for item in link_targets:
             if internal_count >= max_internal_links:
@@ -118,10 +137,10 @@ class LibrarianAgent(BaseAgent):
             slug = item.get("slug", target_term.lower().replace(" ", "-"))
             if not target_term:
                 continue
-            pattern = re.compile(re.escape(target_term), re.IGNORECASE)
-            if pattern.search(linked_html):
-                replacement = f'<a href="/{slug}" title="{target_term}" class="internal-link">{target_term}</a>'
-                linked_html = pattern.sub(replacement, linked_html, count=1)
+            replacement = f'<a href="/{slug}" title="{target_term}" class="internal-link">{target_term}</a>'
+            new_html = _replace_first_term_outside_tags(linked_html, target_term, replacement)
+            if new_html != linked_html:
+                linked_html = new_html
                 internal_count += 1
                 links_added += 1
 
@@ -133,7 +152,10 @@ class LibrarianAgent(BaseAgent):
                 title = source.get("name", "")
                 source_html += f'<li><a href="{url}" target="_blank" rel="nofollow noreferrer">{title}</a></li>'
             source_html += "</ul></div>"
-            linked_html += f"\n{source_html}"
+            if "</article>" in linked_html:
+                linked_html = linked_html.replace("</article>", source_html + "\n</article>", 1)
+            else:
+                linked_html += f"\n{source_html}"
             links_added += 1
 
         # 5. SAVE & ADVANCE (use "content" per Titanium/DB pattern)

@@ -17,6 +17,17 @@ _TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "core"
 _DEFAULT_TEMPLATE_PATH = os.path.join(_TEMPLATE_DIR, "page_draft_body.html")
 
 
+def _is_informational_intent(draft_meta: Dict[str, Any]) -> bool:
+    """True if intent is guide/how-to; otherwise transactional."""
+    intent_role = (draft_meta.get("intent_role") or "").strip()
+    cluster_id = (draft_meta.get("cluster_id") or draft_meta.get("intent") or "").strip().lower()
+    if "informational" in intent_role.lower():
+        return True
+    if "guide" in cluster_id or "how-to" in cluster_id or "howto" in cluster_id:
+        return True
+    return False
+
+
 def _load_page_template(config: Optional[Dict] = None) -> str:
     """Load page body template from config (pseo.page_template) or default file."""
     if config:
@@ -75,39 +86,51 @@ class WriterAgent(BaseAgent):
         targeting = config.get("targeting", {})
         service_focus = targeting.get("service_focus", config.get("service_focus", "Service"))
 
-        # Configurable word target from campaign or DNA (pseo_settings / writer)
-        pseo_settings = config.get("pseo_settings") or (self.config or {}).get("modules", {}).get("pseo", {}).get("pseo_settings") or {}
-        writer_config = config.get("writer") or (self.config or {}).get("modules", {}).get("pseo", {}).get("writer") or {}
-        min_word_count = int(
-            writer_config.get("min_word_count")
-            or writer_config.get("word_target")
-            or pseo_settings.get("min_word_count")
-            or 600
-        )
-
         brand_voice = self.config.get("brand_brain", {}).get("voice_tone", "Professional, Empathetic")
 
-        # Prefer page_draft with status pending_writer (intent-cluster flow); fallback to seo_keyword (legacy)
+        # Prefer intent-cluster page_draft; fallback to seo_keyword (legacy).
+        # When invoked with draft_id (e.g. from Manager run_next_for_draft), allow rewrites of rejected drafts.
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
-        pending_drafts = [
-            d for d in all_drafts
-            if d.get("metadata", {}).get("campaign_id") == campaign_id
-            and d.get("metadata", {}).get("status") == "pending_writer"
-        ]
         draft_id_param = input_data.params.get("draft_id")
 
-        if pending_drafts:
+        target_draft = None
+        use_draft_path = False
+        is_informational = False
+
+        if draft_id_param:
+            # Explicit rewrite path: target this draft even if status is 'rejected' or 'draft'
+            matching = [
+                d
+                for d in all_drafts
+                if d.get("id") == draft_id_param
+                and d.get("metadata", {}).get("campaign_id") == campaign_id
+                and d.get("metadata", {}).get("status") in ("pending_writer", "draft", "rejected")
+            ]
+            if matching:
+                target_draft = matching[0]
+        else:
+            # Batch path: only pick drafts marked pending_writer
+            pending_drafts = [
+                d for d in all_drafts
+                if d.get("metadata", {}).get("campaign_id") == campaign_id
+                and d.get("metadata", {}).get("status") == "pending_writer"
+            ]
+            if pending_drafts:
+                target_draft = pending_drafts[0]
+
+        if target_draft:
             # Intent-cluster path: write into existing page_draft
-            if draft_id_param:
-                pending_drafts = [d for d in pending_drafts if d.get("id") == draft_id_param]
-                if not pending_drafts:
-                    return AgentOutput(status="error", message="Draft not found or not pending_writer.")
-            target_draft = pending_drafts[0]
             draft_meta = target_draft.get("metadata", {})
             kw_text = draft_meta.get("h1_title") or target_draft.get("name", "").replace("Page: ", "")
             anchor_ref_id = draft_meta.get("anchor_id")
-            kw_meta = {"intent": draft_meta.get("cluster_id"), "anchor_reference": anchor_ref_id}
+            kw_meta = {
+                "intent": draft_meta.get("cluster_id"),
+                "anchor_reference": anchor_ref_id,
+                "intent_role": draft_meta.get("intent_role"),
+                "cluster_id": draft_meta.get("cluster_id"),
+            }
             use_draft_path = True
+            is_informational = _is_informational_intent(draft_meta)
         else:
             # Legacy path: seo_keyword pending
             keyword_id_param = input_data.params.get("keyword_id")
@@ -128,6 +151,7 @@ class WriterAgent(BaseAgent):
             anchor_ref_id = kw_meta.get("anchor_reference")
             target_draft = None
             use_draft_path = False
+            is_informational = False
 
         self.logger.info(f"WRITER: Drafting page for '{kw_text}' (data-only + Jinja2)")
 
@@ -182,7 +206,18 @@ class WriterAgent(BaseAgent):
             intel_context = "No specific knowledge fragments available. Use general best practices."
             self.logger.warning(f"No knowledge fragments found for keyword '{kw_text}' in campaign {campaign_id}")
 
-        # Data-only prompt: LLM returns structured JSON, no HTML
+        if is_informational:
+            intent_task = """
+- "expert_insight": string, one paragraph of expert insight or understanding specific to the keyword (guide/how-to).
+- "step_by_step_guide": array of exactly 4 objects, each {"step_title": "...", "step_description": "..."}, clear steps for the user.
+Do NOT include "service_overview" or "service_features"."""
+        else:
+            intent_task = """
+- "service_overview": string, 1-2 paragraphs describing the service offering and how it addresses the keyword.
+- "service_features": array of exactly 4 objects, each {"feature": "...", "benefit": "..."}, key features and benefits.
+Do NOT include "expert_insight" or "step_by_step_guide"."""
+
+        # Data-only prompt: LLM returns structured JSON, no HTML. No JSON-LD (schema is added deterministically later).
         prompt = f"""
 ACT AS: Senior Content Writer & SEO Specialist for '{service_focus}' services.
 TONE: {brand_voice}.
@@ -196,16 +231,17 @@ KNOWLEDGE BANK (cite only; never invent):
 {intel_context}
 
 TASK: Return ONLY a JSON object with these keys (plain text content, no HTML).
-Aim for at least {min_word_count} words total across sections to avoid thin content; use hook, local, regulatory, feature list, and FAQ to get there.
-
+Common keys (always include):
 - "meta_title": string, max 60 chars, includes keyword
 - "meta_description": string, max 160 chars, includes keyword
 - "hook_paragraph": string, 1-3 sentences answering the pain point
 - "local_paragraph": string, 1-2 sentences about being minutes away from anchor or central
 - "regulatory_paragraph": string, 1-3 sentences using KNOWLEDGE BANK for rules/costs (no invention)
 - "fact_box": array of {{"label": "...", "value": "..."}} ONLY for facts explicitly in KNOWLEDGE BANK (costs, fees, processing times, documents, hours). If none, use [].
-- "feature_list": object with "title" (string, e.g. "5 Signs You Need a Plumber" or "Eligibility Requirements") and "items" (array of exactly 5 strings, bullet points specific to the keyword/niche).
+- "feature_list": object with "title" (string) and "items" (array of exactly 5 strings, bullet points specific to the keyword/niche).
 - "faq_section": array of exactly 3 objects, each {{"question": "...", "answer": "..."}}, relevant to the keyword for SEO rich snippets.
+Intent-specific (include only these for this intent):
+{intent_task}
 
 Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_box must be [].
 """
@@ -213,7 +249,7 @@ Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_b
         try:
             response_text = await asyncio.to_thread(
                 llm_gateway.generate_content,
-                system_prompt="You are a content writer. Return only valid JSON with keys: meta_title, meta_description, hook_paragraph, local_paragraph, regulatory_paragraph, fact_box (array of {label, value}), feature_list ({title, items: 5 strings}), faq_section (array of 3 {question, answer}). No HTML, no markdown.",
+                system_prompt="You are a content writer. Return only valid JSON. Keys include: meta_title, meta_description, hook_paragraph, local_paragraph, regulatory_paragraph, fact_box, feature_list (title, items), faq_section; for informational intent also expert_insight and step_by_step_guide; for transactional intent also service_overview and service_features. No HTML, no markdown, no JSON-LD.",
                 user_prompt=prompt,
                 model="gemini-2.5-flash",
                 temperature=0.5,
@@ -266,6 +302,30 @@ Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_b
             if q or a:
                 faq_body += f'<details><summary>{html.escape(q)}</summary><p>{html.escape(a)}</p></details>\n'
 
+        expert_insight = (result.get("expert_insight") or "").strip() if is_informational else ""
+        step_by_step_guide = result.get("step_by_step_guide")
+        if not isinstance(step_by_step_guide, list):
+            step_by_step_guide = []
+        step_by_step_guide = [
+            {"step_title": str(s.get("step_title", "")).strip(), "step_description": str(s.get("step_description", "")).strip()}
+            for s in step_by_step_guide[:4] if isinstance(s, dict)
+        ]
+
+        service_overview = (result.get("service_overview") or "").strip() if not is_informational else ""
+        service_features = result.get("service_features")
+        if not isinstance(service_features, list):
+            service_features = []
+        service_features = [
+            {"feature": str(s.get("feature", "")).strip(), "benefit": str(s.get("benefit", "")).strip()}
+            for s in service_features[:4] if isinstance(s, dict)
+        ]
+
+        # destination_phone: from lead_gen config, digits and + only
+        merged_config = self.config or {}
+        lead_gen_cfg = (merged_config.get("modules") or {}).get("lead_gen", {}) or merged_config.get("lead_gen_integration") or {}
+        dest_phone_raw = (lead_gen_cfg.get("sales_bridge") or {}).get("destination_phone") or lead_gen_cfg.get("destination_phone") or ""
+        destination_phone = "".join(c for c in str(dest_phone_raw) if c.isdigit() or c == "+") if dest_phone_raw else ""
+
         # Local blurb (Python-generated sentence)
         geo = targeting.get("geo_targets", {}) or {}
         cities = geo.get("cities", []) if isinstance(geo.get("cities"), list) else []
@@ -292,6 +352,12 @@ Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_b
             feature_list_title=feature_list_title,
             feature_list_body=feature_list_body,
             faq_body=faq_body,
+            expert_insight=expert_insight,
+            step_by_step_guide=step_by_step_guide,
+            service_overview=service_overview,
+            service_features=service_features,
+            destination_phone=destination_phone,
+            anchor_used=anchor_data.get("name") if anchor_data else None,
             image_main_placeholder="{{image_main}}",
             form_capture_placeholder="{{form_capture}}",
         )
