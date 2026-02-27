@@ -1,29 +1,117 @@
-<h1>{{ keyword }}</h1>
-{{ image_main_placeholder }}
-<p>{{ hook_paragraph }}</p>
-{% if local_blurb %}
-<p>{{ local_blurb }}</p>
+{% if json_ld %}
+<script type="application/ld+json">
+  {{ json_ld | safe }}
+</script>
 {% endif %}
-<p>{{ local_paragraph }}</p>
-<p>{{ regulatory_paragraph }}</p>
-{% if fact_box and fact_box|length > 0 %}
-<div class="fact-box">
-  <table>
-    <caption>
-      Key information
-    </caption>
-    {% for row in fact_box %}
-    <tr>
-      <th>{{ row.label }}</th>
-      <td>{{ row.value }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %} {% if feature_list_title or feature_list_body %}
-<h2>{{ feature_list_title }}</h2>
-{{ feature_list_body }} {% endif %} {% if faq_body %}
-<section class="faq-section" aria-label="Frequently asked questions">
-  {{ faq_body }}
-</section>
-{% endif %} {{ form_capture_placeholder }}
+
+<article class="pseo-content">
+  <header class="page-header">
+    <h1>{{ keyword }}</h1>
+    {{ image_main_placeholder }}
+  </header>
+
+  <section class="intro-section">
+    <p class="lead-hook">{{ hook_paragraph }}</p>
+    
+    {% if local_blurb %}
+    <div class="local-trust-signal" style="padding: 15px; background: #f9f9f9; border-left: 4px solid #0056b3; margin: 20px 0;">
+      <p><strong>📍 Local Expertise:</strong> {{ local_blurb }} {% if anchor_used %}Conveniently located near <strong>{{ anchor_used }}</strong>.{% endif %}</p>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="core-value-content">
+    {% if expert_insight %}
+    <div class="expert-insight">
+      <h2>Understanding the Process</h2>
+      <p>{{ expert_insight }}</p>
+    </div>
+    {% elif service_overview %}
+    <div class="service-overview">
+      <h2>Our Services</h2>
+      <p>{{ service_overview }}</p>
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="cta-block soft-cta" style="margin: 30px 0; text-align: center; padding: 20px; background: #eef7ff; border-radius: 8px;">
+    <p style="margin-bottom: 15px; font-weight: bold;">Need immediate guidance? Speak with a local specialist today.</p>
+    <a href="tel:{{ destination_phone | default('#', true) }}" class="btn call-btn" style="background: #0056b3; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">📞 Call Now for a Confidential Consultation</a>
+  </aside>
+
+  <section class="detailed-breakdown">
+    {% if step_by_step_guide and step_by_step_guide|length > 0 %}
+    <div class="step-guide">
+      <h2>Step-by-Step Guide</h2>
+      <ol>
+        {% for step in step_by_step_guide %}
+        <li style="margin-bottom: 10px;">
+          <strong>{{ step.step_title }}:</strong> {{ step.step_description }}
+        </li>
+        {% endfor %}
+      </ol>
+    </div>
+    {% endif %}
+
+    {% if service_features and service_features|length > 0 %}
+    <div class="service-features">
+      <h2>Key Features & Benefits</h2>
+      <ul>
+        {% for item in service_features %}
+        <li style="margin-bottom: 10px;">
+          <strong>{{ item.feature }}:</strong> {{ item.benefit }}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="conversion-block form-cta" style="margin: 40px 0; padding: 25px; border: 1px solid #eaeaea; border-radius: 8px; background: #ffffff;">
+    <h3 style="text-align: center; margin-top: 0;">Request Assistance Online</h3>
+    {{ form_capture_placeholder }}
+    <p class="trust-signal-privacy" style="text-align: center; font-size: 0.85em; color: #666; margin-top: 15px;">
+      🔒 Your information is secure, strictly confidential, and never shared.
+    </p>
+  </aside>
+
+  {% if regulatory_paragraph or (fact_box and fact_box|length > 0) %}
+  <section class="compliance-and-facts">
+    {% if regulatory_paragraph %}
+    <p class="regulatory-note" style="font-style: italic; color: #444;"><strong>Compliance Note:</strong> {{ regulatory_paragraph }}</p>
+    {% endif %}
+
+    {% if fact_box and fact_box|length > 0 %}
+    <div class="fact-box" style="margin-top: 20px;">
+      <table style="width: 100%; border-collapse: collapse;">
+        <caption style="text-align: left; font-weight: bold; margin-bottom: 10px;">Key Information & Parameters</caption>
+        <tbody>
+          {% for row in fact_box %}
+          <tr style="border-bottom: 1px solid #ddd;">
+            <th scope="row" style="text-align: left; padding: 8px 0;">{{ row.label }}</th>
+            <td style="text-align: left; padding: 8px 0;">{{ row.value }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+
+  {% if faq_body %}
+  <section class="faq-section" aria-label="Frequently asked questions" style="margin-top: 40px;">
+    <h2>Frequently Asked Questions</h2>
+    {{ faq_body }}
+  </section>
+  {% endif %}
+
+  <aside class="cta-block hard-cta" style="margin-top: 40px; text-align: center; padding: 30px; background: #f4f4f4; border-top: 4px solid #0056b3;">
+    <h3 style="margin-top: 0;">Ready to get started?</h3>
+    <p style="margin-bottom: 20px;">Our team is available to provide the support and answers you need.</p>
+    <a href="tel:{{ destination_phone | default('#', true) }}" class="btn call-btn-large" style="background: #0056b3; color: white; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-size: 1.1em; font-weight: bold;">
+      📞 Call Us Now
+    </a>
+  </aside>
+
+</article>

@@ -288,17 +288,27 @@ class UtilityAgent(BaseAgent):
 
         self.logger.info(f"UTILITY: Building technical assets for '{keyword}' (Jinja2)")
 
-        schema_script = self._render_schema_script(target_draft, full_config, lead_gen_cfg)
-        schema_json = self._get_schema_data(target_draft, full_config)
-        schema_json["area_served_json"] = json.loads(schema_json["area_served_json"])
-        full_schema = {
-            "@context": "https://schema.org",
-            "@type": "Service",
-            "serviceType": schema_json["service_name"],
-            "provider": {"@type": "LocalBusiness", "name": schema_json["brand_name"]},
-            "areaServed": schema_json["area_served_json"],
-            "offers": {"@type": "Offer", "priceCurrency": schema_json["price_currency"], "availability": "https://schema.org/InStock"},
-        }
+        # Schema: use pseo's intent-based generator for pseo campaign drafts; else lead_gen template
+        if campaign.get("module") != "lead_gen":
+            from backend.modules.pseo.agents.utility import generate_schema
+            anchor_data = {"name": draft_meta.get("anchor_used"), "address": None, "phone": None}
+            merged_for_schema = dict(full_config)
+            merged_for_schema.update(config)
+            schema_dict = generate_schema(draft_meta, anchor_data, merged_for_schema)
+            schema_script = '<script type="application/ld+json">\n' + json.dumps(schema_dict) + '\n</script>'
+            full_schema = schema_dict
+        else:
+            schema_script = self._render_schema_script(target_draft, full_config, lead_gen_cfg)
+            schema_json = self._get_schema_data(target_draft, full_config)
+            schema_json["area_served_json"] = json.loads(schema_json["area_served_json"])
+            full_schema = {
+                "@context": "https://schema.org",
+                "@type": "Service",
+                "serviceType": schema_json["service_name"],
+                "provider": {"@type": "LocalBusiness", "name": schema_json["brand_name"]},
+                "areaServed": schema_json["area_served_json"],
+                "offers": {"@type": "Offer", "priceCurrency": schema_json["price_currency"], "availability": "https://schema.org/InStock"},
+            }
 
         fields = self._get_form_fields(lead_gen_cfg)
         form_html = self._render_form_html(
