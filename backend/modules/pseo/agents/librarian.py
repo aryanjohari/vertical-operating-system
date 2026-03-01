@@ -39,7 +39,7 @@ class LibrarianAgent(BaseAgent):
             return AgentOutput(status="error", message="Project not found or access denied.")
 
         librarian_config = self._get_librarian_config()
-        run_only_when_all_validated = librarian_config.get("run_only_when_all_validated", True)
+        run_only_when_all_validated = librarian_config.get("run_only_when_all_validated", False)
         max_internal_links = int(librarian_config.get("max_internal_links", 3))
         max_intel_sources = int(librarian_config.get("max_intel_sources", 2))
 
