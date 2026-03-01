@@ -225,7 +225,7 @@ TONE: {brand_voice}.
 INPUT DATA (USE THIS, DO NOT INVENT):
 KEYWORD: "{kw_text}"
 INTENT: {kw_meta.get('intent')}
-LOCAL ANCHOR: {f"User is near: {anchor_data['name']} at {anchor_data['address']}." if anchor_data else "User is searching city-wide."}
+LOCAL ANCHOR: We serve clients involved with or located near {anchor_data['name'] if anchor_data else 'your local area'}. Frame this naturally as our service coverage area, not a physical brick-and-mortar storefront.
 
 KNOWLEDGE BANK (cite only; never invent):
 {intel_context}
