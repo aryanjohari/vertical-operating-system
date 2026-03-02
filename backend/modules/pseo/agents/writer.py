@@ -320,11 +320,20 @@ Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_b
             for s in service_features[:4] if isinstance(s, dict)
         ]
 
-        # destination_phone: from lead_gen config, digits and + only
+        # Get phone for CTA: lead_gen first (twilio_phone, then destination_phone), fallback to identity.contact.phone
         merged_config = self.config or {}
         lead_gen_cfg = (merged_config.get("modules") or {}).get("lead_gen", {}) or merged_config.get("lead_gen_integration") or {}
-        dest_phone_raw = (lead_gen_cfg.get("sales_bridge") or {}).get("destination_phone") or lead_gen_cfg.get("destination_phone") or ""
-        destination_phone = "".join(c for c in str(dest_phone_raw) if c.isdigit() or c == "+") if dest_phone_raw else ""
+        sb = lead_gen_cfg.get("sales_bridge", {}) or {}
+        dest_phone_raw = (
+            sb.get("twilio_phone")
+            or sb.get("destination_phone")
+            or lead_gen_cfg.get("destination_phone")
+            or ((merged_config.get("identity") or {}).get("contact") or {}).get("phone")
+            or ""
+        )
+        if isinstance(dest_phone_raw, str) and str(dest_phone_raw).strip().upper() == "REQUIRED":
+            dest_phone_raw = ""
+        destination_phone = "".join(c for c in str(dest_phone_raw or "") if c.isdigit() or c == "+") if dest_phone_raw else ""
 
         # Local blurb (Python-generated sentence)
         geo = targeting.get("geo_targets", {}) or {}

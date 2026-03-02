@@ -4,6 +4,37 @@
 </script>
 {% endif %}
 
+<style>
+  /* 1. Make the main Unsplash image responsive */
+  .pseo-content .main-image { margin: 20px 0; width: 100%; }
+  .pseo-content .main-image img { max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); display: block; }
+  .pseo-content .main-image figcaption { text-align: center; color: #666; font-size: 0.9em; margin-top: 8px; }
+
+  /* 2. Make the Lead Gen Form clean and mobile-friendly */
+  .lead-gen-form { display: flex; flex-direction: column; gap: 15px; width: 100%; box-sizing: border-box; }
+  .lead-gen-form label { font-weight: 600; color: #333; margin-bottom: -5px; }
+  .lead-gen-form input, .lead-gen-form select { 
+    width: 100%; 
+    padding: 12px; 
+    border: 1px solid #ccc; 
+    border-radius: 4px; 
+    box-sizing: border-box; /* Stops inputs from bleeding off the screen */
+    font-size: 16px; 
+  }
+  .lead-gen-form button.btn-primary { 
+    background-color: #0056b3; 
+    color: white; 
+    padding: 15px; 
+    font-size: 18px; 
+    font-weight: bold; 
+    border: none; 
+    border-radius: 4px; 
+    cursor: pointer; 
+    margin-top: 10px;
+  }
+  .lead-gen-form button.btn-primary:hover { background-color: #004494; }
+</style>
+
 <article class="pseo-content">
   <header class="page-header">
     <h1>{{ keyword }}</h1>
@@ -12,12 +43,9 @@
 
   <section class="intro-section">
     <p class="lead-hook">{{ hook_paragraph }}</p>
-    
-    {% if local_blurb %}
     <div class="local-trust-signal" style="padding: 15px; background: #f9f9f9; border-left: 4px solid #0056b3; margin: 20px 0;">
       <p><strong>📍 Local Expertise:</strong> {{ local_blurb }}</p>
     </div>
-    {% endif %}
   </section>
 
   <section class="core-value-content">
