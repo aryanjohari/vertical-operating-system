@@ -27,27 +27,29 @@ def _build_search_queries(
     brand_or_article_hints: list = None,
 ) -> list:
     """
-    Deterministic search queries: primary from keyword, optional template, optional brand/article hints.
-    If config_template is set (e.g. "{keyword} professional"), use it for the first query.
+    Build Unsplash search queries. If config_template is set (non-empty), use it as the first query as-is.
+    Otherwise use keyword-based queries with fallbacks.
     """
-    normalized = _normalize_query(keyword)
     queries = []
-    if config_template and "{keyword}" in config_template:
-        queries.append(config_template.replace("{keyword}", normalized))
-    else:
+    template_str = (config_template or "").strip()
+    if template_str:
+        queries.append(template_str)
+    normalized = _normalize_query(keyword)
+    if not template_str:
         queries.append(f"{normalized} professional service")
-    # Optional: merge brand/article hints into an extra query for relevance
     if brand_or_article_hints:
         hints = [h for h in brand_or_article_hints if isinstance(h, str) and h.strip()]
         if hints:
             combined = f"{normalized} {hints[0].strip().lower()}"
             if combined not in queries:
                 queries.append(combined)
-    # Second deterministic fallback: first word + "service" or safe default
     first_word = normalized.split()[0] if normalized else "professional"
     if first_word != "professional":
-        queries.append(f"{first_word} service")
-    queries.append("professional service")
+        fallback = f"{first_word} service"
+        if fallback not in queries:
+            queries.append(fallback)
+    if "professional service" not in queries:
+        queries.append("professional service")
     return queries
 
 
@@ -87,7 +89,11 @@ class MediaAgent(BaseAgent):
         target_draft = media_ready_drafts[0]
         draft_meta = target_draft.get("metadata", {})
         html_content = draft_meta.get("content") or draft_meta.get("html_content", "")
-        keyword = draft_meta.get("keyword", "")
+        keyword = (
+            draft_meta.get("keyword")
+            or draft_meta.get("h1_title")
+            or (target_draft.get("name") or "").replace("Page: ", "").strip()
+        ) or ""
 
         self.logger.info(f"MEDIA: Finding visuals for '{keyword}' (deterministic Unsplash)")
 
