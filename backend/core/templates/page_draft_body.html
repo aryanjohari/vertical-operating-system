@@ -51,12 +51,12 @@
   <section class="core-value-content">
     {% if expert_insight %}
     <div class="expert-insight">
-      <h2>Understanding the Process</h2>
+      <h2>Understanding {{ keyword }}{% if anchor_used %} in {{ anchor_used }}{% endif %}</h2>
       <p>{{ expert_insight }}</p>
     </div>
     {% elif service_overview %}
     <div class="service-overview">
-      <h2>Our Services</h2>
+      <h2>Our {{ keyword }} Services{% if anchor_used %} in {{ anchor_used }}{% endif %}</h2>
       <p>{{ service_overview }}</p>
     </div>
     {% endif %}
@@ -70,7 +70,7 @@
   <section class="detailed-breakdown">
     {% if step_by_step_guide and step_by_step_guide|length > 0 %}
     <div class="step-guide">
-      <h2>Step-by-Step Guide</h2>
+      <h2>Step-by-Step Guide to {{ keyword }}</h2>
       <ol>
         {% for step in step_by_step_guide %}
         <li style="margin-bottom: 10px;">
@@ -83,7 +83,7 @@
 
     {% if service_features and service_features|length > 0 %}
     <div class="service-features">
-      <h2>Key Features & Benefits</h2>
+      <h2>Key {{ keyword }} Features{% if anchor_used %} in {{ anchor_used }}{% endif %}</h2>
       <ul>
         {% for item in service_features %}
         <li style="margin-bottom: 10px;">
@@ -96,7 +96,7 @@
   </section>
 
   <aside class="conversion-block form-cta" style="margin: 40px 0; padding: 25px; border: 1px solid #eaeaea; border-radius: 8px; background: #ffffff;">
-    <h3 style="text-align: center; margin-top: 0;">Request Assistance Online</h3>
+    <h3 style="text-align: center; margin-top: 0;">Request {{ keyword }} Assistance Online</h3>
     {{ form_capture_placeholder }}
     <p class="trust-signal-privacy" style="text-align: center; font-size: 0.85em; color: #666; margin-top: 15px;">
       🔒 Your information is secure, strictly confidential, and never shared.
@@ -129,13 +129,13 @@
 
   {% if faq_body %}
   <section class="faq-section" aria-label="Frequently asked questions" style="margin-top: 40px;">
-    <h2>Frequently Asked Questions</h2>
+    <h2>Frequently Asked Questions About {{ keyword }}</h2>
     {{ faq_body }}
   </section>
   {% endif %}
 
   <aside class="cta-block hard-cta" style="margin-top: 40px; text-align: center; padding: 30px; background: #f4f4f4; border-top: 4px solid #0056b3;">
-    <h3 style="margin-top: 0;">Ready to get started?</h3>
+    <h3 style="margin-top: 0;">Ready to Get Started with {{ keyword }}{% if anchor_used %} in {{ anchor_used }}{% endif %}?</h3>
     <p style="margin-bottom: 20px;">Our team is available to provide the support and answers you need.</p>
     <a href="tel:{{ destination_phone | default('#', true) }}" class="btn call-btn-large" style="background: #0056b3; color: white; padding: 15px 30px; text-decoration: none; border-radius: 4px; font-size: 1.1em; font-weight: bold;">
       📞 Call Us Now

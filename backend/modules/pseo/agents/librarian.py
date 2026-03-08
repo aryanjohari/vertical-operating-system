@@ -1,12 +1,26 @@
 # backend/modules/pseo/agents/librarian.py
 import re
 from typing import List, Dict, Any
+from urllib.parse import urlparse
 from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
 from backend.core.models import Entity
 from backend.core.memory import memory
 
 _VALID_LINK_TARGET_STATUSES = {"validated", "ready_for_media", "ready_for_utility", "ready_to_publish", "published"}
+_PUBLISHED_LINK_STATUSES = {"published", "ready_to_publish"}
 _PENDING_STATUSES = {"pending_writer", "draft", "rejected"}
+_AUTHORITY_DOMAIN_SUFFIXES = (".govt.nz", ".gov", ".edu")
+
+
+def _is_authority_domain(url: str) -> bool:
+    """True if URL is an official/authority domain (e.g. .govt.nz, .gov) for dofollow links."""
+    if not url or not url.strip():
+        return False
+    try:
+        netloc = (urlparse(url).netloc or "").lower()
+        return any(netloc.endswith(suffix) for suffix in _AUTHORITY_DOMAIN_SUFFIXES)
+    except Exception:
+        return False
 
 
 class LibrarianAgent(BaseAgent):
@@ -40,7 +54,7 @@ class LibrarianAgent(BaseAgent):
 
         librarian_config = self._get_librarian_config()
         run_only_when_all_validated = librarian_config.get("run_only_when_all_validated", False)
-        max_internal_links = int(librarian_config.get("max_internal_links", 3))
+        max_internal_links = int(librarian_config.get("max_internal_links", 2))
         max_intel_sources = int(librarian_config.get("max_intel_sources", 2))
 
         # 2. FETCH WORK ITEM and gate: run only when all cluster pages are validated
@@ -93,13 +107,20 @@ class LibrarianAgent(BaseAgent):
                 if d.get("id") != target_draft.get("id")
                 and (d.get("metadata", {}).get("status") or "") in _VALID_LINK_TARGET_STATUSES
             ]
+            published_targets: List[Dict[str, str]] = []
+            other_targets: List[Dict[str, str]] = []
             for d in other_drafts:
                 term = (d.get("metadata", {}).get("h1_title") or d.get("name") or "").replace("Page: ", "").strip()
                 if term:
-                    link_targets.append({"term": term, "slug": term.lower().replace(" ", "-")})
-
-        # Deterministic order: sort by term then take first max_internal_links
-        link_targets = sorted(link_targets, key=lambda x: (x.get("term") or "", x.get("slug") or ""))[: max_internal_links * 2]
+                    meta = d.get("metadata", {})
+                    slug = (meta.get("slug") or "").strip() or term.lower().replace(" ", "-")
+                    item = {"term": term, "slug": slug}
+                    if (meta.get("status") or "") in _PUBLISHED_LINK_STATUSES:
+                        published_targets.append(item)
+                    else:
+                        other_targets.append(item)
+            link_targets = (published_targets + other_targets)[: max_internal_links * 2]
+            link_targets = sorted(link_targets, key=lambda x: (x.get("term") or "", x.get("slug") or ""))
         internal_count = 0
 
         all_intel = memory.get_entities(tenant_id=user_id, entity_type="knowledge_fragment", project_id=project_id)
@@ -150,7 +171,8 @@ class LibrarianAgent(BaseAgent):
             for source in sources:
                 url = source.get("metadata", {}).get("url", "")
                 title = source.get("name", "")
-                source_html += f'<li><a href="{url}" target="_blank" rel="nofollow noreferrer">{title}</a></li>'
+                rel = "noopener" if _is_authority_domain(url) else "nofollow noreferrer"
+                source_html += f'<li><a href="{url}" target="_blank" rel="{rel}">{title}</a></li>'
             source_html += "</ul></div>"
             if "</article>" in linked_html:
                 linked_html = linked_html.replace("</article>", source_html + "\n</article>", 1)
