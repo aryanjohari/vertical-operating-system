@@ -157,7 +157,11 @@ class PublisherAgent(BaseAgent):
         }
 
         try:
-            res = requests.post(endpoint, json=post_data, headers={"Authorization": f"Basic {creds}"}, timeout=10)
+            headers = {
+                "Authorization": f"Basic {creds}",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
+            res = requests.post(endpoint, json=post_data, headers=headers, timeout=10)
             if res.status_code in (200, 201):
                 return True
             self.logger.error(f"WP Error {res.status_code}: {res.text}")
