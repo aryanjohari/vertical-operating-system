@@ -9,13 +9,23 @@ from backend.core.models import Entity
 from backend.core.memory import memory
 
 
-def _slugify(text: str) -> str:
-    """Lowercase, replace spaces with hyphens, remove non-alphanumeric."""
+_SLUG_STOP_WORDS = frozenset(
+    {"near", "the", "for", "a", "an", "and", "or", "in", "on", "at", "to", "of"}
+)
+
+
+def _slugify(text: str, max_length: int = 70) -> str:
+    """Lowercase, strip stop words, replace spaces with hyphens, remove non-alphanumeric, cap length."""
     if not text:
         return "post"
-    s = text.strip().lower().replace(" ", "-")
-    s = re.sub(r"[^a-z0-9\-]", "", s)
+    s = text.strip().lower()
+    words = re.split(r"[^a-z0-9]+", s)
+    words = [w for w in words if w and w not in _SLUG_STOP_WORDS]
+    s = "-".join(words)
     s = re.sub(r"-+", "-", s).strip("-")
+    if len(s) > max_length:
+        truncated = s[: max_length + 1].rsplit("-", 1)
+        s = truncated[0] if len(truncated) > 1 else s[:max_length]
     return s or "post"
 
 

@@ -1,5 +1,6 @@
 # backend/modules/pseo/agents/media.py
 import os
+import random
 import re
 import httpx
 import html
@@ -169,13 +170,14 @@ class MediaAgent(BaseAgent):
             key = self.unsplash_key or UNSPLASH_ACCESS_KEY
             if not key or key == "YOUR_KEY_HERE":
                 return None
-            url = f"https://api.unsplash.com/search/photos?query={query}&orientation=landscape&per_page=1"
+            url = f"https://api.unsplash.com/search/photos?query={query}&orientation=landscape&per_page=10"
             headers = {"Authorization": f"Client-ID {key}"}
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(url, headers=headers)
                 data = resp.json()
-                if data.get("results"):
-                    photo = data["results"][0]
+                results = data.get("results") or []
+                if results:
+                    photo = random.choice(results)
                     return {"url": photo["urls"]["regular"], "photographer": photo["user"]["name"]}
         except Exception:
             pass

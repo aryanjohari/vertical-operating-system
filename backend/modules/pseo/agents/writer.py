@@ -243,13 +243,14 @@ Common keys (always include):
 Intent-specific (include only these for this intent):
 {intent_task}
 
+SEO: Section headings and the feature_list title should naturally incorporate the focus keyword and location (anchor) where it fits.
 Never invent costs, fees, or figures. If no hard facts in KNOWLEDGE BANK, fact_box must be [].
 """
 
         try:
             response_text = await asyncio.to_thread(
                 llm_gateway.generate_content,
-                system_prompt="You are a content writer. Return only valid JSON. Keys include: meta_title, meta_description, hook_paragraph, local_paragraph, regulatory_paragraph, fact_box, feature_list (title, items), faq_section; for informational intent also expert_insight and step_by_step_guide; for transactional intent also service_overview and service_features. No HTML, no markdown, no JSON-LD.",
+                system_prompt="You are a content writer. Return only valid JSON. Keys include: meta_title, meta_description, hook_paragraph, local_paragraph, regulatory_paragraph, fact_box, feature_list (title, items), faq_section; for informational intent also expert_insight and step_by_step_guide; for transactional intent also service_overview and service_features. Incorporate focus keyword and location in headings/feature_list title where natural for SEO. No HTML, no markdown, no JSON-LD.",
                 user_prompt=prompt,
                 model="gemini-2.5-flash",
                 temperature=0.5,
