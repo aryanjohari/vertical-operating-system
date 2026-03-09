@@ -56,3 +56,25 @@ class Entity(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
     
     created_at: datetime = Field(default_factory=datetime.now)
+
+
+# ==========================================
+# 4. PAGE EXPORT TRAINING PAYLOAD (LoRA / S3 [slug].json)
+# ==========================================
+class PageExportTrainingPayload(BaseModel):
+    """
+    Schema for the [slug].json file uploaded to S3 per page draft.
+    Used for LoRA fine-tuning dataset; supports future GSC performance join.
+    """
+    schema_version: str = Field(default="1.0", description="Payload schema version")
+    exported_at: str = Field(..., description="ISO8601 export timestamp")
+    draft_id: str = Field(..., description="Entity id of the page_draft")
+    slug: str = Field(..., description="URL slug for the page")
+    campaign_id: str = Field(..., description="Campaign id")
+    project_id: str = Field(..., description="Project id")
+    inputs: Dict[str, Any] = Field(default_factory=dict, description="Input variables (keyword, anchor, intent, etc.)")
+    config_snapshot: Dict[str, Any] = Field(default_factory=dict, description="Config state at export (targeting, brand_brain, critic, etc.)")
+    prompts: Dict[str, Any] = Field(default_factory=dict, description="Writer and critic system/user prompts")
+    outputs: Dict[str, Any] = Field(default_factory=dict, description="meta_title, content, json_ld_schema, writer_output_json")
+    pipeline_metadata: Dict[str, Any] = Field(default_factory=dict, description="qa_score, links_added_count, image_added, version")
+    gsc_performance: Dict[str, Any] = Field(default_factory=dict, description="Placeholder for future GSC clicks/impressions/ctr/position")

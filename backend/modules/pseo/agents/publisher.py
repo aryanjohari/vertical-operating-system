@@ -1,16 +1,23 @@
 # backend/modules/pseo/agents/publisher.py
+import csv
+import io
 import json
+import os
 import re
-import base64
-import requests
 from datetime import datetime
-from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
-from backend.core.models import Entity
-from backend.core.memory import memory
+from typing import Any, Dict
 
+from backend.core.agent_base import BaseAgent, AgentInput, AgentOutput
+from backend.core.memory import memory
+from backend.core.models import Entity, PageExportTrainingPayload
+from backend.core.s3 import upload_bytes
 
 _SLUG_STOP_WORDS = frozenset(
     {"near", "the", "for", "a", "an", "and", "or", "in", "on", "at", "to", "of"}
+)
+
+CRITIC_SYSTEM_PROMPT = (
+    "You are a strict content editor. Return only valid JSON with status, score, reason, fix_suggestions."
 )
 
 
@@ -29,12 +36,170 @@ def _slugify(text: str, max_length: int = 70) -> str:
     return s or "post"
 
 
+def _build_csv_row(page: Dict[str, Any]) -> str:
+    """Build a single-row CSV for WP import: Title, Content, Slug, Meta_Description, Focus_Keyword."""
+    meta = page.get("metadata") or {}
+    title = meta.get("meta_title") or meta.get("title") or page.get("name", "")
+    content = meta.get("content", "")
+    slug = meta.get("slug") or _slugify(
+        (meta.get("keyword") or meta.get("h1_title") or page.get("name", "") or "").strip()
+    )
+    meta_desc = meta.get("meta_description", "")
+    focus_kw = (meta.get("keyword") or meta.get("h1_title") or page.get("name", "") or "").strip()[:60]
+    out = io.StringIO()
+    writer = csv.writer(out, quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(["Title", "Content", "Slug", "Meta_Description", "Focus_Keyword"])
+    writer.writerow([title, content, slug, meta_desc, focus_kw])
+    return out.getvalue()
+
+
+def _build_critic_user_prompt(draft_meta: Dict[str, Any], config: Dict[str, Any]) -> str:
+    """Reconstruct the critic user prompt for the training payload."""
+    brand_voice = (config.get("brand_brain") or {}).get("voice_tone", "Professional")
+    forbidden_topics = (config.get("brand_brain") or {}).get("forbidden_topics", [])
+    if not isinstance(forbidden_topics, list):
+        forbidden_topics = []
+    anchor_used = draft_meta.get("anchor_used", "General City")
+    html_content = draft_meta.get("content") or draft_meta.get("html_content", "")
+    snippet = (html_content[:3000] + " ... (truncated)") if len(html_content) > 3000 else html_content
+    return f"""
+        ACT AS: Senior Compliance Officer & Editor.
+        TASK: Pass or Fail this web page draft.
+
+        --- THE RULES (STRICT) ---
+        1. **Brand Voice:** Must be "{brand_voice}".
+        2. **Local Accuracy:** If an Anchor Location ({anchor_used}) was assigned, it must be naturally mentioned in the text (referenced in a natural way, not necessarily the exact config string).
+        3. **Forbidden Topics:** The text MUST NOT promise or discuss: {forbidden_topics}. If you fail the draft for a Forbidden Topic, you MUST quote the exact sentence from the draft in your reason. Do not fail unless there is an explicit mention.
+        4. **Structure:** Must contain an <h1> and placeholders like {{{{form_capture}}}}.
+        5. **Formatting:** Fail the draft if there are massive walls of text. Paragraphs over 100 words should be penalized.
+
+        --- THE DRAFT CONTENT ---
+        {snippet}
+
+        --- EVALUATION FORMAT ---
+        Return ONLY a JSON object:
+        {{
+            "status": "PASS" | "FAIL",
+            "score": <0-10>,
+            "reason": "Short explanation of failure or success",
+            "fix_suggestions": "If fail, what needs fixing?"
+        }}
+        """
+
+
+def _build_training_payload(
+    page: Dict[str, Any],
+    campaign: Dict[str, Any],
+    config: Dict[str, Any],
+    slug: str,
+    project_id: str,
+) -> Dict[str, Any]:
+    """Build the LoRA training JSON payload (schema_version, inputs, config_snapshot, prompts, outputs, pipeline_metadata, gsc_performance)."""
+    meta = page.get("metadata") or {}
+    campaign_id = campaign.get("id", "")
+    draft_id = page.get("id", "")
+    now = datetime.utcnow().isoformat() + "Z"
+
+    targeting = config.get("targeting") or {}
+    brand_brain = config.get("brand_brain") or {}
+    identity = config.get("identity") or {}
+
+    # inputs
+    keyword = (meta.get("keyword") or meta.get("h1_title") or page.get("name") or "").strip()
+    inputs = {
+        "keyword": keyword,
+        "h1_title": meta.get("h1_title"),
+        "anchor_id": meta.get("anchor_id"),
+        "anchor_name": meta.get("anchor_name"),
+        "anchor_used": meta.get("anchor_used"),
+        "cluster_id": meta.get("cluster_id"),
+        "intent_role": meta.get("intent_role"),
+        "secondary_keywords": meta.get("secondary_keywords") or [],
+        "validation_score": meta.get("validation_score"),
+        "campaign_id": campaign_id,
+        "service_focus": targeting.get("service_focus") or config.get("service_focus"),
+        "geo_targets": targeting.get("geo_targets"),
+        "default_distance": targeting.get("default_distance"),
+        "brand_voice": brand_brain.get("voice_tone"),
+    }
+    inputs = {k: v for k, v in inputs.items() if v is not None}
+
+    # config_snapshot
+    config_snapshot = {
+        "targeting": targeting,
+        "intent_clusters": config.get("intent_clusters"),
+        "brand_brain": brand_brain,
+        "identity": identity,
+        "critic": config.get("critic") or ((config.get("modules") or {}).get("pseo") or {}).get("critic"),
+        "modules": {"local_seo": (config.get("modules") or {}).get("local_seo")},
+    }
+    config_snapshot = {k: v for k, v in config_snapshot.items() if v is not None}
+
+    # prompts (writer from metadata; critic reconstructed)
+    writer_system = meta.get("writer_system") or ""
+    writer_user = meta.get("writer_user") or ""
+    critic_user = _build_critic_user_prompt(meta, config)
+    prompts = {
+        "writer_system": writer_system,
+        "writer_user": writer_user,
+        "critic_system": CRITIC_SYSTEM_PROMPT,
+        "critic_user": critic_user,
+    }
+
+    # outputs
+    schema_raw = meta.get("json_ld_schema")
+    schema_obj = None
+    if schema_raw:
+        try:
+            schema_obj = json.loads(schema_raw) if isinstance(schema_raw, str) else schema_raw
+        except (json.JSONDecodeError, TypeError):
+            pass
+    outputs = {
+        "meta_title": meta.get("meta_title"),
+        "meta_description": meta.get("meta_description"),
+        "content": meta.get("content"),
+        "json_ld_schema": schema_obj,
+        "writer_output_json": meta.get("writer_output_json"),
+    }
+    outputs = {k: v for k, v in outputs.items() if v is not None}
+
+    # pipeline_metadata
+    pipeline_metadata = {
+        "qa_score": meta.get("qa_score"),
+        "qa_notes": meta.get("qa_notes"),
+        "links_added_count": meta.get("links_added_count"),
+        "image_added": meta.get("image_added"),
+        "version": meta.get("version"),
+    }
+    pipeline_metadata = {k: v for k, v in pipeline_metadata.items() if v is not None}
+
+    return {
+        "schema_version": "1.0",
+        "exported_at": now,
+        "draft_id": draft_id,
+        "slug": slug,
+        "campaign_id": campaign_id,
+        "project_id": project_id,
+        "inputs": inputs,
+        "config_snapshot": config_snapshot,
+        "prompts": prompts,
+        "outputs": outputs,
+        "pipeline_metadata": pipeline_metadata,
+        "gsc_performance": {
+            "clicks": None,
+            "impressions": None,
+            "ctr": None,
+            "position": None,
+            "date_range": None,
+        },
+    }
+
+
 class PublisherAgent(BaseAgent):
     def __init__(self):
         super().__init__(name="Publisher")
 
     async def _execute(self, input_data: AgentInput) -> AgentOutput:
-        # 1. Titanium Standard: Validate injected context
         if not self.project_id or not self.user_id:
             self.logger.error("Missing injected context: project_id or user_id")
             return AgentOutput(status="error", message="Agent context not properly initialized.")
@@ -50,30 +215,24 @@ class PublisherAgent(BaseAgent):
             self.logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
             return AgentOutput(status="error", message="Project not found or access denied.")
 
-        # Load Campaign Config (CMS Credentials)
         campaign = memory.get_campaign(campaign_id, user_id)
         if not campaign:
             return AgentOutput(status="error", message="Campaign not found.")
-        campaign_config = campaign.get("config", {})
-        # Support both cms_settings (new) and publisher_settings from DNA (old)
-        cms_config = campaign_config.get("cms_settings") or self.config.get("modules", {}).get("local_seo", {}).get("publisher_settings", {})
 
-        try:
-            secrets = memory.get_client_secrets(user_id)
-        except Exception as e:
-            self.logger.error(f"Failed to retrieve WordPress credentials: {e}", exc_info=True)
-            return AgentOutput(status="error", message="Credential retrieval failed.")
+        bucket = os.getenv("S3_BUCKET", "").strip()
+        if not bucket:
+            return AgentOutput(
+                status="error",
+                message="S3_BUCKET environment variable is required for export.",
+            )
 
-        wp_url = (cms_config.get("url") or "").strip() or (secrets or {}).get("wp_url") or ""
-        wp_user = (cms_config.get("username") or "").strip() or (secrets or {}).get("wp_user") or ""
-        wp_password = secrets.get("wp_password") if secrets else None
+        prefix = (os.getenv("S3_PREFIX", "") or "").strip()
+        if prefix and not prefix.endswith("/"):
+            prefix = prefix + "/"
 
-        if not wp_password:
-            return AgentOutput(status="error", message="WordPress password not found. Save it in Settings → WordPress / CMS.")
-        if not wp_url or not wp_user:
-            return AgentOutput(status="error", message="Missing WordPress URL or username. Set them in Settings → WordPress / CMS (or in campaign cms_settings).")
+        config = self.config or {}
 
-        # 2. FETCH READY PAGES (campaign-scoped; optional draft_id for row control)
+        # Fetch ready pages
         all_drafts = memory.get_entities(tenant_id=user_id, entity_type="page_draft", project_id=project_id)
         ready_pages = [
             d for d in all_drafts
@@ -88,84 +247,49 @@ class PublisherAgent(BaseAgent):
 
         limit = input_data.params.get("limit", 2)
         batch = ready_pages[:limit]
-        self.logger.info(f"Publishing {len(batch)} pages to {wp_url}...")
+        self.logger.info(f"Exporting {len(batch)} pages to S3 (bucket=%s)...", bucket)
 
         published_count = 0
         errors = []
         for page in batch:
             try:
-                success = self._publish_to_wordpress(page, wp_url, wp_user, wp_password)
-                if success:
-                    meta = page["metadata"].copy()
-                    meta["status"] = "published"
-                    meta["published_at"] = datetime.now().isoformat()
-                    meta["live_url"] = f"{wp_url.rstrip('/')}/{meta.get('slug') or _slugify(meta.get('keyword', ''))}"
-                    memory.save_entity(Entity(**{**page, "metadata": meta}), project_id=project_id)
-                    published_count += 1
-                    self.logger.info(f"Published '{page.get('name')}'")
-                else:
-                    errors.append(f"Failed {page.get('name')}")
+                meta = page.get("metadata") or {}
+                slug = meta.get("slug") or _slugify(
+                    (meta.get("keyword") or meta.get("h1_title") or page.get("name") or "").strip()
+                )
+                csv_content = _build_csv_row(page)
+                json_payload = _build_training_payload(page, campaign, config, slug, project_id)
+                PageExportTrainingPayload.model_validate(json_payload)
+
+                csv_key = f"{prefix}{slug}.csv"
+                json_key = f"{prefix}{slug}.json"
+
+                csv_url = upload_bytes(bucket, csv_key, csv_content.encode("utf-8"), "text/csv")
+                json_url = upload_bytes(
+                    bucket,
+                    json_key,
+                    json.dumps(json_payload, ensure_ascii=False).encode("utf-8"),
+                    "application/json",
+                )
+
+                # Update entity: status published, live_url = S3 URL (for analytics/frontend), s3 keys for audit
+                new_meta = {**meta}
+                new_meta["status"] = "published"
+                new_meta["published_at"] = datetime.utcnow().isoformat() + "Z"
+                new_meta["live_url"] = json_url
+                new_meta["s3_csv_key"] = csv_key
+                new_meta["s3_json_key"] = json_key
+                new_meta["exported_at"] = new_meta["published_at"]
+
+                memory.save_entity(Entity(**{**page, "metadata": new_meta}), project_id=project_id)
+                published_count += 1
+                self.logger.info(f"Exported '{page.get('name')}' -> s3://%s/%s", bucket, json_key)
             except Exception as e:
-                self.logger.error(f"Publisher fail on '{page.get('name')}': {e}")
+                self.logger.error(f"Publisher fail on '{page.get('name')}': {e}", exc_info=True)
                 errors.append(f"Failed {page.get('name')}: {e}")
 
         return AgentOutput(
             status="success" if not errors else "partial",
-            message=f"Published {published_count} pages.",
+            message=f"Exported {published_count} pages to S3.",
             data={"published": published_count, "errors": errors, "count": published_count},
         )
-
-    def _publish_to_wordpress(self, page: dict, wp_url: str, wp_user: str, wp_password: str) -> bool:
-        endpoint = f"{wp_url.rstrip('/')}/wp-json/wp/v2/posts"
-        creds = base64.b64encode(f"{wp_user}:{wp_password}".encode()).decode()
-        meta = page.get("metadata", {})
-        title = meta.get("meta_title") or meta.get("title", page.get("name", ""))
-        content = meta.get("content", "")
-        meta_description = meta.get("meta_description", "")
-        schema_raw = meta.get("json_ld_schema")
-        keyword = (meta.get("keyword") or meta.get("h1_title") or page.get("name", "") or "").strip()
-        slug = meta.get("slug") or _slugify(keyword)
-
-        # Ensure JSON-LD schema is in content (Utility may already have injected it; append if missing)
-        if schema_raw:
-            try:
-                schema_json = json.loads(schema_raw) if isinstance(schema_raw, str) else schema_raw
-                schema_block = f"<script type='application/ld+json'>{json.dumps(schema_json, ensure_ascii=False)}</script>"
-                if "application/ld+json" not in content:
-                    content = content + "\n\n" + schema_block
-            except Exception as e:
-                self.logger.warning(f"Failed to inject schema: {e}")
-
-        # Rank Math & Yoast meta for SEO (focus keyword = primary keyword for the post)
-        focus_keyword = keyword or title[:60]
-
-        post_data = {
-            "title": title,
-            "content": content,
-            "slug": slug,
-            "status": "publish",
-            "excerpt": meta_description,
-            "categories": [1],
-            "meta": {
-                "_yoast_wpseo_metadesc": meta_description or "",
-                "_yoast_wpseo_title": title[:60] if title else "",
-                "_yoast_wpseo_focuskw": focus_keyword[:60] if focus_keyword else "",
-                "rank_math_description": meta_description or "",
-                "rank_math_title": title[:60] if title else "",
-                "rank_math_focus_keyword": focus_keyword[:60] if focus_keyword else "",
-            },
-        }
-
-        try:
-            headers = {
-                "Authorization": f"Basic {creds}",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            }
-            res = requests.post(endpoint, json=post_data, headers=headers, timeout=10)
-            if res.status_code in (200, 201):
-                return True
-            self.logger.error(f"WP Error {res.status_code}: {res.text}")
-            return False
-        except Exception as e:
-            self.logger.error(f"WP Connection Failed: {e}")
-            return False

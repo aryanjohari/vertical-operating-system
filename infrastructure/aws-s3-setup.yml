@@ -1,0 +1,59 @@
+# CloudFormation: S3 bucket + IAM user for pSEO export pipeline (Sydney, least privilege)
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Private S3 bucket and IAM user with PutObject-only access for pSEO export"
+
+Parameters:
+  BucketNamePrefix:
+    Type: String
+    Default: "pseo-export"
+    Description: "Prefix for the S3 bucket name (stack name will be appended for uniqueness)"
+  IAMUserName:
+    Type: String
+    Default: "pseo-export-s3-writer"
+    Description: "Name of the IAM user for application credentials"
+
+Resources:
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${BucketNamePrefix}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  ExportUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref IAMUserName
+
+  ExportUserPolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: ExportUser
+    Properties:
+      PolicyName: !Sub "${AWS::StackName}-PutObjectOnly"
+      Users:
+        - !Ref ExportUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: s3:PutObject
+            Resource: !Sub "arn:aws:s3:::${S3Bucket}/*"
+
+Outputs:
+  BucketName:
+    Description: "Name of the S3 bucket for pSEO exports"
+    Value: !Ref S3Bucket
+    Export:
+      Name: !Sub "${AWS::StackName}-BucketName"
+  IAMUserName:
+    Description: "IAM user name for application credentials (create access key in console)"
+    Value: !Ref ExportUser
+    Export:
+      Name: !Sub "${AWS::StackName}-IAMUserName"
