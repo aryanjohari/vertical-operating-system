@@ -9,7 +9,7 @@ from backend.core.memory import memory
 _VALID_LINK_TARGET_STATUSES = {"validated", "ready_for_media", "ready_for_utility", "ready_to_publish", "published"}
 _PUBLISHED_LINK_STATUSES = {"published", "ready_to_publish"}
 _PENDING_STATUSES = {"pending_writer", "draft", "rejected"}
-_AUTHORITY_DOMAIN_SUFFIXES = (".govt.nz", ".gov", ".edu")
+_AUTHORITY_DOMAIN_SUFFIXES = (".govt.nz", ".gov", ".edu", ".org")
 
 
 def _is_authority_domain(url: str) -> bool:

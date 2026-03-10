@@ -21,7 +21,7 @@ CRITIC_SYSTEM_PROMPT = (
 )
 
 
-def _slugify(text: str, max_length: int = 70) -> str:
+def _slugify(text: str, max_length: int = 45) -> str:
     """Lowercase, strip stop words, replace spaces with hyphens, remove non-alphanumeric, cap length."""
     if not text:
         return "post"
