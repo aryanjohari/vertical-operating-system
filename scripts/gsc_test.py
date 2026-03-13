@@ -10,7 +10,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 
 # Candidate paths for GSC credentials (first existing wins)
 CANDIDATE_PATHS = [
-    PROJECT_ROOT / "backend" / "secrets" / "gcp-sercret.json",
+    PROJECT_ROOT / "backend" / "secrets" / "gcp-secret.json",
     PROJECT_ROOT / "backend" / "secrets" / "gcp_service_account.json",
     PROJECT_ROOT / "backend" / "data" / "secrets" / "gcp_service_account.json",
 ]

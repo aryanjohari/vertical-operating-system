@@ -41,7 +41,12 @@ export interface PageDraft extends Entity {
 
 export interface Lead extends Entity {
   entity_type: "lead";
-  metadata: Entity["metadata"] & { source?: string; score?: number; [key: string]: unknown };
+  metadata: Entity["metadata"] & {
+    source?: string;
+    score?: number;
+    page_path?: string;
+    [key: string]: unknown;
+  };
 }
 
 // Analytics API contracts

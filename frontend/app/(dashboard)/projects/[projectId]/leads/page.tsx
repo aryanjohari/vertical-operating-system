@@ -275,6 +275,9 @@ export default function LeadsPage() {
                     Source
                   </th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
+                    Page
+                  </th>
+                  <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
                     Service Requested
                   </th>
                   <th className="px-4 py-3 text-left text-sm font-medium text-muted-foreground">
@@ -291,7 +294,7 @@ export default function LeadsPage() {
               <tbody>
                 {leads.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-muted-foreground">
+                    <td colSpan={8} className="py-12 text-center text-muted-foreground">
                       No leads yet.
                     </td>
                   </tr>
@@ -309,6 +312,9 @@ export default function LeadsPage() {
                       </td>
                       <td className="px-4 py-3">
                         <SourceBadge source={lead.metadata?.source as string} />
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground max-w-[180px] truncate" title={lead.metadata?.page_path ?? lead.metadata?.data?.page_path ?? ""}>
+                        {String(lead.metadata?.page_path ?? (lead.metadata?.data as Record<string, unknown>)?.page_path ?? "—")}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground max-w-[200px] truncate">
                         {getServiceRequested(lead)}
