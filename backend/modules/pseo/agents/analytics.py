@@ -13,7 +13,7 @@ from backend.core.config import ConfigLoader
 DEFAULT_GSC_CREDENTIALS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
     "secrets",
-    "gcp-sercret.json",
+    "gcp-secret.json",
 )
 
 

@@ -8,9 +8,6 @@ from fastapi import APIRouter, Request, Response, HTTPException, BackgroundTasks
 from typing import Dict, Any, Optional
 from backend.core.memory import memory
 from backend.core.models import Entity
-from backend.core.kernel import kernel
-from backend.core.agent_base import AgentInput
-from backend.core.context import context_manager
 
 # Initialize Logger
 logger = logging.getLogger("Apex.Webhooks")
@@ -57,14 +54,26 @@ def _normalize_lead_data(payload: Dict[str, Any], source: str) -> Dict[str, Any]
     
     # Primary contact: prefer phone, fallback to email
     primary_contact = phone or email or ""
-    
+
+    # Page path / URL that generated the lead (for dashboard "which page")
+    page_path = (
+        payload.get("page_path")
+        or payload.get("page_url")
+        or payload.get("page")
+        or payload.get("referrer")
+        or payload.get("form_url")
+        or payload.get("current_page")
+    )
+    page_path = (page_path or "").strip() if page_path else ""
+
     return {
-        'name': name,
-        'phone': phone,
-        'email': email,
-        'message': message,
-        'primary_contact': primary_contact,
-        'raw_data': payload  # Keep original for reference
+        "name": name,
+        "phone": phone,
+        "email": email,
+        "message": message,
+        "primary_contact": primary_contact,
+        "page_path": page_path,
+        "raw_data": payload,  # Keep original for reference
     }
 
 def _validate_project_id(project_id: str) -> bool:
@@ -93,6 +102,7 @@ async def _create_and_trigger_lead(
     user_id: str = None,
     campaign_id: Optional[str] = None,
     background_tasks: Optional[BackgroundTasks] = None,
+    referer: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Creates a lead entity and triggers LeadGenManager (lead_received) to score and bridge call.
@@ -118,17 +128,22 @@ async def _create_and_trigger_lead(
         logger.warning(f"Project ownership verification failed: user={user_id}, project={project_id}")
         raise HTTPException(status_code=403, detail="Project access denied")
     
+    # Resolve page_path: from payload first, then optional referer (e.g. from request Referer header)
+    page_path = (normalized_data.get("page_path") or "").strip() or (referer or "").strip() or ""
+
     meta = {
         "source": source,
         "status": "new",
         "project_id": project_id,
+        "page_path": page_path,
         "data": {
-            "name": normalized_data['name'],
-            "phone": normalized_data.get('phone'),
-            "email": normalized_data.get('email'),
-            "message": normalized_data.get('message')
+            "name": normalized_data["name"],
+            "phone": normalized_data.get("phone"),
+            "email": normalized_data.get("email"),
+            "message": normalized_data.get("message"),
+            "page_path": page_path,
         },
-        "raw_payload": normalized_data.get('raw_data', {}),
+        "raw_payload": normalized_data.get("raw_data", {}),
     }
     if campaign_id:
         meta["campaign_id"] = campaign_id
@@ -148,74 +163,13 @@ async def _create_and_trigger_lead(
         raise HTTPException(status_code=500, detail="Failed to save lead to database")
     
     logger.info(f"💾 Saved lead {lead_entity.id} from {source} for project {project_id}")
-    
-    # If background_tasks is available, execute in background (non-blocking)
-    if background_tasks:
-        # Create context for this workflow
-        context = context_manager.create_context(
-            project_id=project_id,
-            user_id=user_id,
-            initial_data={
-                "lead_id": lead_entity.id,
-                "source": source,
-                "normalized_data": normalized_data
-            },
-            ttl_seconds=3600  # 1 hour
-        )
-        
-        # Define background task wrapper - dispatch to Manager (conductor)
-        async def trigger_lead_received():
-            try:
-                await kernel.dispatch(AgentInput(
-                    task="lead_gen_manager",
-                    user_id=user_id,
-                    params={
-                        "action": "lead_received",
-                        "lead_id": lead_entity.id,
-                        "project_id": project_id,
-                        "campaign_id": campaign_id,
-                        "context_id": context.context_id,
-                    },
-                ))
-                logger.info(f"Lead received flow completed for lead {lead_entity.id}")
-            except Exception as e:
-                logger.error(f"Lead received flow failed for lead {lead_entity.id}: {e}", exc_info=True)
 
-        # Schedule background task
-        background_tasks.add_task(trigger_lead_received)
-        logger.info(f"Scheduled lead_received for lead {lead_entity.id} (background)")
-        
-        # Return immediately with context_id
-        return {
-            "success": True,
-            "lead_id": lead_entity.id,
-            "context_id": context.context_id,
-            "status": "processing",
-            "message": "Lead captured and bridge call initiated (processing in background)"
-        }
-    else:
-        # Backward compatibility: Execute synchronously
-        try:
-            await kernel.dispatch(AgentInput(
-                task="lead_gen_manager",
-                user_id=user_id,
-                params={
-                    "action": "lead_received",
-                    "lead_id": lead_entity.id,
-                    "project_id": project_id,
-                    "campaign_id": campaign_id,
-                },
-            ))
-            logger.info(f"Triggered lead_received for lead {lead_entity.id}")
-        except Exception as e:
-            logger.warning(f"Lead received flow failed for lead {lead_entity.id}: {e}", exc_info=True)
-            # Don't fail the webhook - lead is still saved
-
-        return {
-            "success": True,
-            "lead_id": lead_entity.id,
-            "message": "Lead captured and bridge call initiated",
-        }
+    # Deterministic flow: only save. Scoring and bridge run via dashboard "Run next" / "Connect call".
+    return {
+        "success": True,
+        "lead_id": lead_entity.id,
+        "message": "Lead captured.",
+    }
 
 # --- 0. CORS PREFLIGHT HANDLERS ---
 @webhook_router.options("/google-ads")
@@ -463,6 +417,7 @@ async def handle_lead_webhook(request: Request, background_tasks: BackgroundTask
             raise HTTPException(status_code=404, detail="Project not found")
 
         normalized_data = _normalize_lead_data(payload, "form")
+        referer = request.headers.get("referer") or request.headers.get("referrer")
 
         result = await _create_and_trigger_lead(
             normalized_data,
@@ -471,6 +426,7 @@ async def handle_lead_webhook(request: Request, background_tasks: BackgroundTask
             user_id=project_owner,
             campaign_id=campaign_id,
             background_tasks=background_tasks,
+            referer=referer,
         )
         return result
 

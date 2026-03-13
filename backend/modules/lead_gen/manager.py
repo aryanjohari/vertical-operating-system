@@ -108,28 +108,12 @@ class LeadGenManager(BaseAgent):
                         message=f"Lead scored; not eligible for bridge (score < {min_score_to_ring}).",
                     )
 
-                # Manual review: send email only; do not auto-bridge
+                # Manual review: send email only; do not auto-bridge unless bridge_only_on_button is False
                 bridge_review_email = (sb.get("bridge_review_email") or "").strip()
-                if not bridge_review_email:
-                    self.logger.warning("bridge_review_email not configured; skipping bridge-review notification.")
-                    return AgentOutput(
-                        status="success",
-                        data={"lead_id": lead_id, "score": score_result.data},
-                        message="Lead scored; bridge review email not configured.",
-                    )
+                bridge_only_on_button = sb.get("bridge_only_on_button", True)
 
-                # Schedule auto-bridge after delay (e.g. 10 min); process_scheduled_bridges will run the call
-                bridge_delay_minutes = int(sb.get("bridge_delay_minutes", 10))
-                scheduled_at = (datetime.utcnow() + timedelta(minutes=bridge_delay_minutes)).isoformat() + "Z"
                 all_leads = memory.get_entities(tenant_id=user_id, entity_type="lead", project_id=project_id, limit=1000)
                 lead = next((l for l in all_leads if l.get("id") == lead_id), None)
-                if lead:
-                    meta = (lead.get("metadata") or {}).copy()
-                    meta["scheduled_bridge_at"] = scheduled_at
-                    meta["bridge_status"] = "scheduled"
-                    memory.update_entity(lead_id, meta, tenant_id=user_id)
-
-                # Build lead summary for email
                 lead_name = lead.get("name", "—") if lead else "—"
                 lead_contact = lead.get("primary_contact", "—") if lead else "—"
                 lead_message = ""
@@ -141,21 +125,40 @@ class LeadGenManager(BaseAgent):
                         lead_message = str(lead_message)[:500]
                 app_url = os.getenv("NEXT_PUBLIC_APP_URL") or os.getenv("APP_URL") or "https://app.apex.local"
                 dashboard_link = f"{app_url.rstrip('/')}/projects/{project_id}"
+
+                if bridge_only_on_button:
+                    # No scheduling; bridge only when user clicks "Connect call"
+                    if bridge_review_email:
+                        subject = f"High-value lead (score {score}) – connect from dashboard"
+                        body_plain = f"""High-value lead (score {score}/100)\n\nName: {lead_name}\nContact: {lead_contact}\nMessage: {lead_message}\n\nConnect call from dashboard: {dashboard_link}"""
+                        body_html = f"""<p>High-value lead (score <strong>{score}/100</strong>)</p><p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p><p><strong>Message:</strong><br/>{lead_message or "—"}</p><p><a href="{dashboard_link}">Connect call from dashboard</a>.</p>"""
+                        send_email(to=bridge_review_email, subject=subject, body_plain=body_plain, body_html=body_html)
+                    return AgentOutput(
+                        status="success",
+                        data={"lead_id": lead_id, "score": score_result.data},
+                        message="Lead scored; connect from dashboard when ready.",
+                    )
+
+                if not bridge_review_email:
+                    self.logger.warning("bridge_review_email not configured; skipping bridge-review notification.")
+                    return AgentOutput(
+                        status="success",
+                        data={"lead_id": lead_id, "score": score_result.data},
+                        message="Lead scored; bridge review email not configured.",
+                    )
+
+                # Schedule auto-bridge after delay; process_scheduled_bridges will run the call
+                bridge_delay_minutes = int(sb.get("bridge_delay_minutes", 10))
+                scheduled_at = (datetime.utcnow() + timedelta(minutes=bridge_delay_minutes)).isoformat() + "Z"
+                if lead:
+                    meta = (lead.get("metadata") or {}).copy()
+                    meta["scheduled_bridge_at"] = scheduled_at
+                    meta["bridge_status"] = "scheduled"
+                    memory.update_entity(lead_id, meta, tenant_id=user_id)
                 subject = f"High-value lead (score {score}) – bridge in {bridge_delay_minutes} min or connect now"
-                body_plain = f"""High-value lead (score {score}/100)
-
-Name: {lead_name}
-Contact: {lead_contact}
-Message: {lead_message}
-
-Bridge will be attempted automatically in {bridge_delay_minutes} minutes (within business hours).
-Or connect now: {dashboard_link}"""
-                body_html = f"""<p>High-value lead (score <strong>{score}/100</strong>)</p>
-<p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p>
-<p><strong>Message:</strong><br/>{lead_message or "—"}</p>
-<p>Bridge in {bridge_delay_minutes} min (if within business hours), or <a href="{dashboard_link}">connect now</a>.</p>"""
+                body_plain = f"""High-value lead (score {score}/100)\n\nName: {lead_name}\nContact: {lead_contact}\nMessage: {lead_message}\n\nBridge will be attempted automatically in {bridge_delay_minutes} minutes (within business hours).\nOr connect now: {dashboard_link}"""
+                body_html = f"""<p>High-value lead (score <strong>{score}/100</strong>)</p><p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p><p><strong>Message:</strong><br/>{lead_message or "—"}</p><p>Bridge in {bridge_delay_minutes} min (if within business hours), or <a href="{dashboard_link}">connect now</a>.</p>"""
                 send_email(to=bridge_review_email, subject=subject, body_plain=body_plain, body_html=body_html)
-
                 return AgentOutput(
                     status="success",
                     data={"lead_id": lead_id, "score": score_result.data, "scheduled_bridge_at": scheduled_at},
@@ -218,7 +221,15 @@ Or connect now: {dashboard_link}"""
             # --- ACTION 3b: PROCESS SCHEDULED BRIDGES (Cron / Poll) ---
             # Call periodically (e.g. every 1–2 min). Finds leads with scheduled_bridge_at <= now,
             # within business hours, and dispatches instant_call for each; marks bridge_attempted.
+            # No-op when bridge_only_on_button is True (default).
             elif action == "process_scheduled_bridges":
+                sb = config.get("modules", {}).get("lead_gen", {}).get("sales_bridge", {})
+                if sb.get("bridge_only_on_button", True):
+                    return AgentOutput(
+                        status="success",
+                        data={"attempted": 0, "candidates": 0},
+                        message="Bridge is button-only; no scheduled bridges processed.",
+                    )
                 from backend.core.kernel import kernel
                 now_iso = datetime.utcnow().isoformat() + "Z"
                 all_leads = memory.get_entities(
@@ -439,6 +450,25 @@ Return only valid JSON, no markdown formatting."""
                             message=f"Lead scored ({score}); not eligible for bridge.",
                         )
                     bridge_review_email = (sb.get("bridge_review_email") or "").strip()
+                    bridge_only_on_button = sb.get("bridge_only_on_button", True)
+                    lead = memory.get_entity(lead_id, user_id) or lead
+                    lead_name = lead.get("name", "—")
+                    lead_contact = lead.get("primary_contact", "—")
+                    lead_message = (lead.get("metadata") or {}).get("data") or {}
+                    lead_message = lead_message.get("message", "") if isinstance(lead_message, dict) else str(lead_message)[:500]
+                    app_url = os.getenv("NEXT_PUBLIC_APP_URL") or os.getenv("APP_URL") or "https://app.apex.local"
+                    dashboard_link = f"{app_url.rstrip('/')}/projects/{project_id}"
+                    if bridge_only_on_button:
+                        if bridge_review_email:
+                            subject = f"High-value lead (score {score}) – connect from dashboard"
+                            body_plain = f"High-value lead (score {score}/100)\nName: {lead_name}\nContact: {lead_contact}\nMessage: {lead_message}\nConnect from dashboard: {dashboard_link}"
+                            body_html = f"<p>High-value lead (score <strong>{score}/100</strong>)</p><p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p><p><a href=\"{dashboard_link}\">Connect call from dashboard</a>.</p>"
+                            send_email(to=bridge_review_email, subject=subject, body_plain=body_plain, body_html=body_html)
+                        return AgentOutput(
+                            status="success",
+                            data={"lead_id": lead_id, "score": score_result.data, "next_step": {"action": "bridge", "label": "Bridge call"}},
+                            message="Lead scored; connect from dashboard when ready.",
+                        )
                     if not bridge_review_email:
                         return AgentOutput(
                             status="success",
@@ -448,13 +478,6 @@ Return only valid JSON, no markdown formatting."""
                     bridge_delay_minutes = int(sb.get("bridge_delay_minutes", 10))
                     scheduled_at = (datetime.utcnow() + timedelta(minutes=bridge_delay_minutes)).isoformat() + "Z"
                     memory.update_entity(lead_id, {"scheduled_bridge_at": scheduled_at, "bridge_status": "scheduled"}, tenant_id=user_id)
-                    lead = memory.get_entity(lead_id, user_id) or lead
-                    lead_name = lead.get("name", "—")
-                    lead_contact = lead.get("primary_contact", "—")
-                    lead_message = (lead.get("metadata") or {}).get("data") or {}
-                    lead_message = lead_message.get("message", "") if isinstance(lead_message, dict) else str(lead_message)[:500]
-                    app_url = os.getenv("NEXT_PUBLIC_APP_URL") or os.getenv("APP_URL") or "https://app.apex.local"
-                    dashboard_link = f"{app_url.rstrip('/')}/projects/{project_id}"
                     subject = f"High-value lead (score {score}) – bridge in {bridge_delay_minutes} min or connect now"
                     body_plain = f"High-value lead (score {score}/100)\nName: {lead_name}\nContact: {lead_contact}\nMessage: {lead_message}\nBridge in {bridge_delay_minutes} min or connect now: {dashboard_link}"
                     body_html = f"<p>High-value lead (score <strong>{score}/100</strong>)</p><p><strong>Name:</strong> {lead_name}<br/><strong>Contact:</strong> {lead_contact}</p><p>Bridge in {bridge_delay_minutes} min, or <a href=\"{dashboard_link}\">connect now</a>.</p>"

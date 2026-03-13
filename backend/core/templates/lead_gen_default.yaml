@@ -28,6 +28,8 @@ sales_bridge:
   twilio_phone: ""               # Number shown on site (lead_gen_call.html); lead calls this. Typically your Twilio number. Leave empty to use destination_phone.
   whisper_text: "Apex Lead Alert. Press 1 to connect."
   sms_alert_template: "New Lead: [Name]"
+  # When true, bridge runs only when user clicks "Connect call"; no auto-schedule or process_scheduled_bridges.
+  bridge_only_on_button: true
   # Manual review: only high-score leads get bridge-review email; no auto-bridge
   bridge_review_email: "" # Email that receives "high-value lead, connect when ready" notifications
   min_score_to_ring: 90 # Only leads with score >= this get bridge-review email and can be bridged
