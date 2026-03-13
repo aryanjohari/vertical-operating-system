@@ -418,9 +418,14 @@ Return only valid JSON, no markdown formatting."""
                 lead = next((l for l in all_leads if l.get("id") == lead_id), None)
                 if not lead:
                     return AgentOutput(status="error", message="Lead not found or access denied.")
-                if (lead.get("metadata") or {}).get("campaign_id") != campaign_id:
+                lead_campaign_id = (lead.get("metadata") or {}).get("campaign_id")
+                if lead_campaign_id is not None and lead_campaign_id != campaign_id:
                     return AgentOutput(status="error", message="Lead does not belong to this campaign.")
                 meta = (lead.get("metadata") or {}).copy()
+                if lead_campaign_id is None and campaign_id:
+                    memory.update_entity(lead_id, {"campaign_id": campaign_id}, tenant_id=user_id)
+                    meta["campaign_id"] = campaign_id
+                    lead = {**lead, "metadata": meta}
                 score = meta.get("score") if meta.get("score") is not None else None
                 bridge_status = meta.get("bridge_status")
                 scheduled_bridge_at = meta.get("scheduled_bridge_at")
