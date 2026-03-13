@@ -313,7 +313,7 @@ export default function LeadsPage() {
                       <td className="px-4 py-3">
                         <SourceBadge source={lead.metadata?.source as string} />
                       </td>
-                      <td className="px-4 py-3 text-muted-foreground max-w-[180px] truncate" title={lead.metadata?.page_path ?? lead.metadata?.data?.page_path ?? ""}>
+                      <td className="px-4 py-3 text-muted-foreground max-w-[180px] truncate" title={String(lead.metadata?.page_path ?? (lead.metadata?.data as Record<string, unknown> | undefined)?.page_path ?? "")}>
                         {String(lead.metadata?.page_path ?? (lead.metadata?.data as Record<string, unknown>)?.page_path ?? "—")}
                       </td>
                       <td className="px-4 py-3 text-muted-foreground max-w-[200px] truncate">
